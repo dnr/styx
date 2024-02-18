@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log"
 	"os"
+	"os/exec"
 
 	"github.com/lunixbochs/struc"
 	"golang.org/x/sys/unix"
@@ -22,14 +23,19 @@ func CachefilesServer() *server {
 }
 
 func (s *server) Run() error {
-	err := os.MkdirAll(s.cfg.CachePath, 0700)
+	err := exec.Command("modprobe", "cachefiles").Run()
+	if err != nil {
+		return err
+	}
+
+	err = os.MkdirAll(s.cfg.CachePath, 0700)
 	if err != nil {
 		return err
 	}
 
 	devnode, err := unix.Open(s.cfg.DevPath, unix.O_RDWR, 0600)
 	if err == unix.ENOENT {
-		if err = unix.Mknod(s.cfg.DevPath, 0600, 10*256+122); err != nil {
+		if err = unix.Mknod(s.cfg.DevPath, 0600|unix.S_IFCHR, 10*256+122); err != nil {
 			return err
 		} else if devnode, err = unix.Open(s.cfg.DevPath, unix.O_RDWR, 0600); err != nil {
 			return err
@@ -68,6 +74,7 @@ func (s *server) Run() error {
 			}
 		}
 	}
+	return nil
 }
 
 func (s *server) handleMessage(buf []byte) error {
@@ -97,13 +104,18 @@ func (s *server) handleMessage(buf []byte) error {
 }
 
 func (s *server) handleOpen(msgId, objectId, fd, flags uint32, volume, cookie []byte) error {
+	// volume is "erofs,<domain_id>" (domain_id is same as fsid if not specified)
+	// cookie is "<fsid>"
+	log.Println("OPEN", msgId, objectId, fd, flags, string(volume), string(cookie))
 	panic("unimpl")
 }
 
 func (s *server) handleClose(msgId, objectId uint32) error {
+	log.Println("CLOSE", msgId, objectId)
 	panic("unimpl")
 }
 
-func (s *server) handleRead(msgId, objectId uint32, len, off uint64) error {
+func (s *server) handleRead(msgId, objectId uint32, ln, off uint64) error {
+	log.Println("READ", msgId, objectId, ln, off)
 	panic("unimpl")
 }
