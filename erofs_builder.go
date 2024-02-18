@@ -27,7 +27,7 @@ type (
 	}
 
 	regulardata struct {
-		inum uint32
+		i    *inodebuilder
 		data []byte
 	}
 
@@ -65,12 +65,36 @@ func (b *builder) Build() error {
 
 	const inodeshift = blkshift(5)
 	const inodesize = 1 << inodeshift
+	const layoutCompact = EROFS_INODE_LAYOUT_COMPACT << EROFS_I_VERSION_BIT
+	const formatPlain = (layoutCompact | (EROFS_INODE_FLAT_PLAIN << EROFS_I_DATALAYOUT_BIT))
+	const formatInline = (layoutCompact | (EROFS_INODE_FLAT_INLINE << EROFS_I_DATALAYOUT_BIT))
 
 	var root uint32
 	var datablocks []regulardata
 	var inodes []*inodebuilder
 	dirsmap := make(map[string]*dirbuilder)
 	var dirs []*dirbuilder
+
+	allowedTail := func(tail int64) bool {
+		// tail has to fit in a block with the inode
+		return tail > 0 && tail <= b.blk.size()-inodesize
+	}
+	setDataOnInode := func(i *inodebuilder, data []byte) {
+		tail := b.blk.leftover(int64(len(data)))
+		i.i.ISize = truncU32(len(data))
+		if !allowedTail(tail) {
+			tail = 0
+			i.i.IFormat = formatPlain
+		}
+		full := int64(len(data)) - tail
+		if full > 0 {
+			datablocks = append(datablocks, regulardata{
+				i:    i,
+				data: data[:full],
+			})
+		}
+		i.taildata = data[full:]
+	}
 
 	// pass 1: read nar
 
@@ -88,13 +112,12 @@ func (b *builder) Build() error {
 
 		// every header gets an inode and all but the root get a dirent
 		var fstype uint16
-		inum := uint32(len(inodes))
+		inum := truncU32(len(inodes))
 		i := &inodebuilder{
 			i: erofs_inode_compact{
-				IFormat: ((EROFS_INODE_LAYOUT_COMPACT << EROFS_I_VERSION_BIT) |
-					(EROFS_INODE_FLAT_INLINE << EROFS_I_DATALAYOUT_BIT)),
-				IIno:   inum + 37,
-				INlink: 1,
+				IFormat: formatInline,
+				IIno:    inum + 37,
+				INlink:  1,
 			},
 		}
 		inodes = append(inodes, i)
@@ -128,34 +151,17 @@ func (b *builder) Build() error {
 				if h.Size > math.MaxUint32 {
 					return fmt.Errorf("TODO: support larger files with extended inode")
 				}
-				i.i.ISize = uint32(h.Size)
-				data := make([]byte, h.Size)
-				n, err := b.nar.Read(data)
-				if err != nil || n < int(h.Size) {
-					return fmt.Errorf("short read on %#v", h)
+				data, err := readFullFromNar(b.nar, h)
+				if err != nil {
+					return err
 				}
-
-				tail := b.blk.leftover(h.Size)
-				if tail == 0 || tail > b.blk.size()-inodesize {
-					// tail has to fit in a block with the inode
-					tail = 0
-					i.i.IFormat = ((EROFS_INODE_LAYOUT_COMPACT << EROFS_I_VERSION_BIT) |
-						(EROFS_INODE_FLAT_PLAIN << EROFS_I_DATALAYOUT_BIT))
-				}
-				full := h.Size - tail
-				if full > 0 {
-					datablocks = append(datablocks, regulardata{
-						inum: inum,
-						data: data[:full],
-					})
-				}
-				i.taildata = data[full:]
+				setDataOnInode(i, data)
 			}
 
 		case nar.TypeSymlink:
 			fstype = EROFS_FT_SYMLINK
 			i.i.IMode = unix.S_IFLNK | 0777
-			i.i.ISize = uint32(len(h.LinkTarget))
+			i.i.ISize = truncU32(len(h.LinkTarget))
 			i.taildata = []byte(h.LinkTarget)
 
 		default:
@@ -183,6 +189,9 @@ func (b *builder) Build() error {
 	for _, db := range dirs {
 		db.sortAndSize(b.blk)
 		tail := b.blk.leftover(db.size)
+		if !allowedTail(tail) {
+			tail = 0
+		}
 		// dummy data just to track size
 		inodes[db.inum].taildata = dummy[:tail]
 	}
@@ -203,7 +212,7 @@ func (b *builder) Build() error {
 			p += remaining
 			remaining = b.blk.size()
 		}
-		inodes[i].nid = uint64(p >> inodeshift)
+		inodes[i].nid = truncU64(p >> inodeshift)
 		p += need
 		remaining -= need
 	}
@@ -214,15 +223,15 @@ func (b *builder) Build() error {
 	// at this point:
 	// all inodes have correct nid
 
-	// 2.3: write actual tails of dirs to tails
+	// 2.3: write actual dirs to buffers
 	inumToNid := func(inum uint32) uint64 { return inodes[inum].nid }
 	for _, db := range dirs {
 		var buf bytes.Buffer
-		db.write(&buf, true, b.blk, inumToNid)
-		if len(inodes[db.inum].taildata) != buf.Len() {
+		db.write(&buf, b.blk, inumToNid)
+		if int64(buf.Len()) != db.size {
 			panic("oops, bug")
 		}
-		inodes[db.inum].taildata = buf.Bytes()
+		setDataOnInode(inodes[db.inum], buf.Bytes())
 	}
 
 	// at this point:
@@ -231,20 +240,9 @@ func (b *builder) Build() error {
 	// from here on, p is relative to 0
 	p += inodebase
 
-	// 2.4: lay out dirs
-	for _, db := range dirs {
-		inodes[db.inum].i.IU = uint32(p >> b.blk)
-		inodes[db.inum].i.ISize = uint32(db.size)
-		tail := b.blk.leftover(db.size)
-		if tail > b.blk.size()-inodesize {
-			panic("fix this!")
-		}
-		full := db.size - tail
-		p += full
-	}
-	// 2.5: lay out rest of blocks
+	// 2.4: lay out full blocks
 	for _, data := range datablocks {
-		inodes[data.inum].i.IU = uint32(p >> b.blk)
+		data.i.i.IU = truncU32(p >> b.blk)
 		p += b.blk.roundup(int64(len(data.data)))
 	}
 	fmt.Printf("final calculated size %d\n", p)
@@ -257,11 +255,11 @@ func (b *builder) Build() error {
 	// 3.1: fill in super
 	super := erofs_super_block{
 		Magic:       0xE0F5E1E2,
-		BlkSzBits:   uint8(b.blk),
-		RootNid:     uint16(root),
-		Inos:        uint64(len(inodes)),
-		Blocks:      uint32(p >> b.blk),
-		MetaBlkAddr: uint32(inodebase >> b.blk),
+		BlkSzBits:   truncU8(b.blk),
+		RootNid:     truncU16(root),
+		Inos:        truncU64(len(inodes)),
+		Blocks:      truncU32(p >> b.blk),
+		MetaBlkAddr: truncU32(inodebase >> b.blk),
 	}
 	// TODO: make uuid from nar hash to be reproducible
 	rand.Read(super.Uuid[:])
@@ -292,11 +290,7 @@ func (b *builder) Build() error {
 		pad(b.out, remaining)
 	}
 
-	// 3.3: dirs
-	for _, db := range dirs {
-		db.write(b.out, false, b.blk, inumToNid)
-	}
-	// 3.4: data
+	// 3.4: full blocks
 	for _, data := range datablocks {
 		writeAndPad(b.out, data.data, b.blk)
 	}
@@ -324,7 +318,7 @@ func (db *dirbuilder) sortAndSize(shift blkshift) {
 	db.size = blocks<<shift + (shift.size() - remaining)
 }
 
-func (db *dirbuilder) write(out io.Writer, writeTail bool, shift blkshift, inumToNid func(uint32) uint64) {
+func (db *dirbuilder) write(out io.Writer, shift blkshift, inumToNid func(uint32) uint64) {
 	const direntsize = 12
 
 	remaining := shift.size()
@@ -332,16 +326,14 @@ func (db *dirbuilder) write(out io.Writer, writeTail bool, shift blkshift, inumT
 	var names bytes.Buffer
 
 	flush := func(isTail bool) {
-		if writeTail == isTail {
-			nameoff0 := uint16(len(ents) * direntsize)
-			for i := range ents {
-				ents[i].NameOff += nameoff0
-			}
-			pack(out, ents)
-			io.Copy(out, &names)
-			if !isTail {
-				pad(out, remaining)
-			}
+		nameoff0 := truncU16(len(ents) * direntsize)
+		for i := range ents {
+			ents[i].NameOff += nameoff0
+		}
+		pack(out, ents)
+		io.Copy(out, &names)
+		if !isTail {
+			pad(out, remaining)
 		}
 
 		ents = ents[:0]
@@ -357,8 +349,8 @@ func (db *dirbuilder) write(out io.Writer, writeTail bool, shift blkshift, inumT
 
 		ents = append(ents, erofs_dirent{
 			Nid:      inumToNid(ent.inum),
-			NameOff:  uint16(names.Len()), // offset minus nameoff0
-			FileType: uint8(ent.tp),
+			NameOff:  truncU16(names.Len()), // offset minus nameoff0
+			FileType: truncU8(ent.tp),
 		})
 		names.Write([]byte(ent.name))
 		remaining -= need
@@ -392,4 +384,15 @@ func writeAndPad(out io.Writer, data []byte, shift blkshift) error {
 	r := shift.roundup(int64(n)) - int64(n)
 	pad(out, r)
 	return err
+}
+
+func readFullFromNar(nr *nar.Reader, h *nar.Header) ([]byte, error) {
+	buf := make([]byte, h.Size)
+	num, err := io.ReadFull(nr, buf)
+	if err != nil {
+		return nil, err
+	} else if num != int(h.Size) {
+		return nil, io.ErrUnexpectedEOF
+	}
+	return buf, nil
 }
