@@ -39,13 +39,13 @@ type (
 
 	dbent struct {
 		name string
-		inum uint32
+		i    *inodebuilder
 		tp   uint16
 	}
 
 	dirbuilder struct {
 		ents []dbent
-		inum uint32
+		i    *inodebuilder
 		size int64
 	}
 )
@@ -69,9 +69,9 @@ func (b *builder) Build() error {
 	const formatPlain = (layoutCompact | (EROFS_INODE_FLAT_PLAIN << EROFS_I_DATALAYOUT_BIT))
 	const formatInline = (layoutCompact | (EROFS_INODE_FLAT_INLINE << EROFS_I_DATALAYOUT_BIT))
 
-	var root uint32
-	var datablocks []regulardata
 	var inodes []*inodebuilder
+	var root *inodebuilder
+	var datablocks []regulardata
 	dirsmap := make(map[string]*dirbuilder)
 	var dirs []*dirbuilder
 
@@ -112,11 +112,10 @@ func (b *builder) Build() error {
 
 		// every header gets an inode and all but the root get a dirent
 		var fstype uint16
-		inum := truncU32(len(inodes))
 		i := &inodebuilder{
 			i: erofs_inode_compact{
 				IFormat: formatInline,
-				IIno:    inum + 37,
+				IIno:    truncU32(len(inodes) + 37),
 				INlink:  1,
 			},
 		}
@@ -127,16 +126,16 @@ func (b *builder) Build() error {
 			fstype = EROFS_FT_DIR
 			i.i.IMode = unix.S_IFDIR | 0755
 			i.i.INlink = 2
-			parent := inum
+			parent := i
 			if h.Path != "/" {
-				parent = dirsmap[path.Dir(h.Path)].inum
+				parent = dirsmap[path.Dir(h.Path)].i
 			}
 			db := &dirbuilder{
 				ents: []dbent{
-					{name: ".", tp: EROFS_FT_DIR, inum: inum},
-					{name: "..", tp: EROFS_FT_DIR, inum: parent},
+					{name: ".", tp: EROFS_FT_DIR, i: i},
+					{name: "..", tp: EROFS_FT_DIR, i: parent},
 				},
-				inum: inum,
+				i: i,
 			}
 			dirs = append(dirs, db)
 			dirsmap[h.Path] = db
@@ -170,13 +169,13 @@ func (b *builder) Build() error {
 
 		// add dirent to appropriate directory
 		if h.Path == "/" {
-			root = inum
+			root = i
 		} else {
 			dir, file := path.Split(h.Path)
 			db := dirsmap[path.Clean(dir)]
 			db.ents = append(db.ents, dbent{
 				name: file,
-				inum: inum,
+				i:    i,
 				tp:   fstype,
 			})
 		}
@@ -193,7 +192,7 @@ func (b *builder) Build() error {
 			tail = 0
 		}
 		// dummy data just to track size
-		inodes[db.inum].taildata = dummy[:tail]
+		db.i.taildata = dummy[:tail]
 	}
 
 	// at this point:
@@ -224,14 +223,13 @@ func (b *builder) Build() error {
 	// all inodes have correct nid
 
 	// 2.3: write actual dirs to buffers
-	inumToNid := func(inum uint32) uint64 { return inodes[inum].nid }
 	for _, db := range dirs {
 		var buf bytes.Buffer
-		db.write(&buf, b.blk, inumToNid)
+		db.write(&buf, b.blk)
 		if int64(buf.Len()) != db.size {
 			panic("oops, bug")
 		}
-		setDataOnInode(inodes[db.inum], buf.Bytes())
+		setDataOnInode(db.i, buf.Bytes())
 	}
 
 	// at this point:
@@ -256,7 +254,7 @@ func (b *builder) Build() error {
 	super := erofs_super_block{
 		Magic:       0xE0F5E1E2,
 		BlkSzBits:   truncU8(b.blk),
-		RootNid:     truncU16(root),
+		RootNid:     truncU16(root.nid),
 		Inos:        truncU64(len(inodes)),
 		Blocks:      truncU32(p >> b.blk),
 		MetaBlkAddr: truncU32(inodebase >> b.blk),
@@ -318,7 +316,7 @@ func (db *dirbuilder) sortAndSize(shift blkshift) {
 	db.size = blocks<<shift + (shift.size() - remaining)
 }
 
-func (db *dirbuilder) write(out io.Writer, shift blkshift, inumToNid func(uint32) uint64) {
+func (db *dirbuilder) write(out io.Writer, shift blkshift) {
 	const direntsize = 12
 
 	remaining := shift.size()
@@ -348,7 +346,7 @@ func (db *dirbuilder) write(out io.Writer, shift blkshift, inumToNid func(uint32
 		}
 
 		ents = append(ents, erofs_dirent{
-			Nid:      inumToNid(ent.inum),
+			Nid:      ent.i.nid,
 			NameOff:  truncU16(names.Len()), // offset minus nameoff0
 			FileType: truncU8(ent.tp),
 		})
