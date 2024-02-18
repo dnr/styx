@@ -31,10 +31,10 @@ type (
 		data []byte
 	}
 
-	taildata struct {
-		inum uint32
-		data []byte
-		nid  uint64
+	inodebuilder struct {
+		i        erofs_inode_compact
+		taildata []byte
+		nid      uint64
 	}
 
 	dbent struct {
@@ -67,9 +67,8 @@ func (b *builder) Build() error {
 	inodeshift := blkshift(5)
 
 	var root uint32
-	var inodes []erofs_inode_compact
 	var datablocks []regulardata
-	var tails []taildata
+	var inodes []*inodebuilder
 	dirsmap := make(map[string]*dirbuilder)
 	var dirs []*dirbuilder
 
@@ -90,18 +89,21 @@ func (b *builder) Build() error {
 		// every header gets an inode and all but the root get a dirent
 		var fstype uint16
 		inum := uint32(len(inodes))
-		i := erofs_inode_compact{
-			IFormat: ((EROFS_INODE_LAYOUT_COMPACT << EROFS_I_VERSION_BIT) |
-				(EROFS_INODE_FLAT_INLINE << EROFS_I_DATALAYOUT_BIT)),
-			IIno:   inum + 37,
-			INlink: 1,
+		i := &inodebuilder{
+			i: erofs_inode_compact{
+				IFormat: ((EROFS_INODE_LAYOUT_COMPACT << EROFS_I_VERSION_BIT) |
+					(EROFS_INODE_FLAT_INLINE << EROFS_I_DATALAYOUT_BIT)),
+				IIno:   inum + 37,
+				INlink: 1,
+			},
 		}
+		inodes = append(inodes, i)
 
 		switch h.Type {
 		case nar.TypeDirectory:
 			fstype = EROFS_FT_DIR
-			i.IMode = unix.S_IFDIR | 0755
-			i.INlink = 2
+			i.i.IMode = unix.S_IFDIR | 0755
+			i.i.INlink = 2
 			parent := inum
 			if h.Path != "/" {
 				parent = dirsmap[path.Dir(h.Path)].inum
@@ -115,20 +117,17 @@ func (b *builder) Build() error {
 			}
 			dirs = append(dirs, db)
 			dirsmap[h.Path] = db
-			tails = append(tails, taildata{
-				inum: inum,
-			})
 
 		case nar.TypeRegular:
 			fstype = EROFS_FT_REG_FILE
-			i.IMode = unix.S_IFREG | 0644
+			i.i.IMode = unix.S_IFREG | 0644
 			if h.Executable {
-				i.IMode = unix.S_IFREG | 0755
+				i.i.IMode = unix.S_IFREG | 0755
 			}
-			if i.ISize > math.MaxUint32 {
+			if i.i.ISize > math.MaxUint32 {
 				return fmt.Errorf("TODO: support larger files with extended inode")
 			}
-			i.ISize = uint32(h.Size)
+			i.i.ISize = uint32(h.Size)
 			data := make([]byte, h.Size)
 			n, err := b.nar.Read(data)
 			if err != nil {
@@ -150,25 +149,17 @@ func (b *builder) Build() error {
 					data: data[:full],
 				})
 			}
-			tails = append(tails, taildata{
-				inum: inum,
-				data: data[full:],
-			})
+			i.taildata = data[full:]
 
 		case nar.TypeSymlink:
 			fstype = EROFS_FT_SYMLINK
-			i.IMode = unix.S_IFLNK | 0777
-			i.ISize = uint32(len(h.LinkTarget))
-			tails = append(tails, taildata{
-				inum: inum,
-				data: []byte(h.LinkTarget),
-			})
+			i.i.IMode = unix.S_IFLNK | 0777
+			i.i.ISize = uint32(len(h.LinkTarget))
+			i.taildata = []byte(h.LinkTarget)
 
 		default:
 			return errors.New("unknown type")
 		}
-
-		inodes = append(inodes, i)
 
 		// add dirent to appropriate directory
 		if h.Path == "/" {
@@ -186,18 +177,13 @@ func (b *builder) Build() error {
 
 	// pass 2: pack inodes and tails
 
-	// TODO: consolidate inodes + tails into one struct
-	if len(tails) != len(inodes) {
-		panic("oops")
-	}
-
 	// 2.1: directory sizes
 	dummy := make([]byte, b.blkshift.size())
 	for _, db := range dirs {
 		db.sortAndSize(b.blkshift)
 		tail := b.blkshift.leftover(db.size)
 		// dummy data just to track size
-		tails[db.inum].data = dummy[:tail]
+		inodes[db.inum].taildata = dummy[:tail]
 	}
 
 	// at this point:
@@ -210,13 +196,13 @@ func (b *builder) Build() error {
 	// using greedy for now. TODO: use best fit or something
 	p := int64(0) // position relative to metadata area
 	remaining := b.blkshift.size()
-	for i, tail := range tails {
-		need := inodesize + inodeshift.roundup(int64(len(tail.data)))
+	for i, tail := range inodes {
+		need := inodesize + inodeshift.roundup(int64(len(tail.taildata)))
 		if need > remaining {
 			p += remaining
 			remaining = b.blkshift.size()
 		}
-		tails[i].nid = uint64(p >> inodeshift)
+		inodes[i].nid = uint64(p >> inodeshift)
 		p += need
 		remaining -= need
 	}
@@ -227,15 +213,15 @@ func (b *builder) Build() error {
 	// at this point:
 	// all tails have correct nid
 
-	// 2.3: write actual tails of dirs to tails data
-	inumToNid := func(inum uint32) uint64 { return tails[inum].nid }
+	// 2.3: write actual tails of dirs to tails
+	inumToNid := func(inum uint32) uint64 { return inodes[inum].nid }
 	for _, db := range dirs {
 		var buf bytes.Buffer
 		db.write(&buf, true, b.blkshift, inumToNid)
-		if len(tails[db.inum].data) != buf.Len() {
+		if len(inodes[db.inum].taildata) != buf.Len() {
 			panic("oops")
 		}
-		tails[db.inum].data = buf.Bytes()
+		inodes[db.inum].taildata = buf.Bytes()
 	}
 
 	// at this point:
@@ -246,15 +232,15 @@ func (b *builder) Build() error {
 
 	// 2.4: lay out dirs
 	for _, db := range dirs {
-		inodes[db.inum].IU = uint32(p >> b.blkshift)
-		inodes[db.inum].ISize = uint32(db.size)
+		inodes[db.inum].i.IU = uint32(p >> b.blkshift)
+		inodes[db.inum].i.ISize = uint32(db.size)
 		tail := b.blkshift.leftover(db.size)
 		full := db.size - tail
 		p += full
 	}
 	// 2.5: lay out rest of blocks
 	for _, data := range datablocks {
-		inodes[data.inum].IU = uint32(p >> b.blkshift)
+		inodes[data.inum].i.IU = uint32(p >> b.blkshift)
 		p += int64(len(data.data))
 	}
 	fmt.Printf("final calculated size %d\n", p)
@@ -288,14 +274,14 @@ func (b *builder) Build() error {
 
 	// 3.2: inodes and tails
 	remaining = b.blkshift.size()
-	for _, tail := range tails {
-		need := inodesize + inodeshift.roundup(int64(len(tail.data)))
+	for _, i := range inodes {
+		need := inodesize + inodeshift.roundup(int64(len(i.taildata)))
 		if need > remaining {
 			pad(b.out, remaining)
 			remaining = b.blkshift.size()
 		}
-		pack(b.out, inodes[tail.inum])
-		writeAndPad(b.out, tail.data, inodeshift)
+		pack(b.out, i.i)
+		writeAndPad(b.out, i.taildata, inodeshift)
 		remaining -= need
 	}
 	if remaining < b.blkshift.size() {
