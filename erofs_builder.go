@@ -16,8 +16,7 @@ type (
 		nar *nar.Reader
 		out io.WriterAt
 
-		blkshift int
-		blksize  int64
+		blkshift blkshift
 	}
 
 	regulardata struct {
@@ -40,8 +39,7 @@ type (
 )
 
 func newBuilder(nar *nar.Reader, out io.WriterAt) *builder {
-	const blkshift = 12
-	return &builder{nar: nar, out: out, blkshift: blkshift, blksize: 1 << blkshift}
+	return &builder{nar: nar, out: out, blkshift: blkshift(12)}
 }
 
 func (b *builder) build() error {
@@ -137,8 +135,8 @@ func (b *builder) build() error {
 	// all inodes in a row, then all dirs, then all regular files
 
 	// pass 1: calculate block offsets
-	inodebase := max(4096, b.blksize)
-	inodelen := b.roundUpToBlock(int64(len(inodes)) * 32)
+	inodebase := max(4096, b.blkshift.size())
+	inodelen := b.blkshift.roundup(int64(len(inodes)) * 32)
 	dirbase := inodebase + inodelen
 	p := dirbase
 	for _, db := range dirs {
@@ -150,21 +148,13 @@ func (b *builder) build() error {
 	for _, data := range datablocks {
 		data.blockaddr = p >> b.blkshift
 		inodes[data.inum-1].IU = uint32(data.blockaddr) // FIXME: check overflow
-		p += b.roundUpToBlock(int64(len(data.data)))
+		p += b.blkshift.roundup(int64(len(data.data)))
 	}
 
 	// pass 2: write
 	_ = root
 
 	return nil
-}
-
-func (b *builder) blockCount(i int64) int64 {
-	return (i + b.blksize - 1) >> b.blkshift
-}
-
-func (b *builder) roundUpToBlock(i int64) int64 {
-	return (i + b.blksize - 1) & ^(b.blksize - 1)
 }
 
 func (db *dirbuilder) length() int64 {
