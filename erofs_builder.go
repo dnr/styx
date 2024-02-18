@@ -46,6 +46,7 @@ type (
 	dirbuilder struct {
 		ents []dbent
 		inum uint32
+		size int64
 	}
 )
 
@@ -117,8 +118,6 @@ func (b *builder) Build() error {
 			tails = append(tails, taildata{
 				inum: inum,
 			})
-			i.IFormat = ((EROFS_INODE_LAYOUT_COMPACT << EROFS_I_VERSION_BIT) |
-				(EROFS_INODE_FLAT_PLAIN << EROFS_I_DATALAYOUT_BIT))
 
 		case nar.TypeRegular:
 			fstype = EROFS_FT_REG_FILE
@@ -191,11 +190,23 @@ func (b *builder) Build() error {
 	if len(tails) != len(inodes) {
 		panic("oops")
 	}
-	// TODO: figure out directory sizes first so we can pack them too
+
+	// 2.1: directory sizes
+	dummy := make([]byte, b.blkshift.size())
+	for _, db := range dirs {
+		db.sortAndSize(b.blkshift)
+		tail := b.blkshift.leftover(db.size)
+		// dummy data just to track size
+		tails[db.inum].data = dummy[:tail]
+	}
+
+	// at this point:
+	// all tails have correct len(data)
+	// files have correct data but dirs do not
 
 	inodebase := max(4096, b.blkshift.size())
 
-	// lay out inodes and tails
+	// 2.2: lay out inodes and tails
 	// using greedy for now. TODO: use best fit or something
 	p := int64(0) // position relative to metadata area
 	remaining := b.blkshift.size()
@@ -213,26 +224,47 @@ func (b *builder) Build() error {
 		p += remaining
 	}
 
+	// at this point:
+	// all tails have correct nid
+
+	// 2.3: write actual tails of dirs to tails data
+	inumToNid := func(inum uint32) uint64 { return tails[inum].nid }
+	for _, db := range dirs {
+		var buf bytes.Buffer
+		db.write(&buf, true, b.blkshift, inumToNid)
+		if len(tails[db.inum].data) != buf.Len() {
+			panic("oops")
+		}
+		tails[db.inum].data = buf.Bytes()
+	}
+
+	// at this point:
+	// all tails have correct data
+
 	// from here on, p is relative to 0
 	p += inodebase
 
-	// lay out dirs
+	// 2.4: lay out dirs
 	for _, db := range dirs {
 		inodes[db.inum].IU = uint32(p >> b.blkshift)
-		size := db.size(b.blkshift)
-		inodes[db.inum].ISize = uint32(size)
-		p += b.blkshift.roundup(size)
+		inodes[db.inum].ISize = uint32(db.size)
+		tail := b.blkshift.leftover(db.size)
+		full := db.size - tail
+		p += full
 	}
-	// lay out rest of blocks
+	// 2.5: lay out rest of blocks
 	for _, data := range datablocks {
 		inodes[data.inum].IU = uint32(p >> b.blkshift)
-		p += b.blkshift.roundup(int64(len(data.data)))
+		p += int64(len(data.data))
 	}
 	fmt.Printf("final calculated size %d\n", p)
 
+	// at this point:
+	// all inodes have correct IU and ISize
+
 	// pass 3: write
 
-	// fill in super
+	// 3.1: fill in super
 	super := erofs_super_block{
 		Magic:       0xE0F5E1E2,
 		BlkSzBits:   uint8(b.blkshift),
@@ -250,12 +282,11 @@ func (b *builder) Build() error {
 	pack(c, &super)
 	super.Checksum = c.Sum32()
 
-	// super
 	pad(b.out, 1024)
 	pack(b.out, &super)
 	pad(b.out, inodebase-1024-128)
 
-	// inodes
+	// 3.2: inodes and tails
 	remaining = b.blkshift.size()
 	for _, tail := range tails {
 		need := inodesize + inodeshift.roundup(int64(len(tail.data)))
@@ -264,27 +295,26 @@ func (b *builder) Build() error {
 			remaining = b.blkshift.size()
 		}
 		pack(b.out, inodes[tail.inum])
-		writeAndPadTo(b.out, tail.data, inodeshift)
+		writeAndPad(b.out, tail.data, inodeshift)
 		remaining -= need
 	}
 	if remaining < b.blkshift.size() {
 		pad(b.out, remaining)
 	}
 
-	// dirs
-	inumToNid := func(inum uint32) uint64 { return tails[inum].nid }
+	// 3.3: dirs
 	for _, db := range dirs {
-		db.write(b.out, b.blkshift, inumToNid)
+		db.write(b.out, false, b.blkshift, inumToNid)
 	}
-	// data
+	// 3.4: data
 	for _, data := range datablocks {
-		writeAndPadTo(b.out, data.data, b.blkshift)
+		writeAndPad(b.out, data.data, b.blkshift)
 	}
 
 	return nil
 }
 
-func (db *dirbuilder) size(shift blkshift) int64 {
+func (db *dirbuilder) sortAndSize(shift blkshift) {
 	const direntsize = 12
 
 	sort.Slice(db.ents, func(i, j int) bool { return db.ents[i].name < db.ents[j].name })
@@ -293,7 +323,6 @@ func (db *dirbuilder) size(shift blkshift) int64 {
 	remaining := shift.size()
 
 	for _, ent := range db.ents {
-		// need := int64(direntsize + len(ent.name) + 1)
 		need := int64(direntsize + len(ent.name))
 		if need > remaining {
 			blocks++
@@ -302,26 +331,28 @@ func (db *dirbuilder) size(shift blkshift) int64 {
 		remaining -= need
 	}
 
-	return blocks<<shift + (shift.size() - remaining)
+	db.size = blocks<<shift + (shift.size() - remaining)
 }
 
-func (db *dirbuilder) write(out io.Writer, shift blkshift, inumToNid func(uint32) uint64) {
+func (db *dirbuilder) write(out io.Writer, writeTail bool, shift blkshift, inumToNid func(uint32) uint64) {
 	const direntsize = 12
-
-	// already sorted in size(), don't need to sort again
 
 	remaining := shift.size()
 	ents := make([]erofs_dirent, 0, shift.size()/16)
 	var names bytes.Buffer
 
-	flush := func() {
-		nameoff0 := uint16(len(ents) * direntsize)
-		for i := range ents {
-			ents[i].NameOff += nameoff0
+	flush := func(isTail bool) {
+		if writeTail == isTail {
+			nameoff0 := uint16(len(ents) * direntsize)
+			for i := range ents {
+				ents[i].NameOff += nameoff0
+			}
+			pack(out, ents)
+			io.Copy(out, &names)
+			if !isTail {
+				pad(out, remaining)
+			}
 		}
-		pack(out, ents)
-		io.Copy(out, &names)
-		pad(out, remaining)
 
 		ents = ents[:0]
 		names.Reset()
@@ -331,7 +362,7 @@ func (db *dirbuilder) write(out io.Writer, shift blkshift, inumToNid func(uint32
 	for _, ent := range db.ents {
 		need := int64(direntsize + len(ent.name))
 		if need > remaining {
-			flush()
+			flush(false)
 		}
 
 		ents = append(ents, erofs_dirent{
@@ -342,18 +373,18 @@ func (db *dirbuilder) write(out io.Writer, shift blkshift, inumToNid func(uint32
 		names.Write([]byte(ent.name))
 		remaining -= need
 	}
-	flush()
+	flush(true)
 
 	return
 }
 
 var _zeros = make([]byte, 4096)
 
-func pad(out io.Writer, n int64) {
+func pad(out io.Writer, n int64) error {
 	for {
 		if n <= 4096 {
-			out.Write(_zeros[:n])
-			return
+			_, err := out.Write(_zeros[:n])
+			return err
 		}
 		out.Write(_zeros)
 		n -= 4096
@@ -366,7 +397,7 @@ func pack(out io.Writer, v any) error {
 	return struc.PackWithOptions(out, v, &_popts)
 }
 
-func writeAndPadTo(out io.Writer, data []byte, shift blkshift) error {
+func writeAndPad(out io.Writer, data []byte, shift blkshift) error {
 	n, err := out.Write(data)
 	r := shift.roundup(int64(n)) - int64(n)
 	pad(out, r)
