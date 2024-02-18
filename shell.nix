@@ -2,6 +2,7 @@
 pkgs.mkShell {
   buildInputs = with pkgs; [
     #awscli2
+    erofs-utils
     jq
     go
     nix

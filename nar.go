@@ -1,6 +1,8 @@
 package styx
 
 import (
+	// _ "github.com/google/brotli/go/cbrotli"
+
 	"errors"
 	"io"
 	"net/url"
@@ -8,7 +10,7 @@ import (
 	"os/exec"
 )
 
-func getNarFromNixDump(pathOrHash string) (io.Reader, func() error, error) {
+func GetNarFromNixDump(pathOrHash string) (io.Reader, func() error, error) {
 	if _, err := os.Stat(pathOrHash); os.IsNotExist(err) && len(pathOrHash) == 32 {
 		// TODO: search in /nix/store for something with this prefix
 		return nil, nil, errors.New("implement this")

@@ -163,6 +163,16 @@ const (
 	 * block count of a pcluster).
 	 */
 	Z_EROFS_LI_D0_CBLKCNT = (1 << 11)
+
+	EROFS_FT_UNKNOWN  = 0
+	EROFS_FT_REG_FILE = 1
+	EROFS_FT_DIR      = 2
+	EROFS_FT_CHRDEV   = 3
+	EROFS_FT_BLKDEV   = 4
+	EROFS_FT_FIFO     = 5
+	EROFS_FT_SOCK     = 6
+	EROFS_FT_SYMLINK  = 7
+	EROFS_FT_MAX      = 8
 )
 
 type (
@@ -171,9 +181,9 @@ type (
 		Tag [64]byte
 		// 	u8 tag[64];		/* digest(sha256), etc. */
 		// 	__le32 blocks;		/* total fs blocks of this device */
-		Blocks uint32 `struc:"little"`
+		Blocks uint32
 		// 	__le32 mapped_blkaddr;	/* map starting at mapped_blkaddr */
-		MappedBlkAddr uint32 `struc:"little"`
+		MappedBlkAddr uint32
 		// 	u8 reserved[56];
 		Reserved [56]byte
 		// };
@@ -182,55 +192,55 @@ type (
 	erofs_super_block struct {
 		// struct erofs_super_block {
 		// 	__le32 magic;           /* file system magic number */
-		Magic uint32 `struc:"little"`
+		Magic uint32
 		// 	__le32 checksum;        /* crc32c(super_block) */
-		Checksum uint32 `struc:"little"`
+		Checksum uint32
 		// 	__le32 feature_compat;
-		FeatureCompat uint32 `struc:"little"`
+		FeatureCompat uint32
 		// 	__u8 blkszbits;         /* filesystem block size in bit shift */
 		BlkSzBits uint8
 		// 	__u8 sb_extslots;	/* superblock size = 128 + sb_extslots * 16 */
 		SbExtSlots uint8
 		// 	__le16 root_nid;	/* nid of root directory */
-		RootNid uint16 `struc:"little"`
+		RootNid uint16
 		// 	__le64 inos;            /* total valid ino # (== f_files - f_favail) */
-		Inos uint64 `struc:"little"`
+		Inos uint64
 
 		// 	__le64 build_time;      /* compact inode time derivation */
-		BuildTime uint64 `struc:"little"`
+		BuildTime uint64
 		// 	__le32 build_time_nsec;	/* compact inode time derivation in ns scale */
-		BuildTimeNsec uint32 `struc:"little"`
+		BuildTimeNsec uint32
 		// 	__le32 blocks;          /* used for statfs */
-		Blocks uint32 `struc:"little"`
+		Blocks uint32
 		// 	__le32 meta_blkaddr;	/* start block address of metadata area */
-		MetaBlkAddr uint32 `struc:"little"`
+		MetaBlkAddr uint32
 		// 	__le32 xattr_blkaddr;	/* start block address of shared xattr area */
-		XattrBlkAddr uint32 `struc:"little"`
+		XattrBlkAddr uint32
 		// 	__u8 uuid[16];          /* 128-bit uuid for volume */
 		Uuid [16]byte
 		// 	__u8 volume_name[16];   /* volume name */
 		VolumeName [16]byte
 		// 	__le32 feature_incompat;
-		FeatureIncompat uint32 `struc:"little"`
+		FeatureIncompat uint32
 		// 	union {
 		// 		/* bitmap for available compression algorithms */
 		// 		__le16 available_compr_algs;
 		// 		/* customized sliding window size instead of 64k by default */
 		// 		__le16 lz4_max_distance;
 		// 	} __packed u1;
-		U1 uint16 `struc:"little"`
+		U1 uint16
 		// 	__le16 extra_devices;	/* # of devices besides the primary device */
-		ExtraDevices uint16 `struc:"little"`
+		ExtraDevices uint16
 		// 	__le16 devt_slotoff;	/* startoff = devt_slotoff * devt_slotsize */
-		DevtSlotOff uint16 `struc:"little"`
+		DevtSlotOff uint16
 		// 	__u8 dirblkbits;	/* directory block size in bit shift */
 		DirBlkBits uint8
 		// 	__u8 xattr_prefix_count;	/* # of long xattr name prefixes */
 		XttrPrefixCount uint8
 		// 	__le32 xattr_prefix_start;	/* start of long xattr prefixes */
-		XattrPrefixStart uint32 `struc:"little"`
+		XattrPrefixStart uint32
 		// 	__le64 packed_nid;	/* nid of the special packed inode */
-		PackedNid uint64 `struc:"little"`
+		PackedNid uint64
 		// 	__u8 xattr_filter_reserved; /* reserved for xattr name filter */
 		XattrFilterReserved uint8
 		// 	__u8 reserved2[23];
@@ -241,7 +251,7 @@ type (
 	erofs_inode_chunk_info struct {
 		//	struct erofs_inode_chunk_info {
 		//		__le16 format;		/* chunk blkbits, etc. */
-		Format uint16 `struc:"little"`
+		Format uint16
 		// __le16 reserved;
 		Reserved uint16
 		// };
@@ -268,30 +278,29 @@ type (
 		// /* 32-byte reduced form of an ondisk inode */
 		// struct erofs_inode_compact {
 		// 	__le16 i_format;	/* inode format hints */
-		IFormat uint16 `struc:"little"`
+		IFormat uint16
 
 		// 	/* 1 header + n-1 * 4 bytes inline xattr to keep continuity */
 		// 	__le16 i_xattr_icount;
-		IXattrICount uint16 `struc:"little"`
+		IXattrICount uint16
 		// 	__le16 i_mode;
-		IMode uint16 `struc:"little"`
+		IMode uint16
 		// 	__le16 i_nlink;
-		INlink uint16 `struc:"little"`
+		INlink uint16
 		// 	__le32 i_size;
-		ISize uint32 `struc:"little"`
+		ISize uint32
 		// 	__le32 i_reserved;
 		IReserved uint32
 		// 	union erofs_inode_i_u i_u;
-		IU uint32 `struc:"little"`
-
+		IU uint32
 		// 	__le32 i_ino;		/* only used for 32-bit stat compatibility */
-		IIno uint32 `struc:"little"`
+		IIno uint32
 		// 	__le16 i_uid;
-		IUid uint16 `struc:"little"`
+		IUid uint16
 		// 	__le16 i_gid;
-		IGid uint16 `struc:"little"`
+		IGid uint16
 		// 	__le32 i_reserved2;
-		IReserved2 uint32 `struc:"little"`
+		IReserved2 uint32
 		// };
 	}
 
@@ -299,32 +308,32 @@ type (
 		// /* 64-byte complete form of an ondisk inode */
 		// struct erofs_inode_extended {
 		// 	__le16 i_format;	/* inode format hints */
-		IFormat uint16 `struc:"little"`
+		IFormat uint16
 
 		// 	/* 1 header + n-1 * 4 bytes inline xattr to keep continuity */
 		// 	__le16 i_xattr_icount;
-		IXattrICount uint16 `struc:"little"`
+		IXattrICount uint16
 		// 	__le16 i_mode;
-		IMode uint16 `struc:"little"`
+		IMode uint16
 		// 	__le16 i_reserved;
-		IReserved uint16 `struc:"little"`
+		IReserved uint16
 		// 	__le64 i_size;
-		ISize uint64 `struc:"little"`
+		ISize uint64
 		// 	union erofs_inode_i_u i_u;
-		IU uint32 `struc:"little"`
+		IU uint32
 
 		// 	__le32 i_ino;		/* only used for 32-bit stat compatibility */
-		IIno uint32 `struc:"little"`
+		IIno uint32
 		// 	__le32 i_uid;
-		IUid uint32 `struc:"little"`
+		IUid uint32
 		// 	__le32 i_gid;
-		IGid uint32 `struc:"little"`
+		IGid uint32
 		// 	__le64 i_mtime;
-		IMtime uint64 `struc:"little"`
+		IMtime uint64
 		// 	__le32 i_mtime_nsec;
-		IMtimeNsec uint32 `struc:"little"`
+		IMtimeNsec uint32
 		// 	__le32 i_nlink;
-		INlink uint32 `struc:"little"`
+		INlink uint32
 		// 	__u8   i_reserved2[16];
 		IReserved2 [16]byte
 		// };
@@ -334,11 +343,11 @@ type (
 		// /* 8-byte inode chunk indexes */
 		// struct erofs_inode_chunk_index {
 		// 	__le16 advise;		/* always 0, don't care for now */
-		Advise uint16 `struc:"little"`
+		Advise uint16
 		// 	__le16 device_id;	/* back-end storage id (with bits masked) */
-		DeviceId uint16 `struc:"little"`
+		DeviceId uint16
 		// 	__le32 blkaddr;		/* start block address of this inode chunk */
-		BlkAddr uint32 `struc:"little"`
+		BlkAddr uint32
 		// };
 	}
 
@@ -347,9 +356,9 @@ type (
 		//
 		//	struct erofs_dirent {
 		//		__le64 nid;     /* node number */
-		Nid uint64 `struc:"little"`
+		Nid uint64
 		// __le16 nameoff; /* start offset of file name */
-		NameOff uint16 `struc:"little"`
+		NameOff uint16
 		// __u8 file_type; /* file type */
 		FileType uint8
 		// __u8 reserved;  /* reserved */
