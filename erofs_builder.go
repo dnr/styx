@@ -23,7 +23,7 @@ type (
 		nar *nar.Reader
 		out io.Writer
 
-		blkshift blkshift
+		blk blkshift
 	}
 
 	regulardata struct {
@@ -55,7 +55,7 @@ func NewBuilder(r io.Reader, out io.Writer) *builder {
 	if err != nil {
 		return &builder{err: err}
 	}
-	return &builder{nar: nr, out: out, blkshift: blkshift(12)}
+	return &builder{nar: nr, out: out, blk: blkshift(12)}
 }
 
 func (b *builder) Build() error {
@@ -63,8 +63,8 @@ func (b *builder) Build() error {
 		return b.err
 	}
 
-	const inodesize = 32
-	inodeshift := blkshift(5)
+	const inodeshift = blkshift(5)
+	const inodesize = 1 << inodeshift
 
 	var root uint32
 	var datablocks []regulardata
@@ -124,32 +124,33 @@ func (b *builder) Build() error {
 			if h.Executable {
 				i.i.IMode = unix.S_IFREG | 0755
 			}
-			if i.i.ISize > math.MaxUint32 {
-				return fmt.Errorf("TODO: support larger files with extended inode")
-			}
-			i.i.ISize = uint32(h.Size)
-			data := make([]byte, h.Size)
-			n, err := b.nar.Read(data)
-			if err != nil {
-				return err
-			} else if n < int(h.Size) {
-				return errors.New("short read")
-			}
+			if h.Size > 0 {
+				if h.Size > math.MaxUint32 {
+					return fmt.Errorf("TODO: support larger files with extended inode")
+				}
+				i.i.ISize = uint32(h.Size)
+				data := make([]byte, h.Size)
+				n, err := b.nar.Read(data)
+				if err != nil || n < int(h.Size) {
+					return fmt.Errorf("short read on %#v", h)
+				}
 
-			tail := b.blkshift.leftover(h.Size)
-			// TODO: erofs-utils appears to have no checks like this, how does it work?
-			// if tail > b.blkshift.size()-inodesize {
-			// 	// tail has to fit in a block with the inode
-			// 	tail = 0
-			// }
-			full := h.Size - tail
-			if full > 0 {
-				datablocks = append(datablocks, regulardata{
-					inum: inum,
-					data: data[:full],
-				})
+				tail := b.blk.leftover(h.Size)
+				if tail == 0 || tail > b.blk.size()-inodesize {
+					// tail has to fit in a block with the inode
+					tail = 0
+					i.i.IFormat = ((EROFS_INODE_LAYOUT_COMPACT << EROFS_I_VERSION_BIT) |
+						(EROFS_INODE_FLAT_PLAIN << EROFS_I_DATALAYOUT_BIT))
+				}
+				full := h.Size - tail
+				if full > 0 {
+					datablocks = append(datablocks, regulardata{
+						inum: inum,
+						data: data[:full],
+					})
+				}
+				i.taildata = data[full:]
 			}
-			i.taildata = data[full:]
 
 		case nar.TypeSymlink:
 			fstype = EROFS_FT_SYMLINK
@@ -178,70 +179,73 @@ func (b *builder) Build() error {
 	// pass 2: pack inodes and tails
 
 	// 2.1: directory sizes
-	dummy := make([]byte, b.blkshift.size())
+	dummy := make([]byte, b.blk.size())
 	for _, db := range dirs {
-		db.sortAndSize(b.blkshift)
-		tail := b.blkshift.leftover(db.size)
+		db.sortAndSize(b.blk)
+		tail := b.blk.leftover(db.size)
 		// dummy data just to track size
 		inodes[db.inum].taildata = dummy[:tail]
 	}
 
 	// at this point:
-	// all tails have correct len(data)
-	// files have correct data but dirs do not
+	// all inodes have correct len(taildata)
+	// files have correct taildata but dirs do not
 
-	inodebase := max(4096, b.blkshift.size())
+	inodebase := max(4096, b.blk.size())
 
 	// 2.2: lay out inodes and tails
 	// using greedy for now. TODO: use best fit or something
 	p := int64(0) // position relative to metadata area
-	remaining := b.blkshift.size()
-	for i, tail := range inodes {
-		need := inodesize + inodeshift.roundup(int64(len(tail.taildata)))
+	remaining := b.blk.size()
+	for i, inode := range inodes {
+		need := inodesize + inodeshift.roundup(int64(len(inode.taildata)))
 		if need > remaining {
 			p += remaining
-			remaining = b.blkshift.size()
+			remaining = b.blk.size()
 		}
 		inodes[i].nid = uint64(p >> inodeshift)
 		p += need
 		remaining -= need
 	}
-	if remaining < b.blkshift.size() {
+	if remaining < b.blk.size() {
 		p += remaining
 	}
 
 	// at this point:
-	// all tails have correct nid
+	// all inodes have correct nid
 
 	// 2.3: write actual tails of dirs to tails
 	inumToNid := func(inum uint32) uint64 { return inodes[inum].nid }
 	for _, db := range dirs {
 		var buf bytes.Buffer
-		db.write(&buf, true, b.blkshift, inumToNid)
+		db.write(&buf, true, b.blk, inumToNid)
 		if len(inodes[db.inum].taildata) != buf.Len() {
-			panic("oops")
+			panic("oops, bug")
 		}
 		inodes[db.inum].taildata = buf.Bytes()
 	}
 
 	// at this point:
-	// all tails have correct data
+	// all inodes have correct taildata
 
 	// from here on, p is relative to 0
 	p += inodebase
 
 	// 2.4: lay out dirs
 	for _, db := range dirs {
-		inodes[db.inum].i.IU = uint32(p >> b.blkshift)
+		inodes[db.inum].i.IU = uint32(p >> b.blk)
 		inodes[db.inum].i.ISize = uint32(db.size)
-		tail := b.blkshift.leftover(db.size)
+		tail := b.blk.leftover(db.size)
+		if tail > b.blk.size()-inodesize {
+			panic("fix this!")
+		}
 		full := db.size - tail
 		p += full
 	}
 	// 2.5: lay out rest of blocks
 	for _, data := range datablocks {
-		inodes[data.inum].i.IU = uint32(p >> b.blkshift)
-		p += int64(len(data.data))
+		inodes[data.inum].i.IU = uint32(p >> b.blk)
+		p += b.blk.roundup(int64(len(data.data)))
 	}
 	fmt.Printf("final calculated size %d\n", p)
 
@@ -253,11 +257,11 @@ func (b *builder) Build() error {
 	// 3.1: fill in super
 	super := erofs_super_block{
 		Magic:       0xE0F5E1E2,
-		BlkSzBits:   uint8(b.blkshift),
+		BlkSzBits:   uint8(b.blk),
 		RootNid:     uint16(root),
 		Inos:        uint64(len(inodes)),
-		Blocks:      uint32(p >> b.blkshift),
-		MetaBlkAddr: uint32(inodebase >> b.blkshift),
+		Blocks:      uint32(p >> b.blk),
+		MetaBlkAddr: uint32(inodebase >> b.blk),
 	}
 	// TODO: make uuid from nar hash to be reproducible
 	rand.Read(super.Uuid[:])
@@ -273,28 +277,28 @@ func (b *builder) Build() error {
 	pad(b.out, inodebase-1024-128)
 
 	// 3.2: inodes and tails
-	remaining = b.blkshift.size()
+	remaining = b.blk.size()
 	for _, i := range inodes {
 		need := inodesize + inodeshift.roundup(int64(len(i.taildata)))
 		if need > remaining {
 			pad(b.out, remaining)
-			remaining = b.blkshift.size()
+			remaining = b.blk.size()
 		}
 		pack(b.out, i.i)
 		writeAndPad(b.out, i.taildata, inodeshift)
 		remaining -= need
 	}
-	if remaining < b.blkshift.size() {
+	if remaining < b.blk.size() {
 		pad(b.out, remaining)
 	}
 
 	// 3.3: dirs
 	for _, db := range dirs {
-		db.write(b.out, false, b.blkshift, inumToNid)
+		db.write(b.out, false, b.blk, inumToNid)
 	}
 	// 3.4: data
 	for _, data := range datablocks {
-		writeAndPad(b.out, data.data, b.blkshift)
+		writeAndPad(b.out, data.data, b.blk)
 	}
 
 	return nil
