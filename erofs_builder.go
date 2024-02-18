@@ -2,10 +2,12 @@ package styx
 
 import (
 	"bytes"
-	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"hash"
 	"hash/crc32"
 	"io"
 	"math"
@@ -21,6 +23,7 @@ type (
 	builder struct {
 		err error
 		nar *nar.Reader
+		hsh hash.Hash
 		out io.Writer
 
 		blk blkshift
@@ -51,11 +54,12 @@ type (
 )
 
 func NewBuilder(r io.Reader, out io.Writer) *builder {
-	nr, err := nar.NewReader(r)
+	hsh := sha256.New()
+	nr, err := nar.NewReader(io.TeeReader(r, hsh))
 	if err != nil {
 		return &builder{err: err}
 	}
-	return &builder{nar: nr, out: out, blk: blkshift(12)}
+	return &builder{nar: nr, hsh: hsh, out: out, blk: blkshift(12)}
 }
 
 func (b *builder) Build() error {
@@ -172,6 +176,9 @@ func (b *builder) Build() error {
 			root = i
 		} else {
 			dir, file := path.Split(h.Path)
+			if len(file) > EROFS_NAME_LEN {
+				return errors.New("file name too long")
+			}
 			db := dirsmap[path.Clean(dir)]
 			db.ents = append(db.ents, dbent{
 				name: file,
@@ -259,18 +266,17 @@ func (b *builder) Build() error {
 		Blocks:      truncU32(p >> b.blk),
 		MetaBlkAddr: truncU32(inodebase >> b.blk),
 	}
-	// TODO: make uuid from nar hash to be reproducible
-	rand.Read(super.Uuid[:])
-	// TODO: append a few bits of nar hash to volname
-	copy(super.VolumeName[:], "styx-test")
+	narhash := b.hsh.Sum(nil)
+	copy(super.Uuid[:], narhash)
+	copy(super.VolumeName[:], "styx-"+base64.RawURLEncoding.EncodeToString(narhash)[:10])
 
 	c := crc32.NewIEEE()
 	pack(c, &super)
 	super.Checksum = c.Sum32()
 
-	pad(b.out, 1024)
+	pad(b.out, EROFS_SUPER_OFFSET)
 	pack(b.out, &super)
-	pad(b.out, inodebase-1024-128)
+	pad(b.out, inodebase-EROFS_SUPER_OFFSET-128)
 
 	// 3.2: inodes and tails
 	remaining = b.blk.size()
