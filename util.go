@@ -9,7 +9,7 @@ type (
 )
 
 func (b blkshift) size() int64 {
-	return 1 << int(b)
+	return 1 << b
 }
 
 func (b blkshift) roundup(i int64) int64 {

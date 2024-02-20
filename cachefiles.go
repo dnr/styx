@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path"
+	"time"
 
 	"github.com/lunixbochs/struc"
 	"go.etcd.io/bbolt"
@@ -73,27 +74,32 @@ func (s *server) Run() error {
 		return err
 	}
 
-	buf := make([]byte, CACHEFILES_MSG_MAX_SIZE)
-
+	fds := make([]unix.PollFd, 1)
+	errors := 0
 	for {
-		fds := []unix.PollFd{{
-			Fd:     int32(devnode),
-			Events: unix.POLLIN,
-		}}
-		n, err := unix.Poll(fds, 1000*1000)
+		if errors > 100 {
+			// we might be spinning somehow, slow down
+			time.Sleep(time.Duration(errors) * time.Millisecond)
+		}
+		fds[0] = unix.PollFd{Fd: int32(devnode), Events: unix.POLLIN}
+		n, err := unix.Poll(fds, 3600*1000)
 		if err != nil {
-			return err
+			log.Printf("error from poll: %v", err)
+			errors++
+			continue
 		}
-		if n == 1 {
-			n, err := unix.Read(devnode, buf)
-			if err != nil {
-				return err
-			}
-			err = s.handleMessage(buf[:n])
-			if err != nil {
-				log.Printf("error handling message: %v", err)
-			}
+		if n != 1 {
+			continue
 		}
+		buf := make([]byte, CACHEFILES_MSG_MAX_SIZE)
+		n, err = unix.Read(devnode, buf)
+		if err != nil {
+			errors++
+			log.Printf("error from read: %v", err)
+			continue
+		}
+		errors = 0
+		go s.handleMessage(buf[:n])
 	}
 	return nil
 }
@@ -102,6 +108,9 @@ func (s *server) handleMessage(buf []byte) (retErr error) {
 	defer func() {
 		if r := recover(); r != nil {
 			retErr = fmt.Errorf("panic: %v", r)
+		}
+		if retErr != nil {
+			log.Printf("error handling message: %v", retErr)
 		}
 	}()
 

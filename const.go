@@ -7,6 +7,12 @@ const (
 	domainId = "styx"
 
 	dbFilename = "styx.bolt"
+
+	// TODO: eventually these can be configurable but let's fix them for now for simplicity
+	blockShift = 12
+	blockSize  = 1 << blockShift
+	chunkShift = 16
+	chunkSize  = 1 << chunkShift
 )
 
 var (
