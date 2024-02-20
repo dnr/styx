@@ -3,17 +3,21 @@ package styx
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"log"
 	"os"
 	"os/exec"
+	"path"
 
 	"github.com/lunixbochs/struc"
+	"go.etcd.io/bbolt"
 	"golang.org/x/sys/unix"
 )
 
 type (
 	server struct {
 		cfg *config
+		db  *bbolt.DB
 	}
 )
 
@@ -22,31 +26,48 @@ func CachefilesServer() *server {
 	return &server{cfg: cfg}
 }
 
-func (s *server) Run() error {
+func (s *server) openDb() (err error) {
+	opts := bbolt.Options{
+		NoFreelistSync: true,
+		FreelistType:   bbolt.FreelistMapType,
+	}
+	s.db, err = bbolt.Open(path.Join(s.cfg.CachePath, dbFilename), 0644, &opts)
+	return
+}
+
+func (s *server) setupEnv() error {
 	err := exec.Command("modprobe", "cachefiles").Run()
 	if err != nil {
 		return err
 	}
+	return os.MkdirAll(s.cfg.CachePath, 0755)
+}
 
-	err = os.MkdirAll(s.cfg.CachePath, 0700)
-	if err != nil {
+func (s *server) openDevNode() (devnode int, err error) {
+	devnode, err = unix.Open(s.cfg.DevPath, unix.O_RDWR, 0600)
+	if err == unix.ENOENT {
+		_ = unix.Mknod(s.cfg.DevPath, 0600|unix.S_IFCHR, 10*256+122)
+		devnode, err = unix.Open(s.cfg.DevPath, unix.O_RDWR, 0600)
+	}
+	return
+}
+
+func (s *server) Run() error {
+	if err := s.setupEnv(); err != nil {
+		return err
+	}
+	if err := s.openDb(); err != nil {
 		return err
 	}
 
-	devnode, err := unix.Open(s.cfg.DevPath, unix.O_RDWR, 0600)
-	if err == unix.ENOENT {
-		if err = unix.Mknod(s.cfg.DevPath, 0600|unix.S_IFCHR, 10*256+122); err != nil {
-			return err
-		} else if devnode, err = unix.Open(s.cfg.DevPath, unix.O_RDWR, 0600); err != nil {
-			return err
-		}
-	} else if err != nil {
+	devnode, err := s.openDevNode()
+	if err != nil {
 		return err
 	}
 
 	if _, err = unix.Write(devnode, []byte("dir "+s.cfg.CachePath)); err != nil {
 		return err
-	} else if _, err = unix.Write(devnode, []byte("tag styx0")); err != nil {
+	} else if _, err = unix.Write(devnode, []byte("tag "+cacheTag)); err != nil {
 		return err
 	} else if _, err = unix.Write(devnode, []byte("bind ondemand")); err != nil {
 		return err
@@ -77,7 +98,13 @@ func (s *server) Run() error {
 	return nil
 }
 
-func (s *server) handleMessage(buf []byte) error {
+func (s *server) handleMessage(buf []byte) (retErr error) {
+	defer func() {
+		if r := recover(); r != nil {
+			retErr = fmt.Errorf("panic: %v", r)
+		}
+	}()
+
 	r := bytes.NewReader(buf)
 	var msg cachefiles_msg
 	if err := struc.Unpack(r, &msg); err != nil {

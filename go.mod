@@ -7,7 +7,9 @@ require (
 	github.com/lunixbochs/struc v0.0.0-20200707160740-784aaebc1d40
 	github.com/nix-community/go-nix v0.0.0-20231219074122-93cb24a86856
 	github.com/spf13/cobra v1.8.0
+	go.etcd.io/bbolt v1.3.8
 	golang.org/x/sys v0.17.0
+	google.golang.org/protobuf v1.32.0
 )
 
 require (
