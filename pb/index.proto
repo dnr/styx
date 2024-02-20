@@ -1,0 +1,50 @@
+
+syntax = "proto3";
+
+package pb;
+
+option go_package = "github.com/dnr/styx/pb";
+
+enum EntryType {
+  UNKNOWN = 0;
+  REGULAR = 1;
+  DIRECTORY = 2;
+  SYMLINK = 3;
+}
+
+message Index {
+  // Entries and required parameters
+  repeated Entry entries = 1;
+  int32 tail_cutoff = 2;
+  int32 chunk_size = 3;
+  string hash_algo = 4;
+  int32 hash_bits = 5;
+
+  // Metadata on how this was generated
+  IndexMeta meta = 10;
+}
+
+// Mostly modeled on nar Header
+message Entry {
+  string path = 1;         // Path of the file entry, relative inside the NAR
+  EntryType type = 2;      // Typeflag is the type of header entry.
+  string link_target = 3;  // Target of symlink (valid for SYMLINK)
+  int64 size = 4;          // Logical file size in bytes
+  bool executable = 5;     // Set to true for files that are executable
+  // For REGULAR and SYMLINK:
+  // If size <= tail_cutoff || type == SYMLINK, data is here:
+  bytes tail_data = 6;
+  // Otherwise, this is a series of concatenated digests, one per chunk:
+  bytes digests = 7;
+}
+
+message IndexMeta {
+  // meta info for what this index was generated from
+  string narinfo_url = 1;  // url that narinfo was fetched from
+  bytes nar_hash = 2;      // nar hash (extracted from narinfo)
+  bytes narinfo = 3;       // dump of raw narinfo (includes references, signatures, etc.)
+
+  string generator = 10;     // software version of generator
+  int64 generated_time = 11; // timestamp when this was generated
+}
+

@@ -1,0 +1,42 @@
+
+syntax = "proto3";
+
+package pb;
+
+option go_package = "github.com/dnr/styx/pb";
+
+// location is not defined in proto since it needs to be encoded deterministically.
+//   u16 slabid
+//   u32 block address
+
+
+// key: "meta"
+message DbMeta {
+  int32 block_size = 1;
+
+  int32 chunk_size = 2;
+  string hash_algo = 3;
+  int32 hash_bits = 4;
+}
+
+// key: "slabs" / "<u16 slabid>"
+message SlabInfo {
+  int64 next_chunk = 1;
+}
+
+// key: "digests" / "<hash_bits of digest>"
+message DigestInfo {
+  bytes location = 1;
+  int32 refcount = 2;
+}
+
+// key: "locs" / "<u16 slabid; u32 block_address>"
+message LocationInfo {
+  bytes digest = 1;
+  int64 path_id = 2;
+}
+
+// key: "paths" / "<varint pathid>"
+message PathInfo {
+  // TBD
+}

@@ -6,6 +6,8 @@ pkgs.mkShell {
     jq
     go
     nix
+    protobuf
+    protoc-gen-go
     #skopeo
     #terraform
     #xdelta
