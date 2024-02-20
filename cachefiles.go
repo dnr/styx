@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path"
+	"sync"
 	"time"
 
 	"github.com/lunixbochs/struc"
@@ -17,14 +18,18 @@ import (
 
 type (
 	server struct {
-		cfg *config
-		db  *bbolt.DB
+		cfg  *config
+		db   *bbolt.DB
+		pool *sync.Pool
 	}
 )
 
 func CachefilesServer() *server {
 	cfg := loadConfig()
-	return &server{cfg: cfg}
+	return &server{
+		cfg:  cfg,
+		pool: &sync.Pool{New: func() any { return make([]byte, CACHEFILES_MSG_MAX_SIZE) }},
+	}
 }
 
 func (s *server) openDb() (err error) {
@@ -91,7 +96,7 @@ func (s *server) Run() error {
 		if n != 1 {
 			continue
 		}
-		buf := make([]byte, CACHEFILES_MSG_MAX_SIZE)
+		buf := s.pool.Get().([]byte)
 		n, err = unix.Read(devnode, buf)
 		if err != nil {
 			errors++
@@ -99,12 +104,12 @@ func (s *server) Run() error {
 			continue
 		}
 		errors = 0
-		go s.handleMessage(buf[:n])
+		go s.handleMessage(buf, n)
 	}
 	return nil
 }
 
-func (s *server) handleMessage(buf []byte) (retErr error) {
+func (s *server) handleMessage(_buf []byte, _n int) (retErr error) {
 	defer func() {
 		if r := recover(); r != nil {
 			retErr = fmt.Errorf("panic: %v", r)
@@ -112,17 +117,20 @@ func (s *server) handleMessage(buf []byte) (retErr error) {
 		if retErr != nil {
 			log.Printf("error handling message: %v", retErr)
 		}
+		s.pool.Put(_buf)
 	}()
 
-	r := bytes.NewReader(buf)
+	buf := _buf[:_n]
+	var r bytes.Reader
+	r.Reset(buf)
 	var msg cachefiles_msg
-	if err := struc.Unpack(r, &msg); err != nil {
+	if err := struc.Unpack(&r, &msg); err != nil {
 		return err
 	}
 	switch msg.OpCode {
 	case CACHEFILES_OP_OPEN:
 		var open cachefiles_open
-		if err := struc.Unpack(r, &open); err != nil {
+		if err := struc.Unpack(&r, &open); err != nil {
 			return err
 		}
 		return s.handleOpen(msg.MsgId, msg.ObjectId, open.Fd, open.Flags, open.VolumeKey, open.CookieKey)
@@ -130,7 +138,7 @@ func (s *server) handleMessage(buf []byte) (retErr error) {
 		return s.handleClose(msg.MsgId, msg.ObjectId)
 	case CACHEFILES_OP_READ:
 		var read cachefiles_read
-		if err := struc.Unpack(r, &read); err != nil {
+		if err := struc.Unpack(&r, &read); err != nil {
 			return err
 		}
 		return s.handleRead(msg.MsgId, msg.ObjectId, read.Len, read.Off)
