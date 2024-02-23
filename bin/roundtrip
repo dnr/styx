@@ -5,7 +5,7 @@ set -eux
 for a; do
   tmp=$(mktemp -p /dev/shm roundtrip.XXXXXXXXX)
   nix-store --dump "$a" > ${tmp}.nar
-  ./styx nartoerofs ${tmp}.nar ${tmp}.ero
+  ./styx debug nartoerofs ${tmp}.nar ${tmp}.ero
   mkdir ${tmp}.dir
   fsck.erofs -d5 ${tmp}.ero --extract=${tmp}.dir
   diff -ur --no-dereference "$a" ${tmp}.dir

@@ -2,7 +2,9 @@ package main
 
 import (
 	"log"
+	"os"
 
+	"github.com/nix-community/go-nix/pkg/narinfo/signature"
 	"github.com/spf13/cobra"
 
 	"github.com/dnr/styx/daemon"
@@ -27,12 +29,34 @@ func main() {
 		Short: "act as manifester server",
 	}
 	var mcfg manifester.Config
+
 	manifesterCmd.Flags().StringVar(&mcfg.Bind, "bind", ":7420", "address to listen on")
-	manifesterCmd.Flags().StringVar(&mcfg.Upstream, "upstream", "cache.nixos.org", "upstream binary cache")
+	manifesterCmd.Flags().StringArrayVar(&mcfg.AllowedUpstreams, "allowed-upstream", []string{"cache.nixos.org"}, "allowed upstream binary caches")
 	manifesterCmd.Flags().StringVar(&mcfg.ChunkBucket, "chunkbucket", "",
 		"s3 bucket to put chunks and cached manifests")
 	manifesterCmd.Flags().StringVar(&mcfg.ChunkLocalDir, "chunklocaldir", "", "local directory to put chunks")
+	pubkeys := manifesterCmd.Flags().StringArray("pubkey",
+		[]string{"cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY="},
+		"verify narinfo with this public key")
+	signkeys := manifesterCmd.Flags().StringArray("signkey", nil, "sign manifest with key from this file")
+
 	manifesterCmd.RunE = func(c *cobra.Command, args []string) error {
+		for _, pk := range *pubkeys {
+			if k, err := signature.ParsePublicKey(pk); err != nil {
+				return err
+			} else {
+				mcfg.PublicKeys = append(mcfg.PublicKeys, k)
+			}
+		}
+		for _, path := range *signkeys {
+			if skdata, err := os.ReadFile(path); err != nil {
+				return err
+			} else if k, err := signature.LoadSecretKey(string(skdata)); err != nil {
+				return err
+			} else {
+				mcfg.SigningKeys = append(mcfg.SigningKeys, k)
+			}
+		}
 		return manifester.ManifestServer(mcfg).Run()
 	}
 

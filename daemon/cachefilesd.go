@@ -30,6 +30,8 @@ type (
 		DevPath   string
 		CachePath string
 
+		Manifester string
+
 		// One of these is required:
 		ChunkReadURL  string
 		ChunkLocalDir string
@@ -66,40 +68,40 @@ func (s *server) startSocketServer() (err error) {
 	return nil
 }
 
-func (s *server) handleMountReq(out http.ResponseWriter, req *http.Request) {
+func (s *server) handleMountReq(w http.ResponseWriter, req *http.Request) {
 	var r MountReq
 	var res MountResp
 	if err := json.NewDecoder(req.Body).Decode(&r); err != nil {
-		out.WriteHeader(http.StatusBadRequest)
+		w.WriteHeader(http.StatusBadRequest)
 	}
 
 	// TODO
 
-	json.NewEncoder(out).Encode(res)
+	json.NewEncoder(w).Encode(res)
 }
 
-func (s *server) handleUmountReq(out http.ResponseWriter, req *http.Request) {
+func (s *server) handleUmountReq(w http.ResponseWriter, req *http.Request) {
 	var r UmountReq
 	var res UmountResp
 	if err := json.NewDecoder(req.Body).Decode(&r); err != nil {
-		out.WriteHeader(http.StatusBadRequest)
+		w.WriteHeader(http.StatusBadRequest)
 	}
 
 	// TODO
 
-	json.NewEncoder(out).Encode(res)
+	json.NewEncoder(w).Encode(res)
 }
 
-func (s *server) handleDeleteReq(out http.ResponseWriter, req *http.Request) {
+func (s *server) handleDeleteReq(w http.ResponseWriter, req *http.Request) {
 	var r DeleteReq
 	var res DeleteResp
 	if err := json.NewDecoder(req.Body).Decode(&r); err != nil {
-		out.WriteHeader(http.StatusBadRequest)
+		w.WriteHeader(http.StatusBadRequest)
 	}
 
 	// TODO
 
-	json.NewEncoder(out).Encode(res)
+	json.NewEncoder(w).Encode(res)
 }
 
 func (s *server) setupEnv() error {

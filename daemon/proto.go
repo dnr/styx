@@ -12,8 +12,8 @@ var (
 
 type (
 	MountReq struct {
-		StoreHash  string
-		MountPoint string
+		StorePathHash string
+		MountPoint    string
 	}
 	MountResp struct {
 	}
@@ -25,7 +25,7 @@ type (
 	}
 
 	DeleteReq struct {
-		StoreHash string
+		StorePathHash string
 	}
 	DeleteResp struct {
 	}

@@ -24,6 +24,14 @@ message Manifest {
   ManifestMeta meta = 10;
 }
 
+message SignedManifest {
+  bytes manifest = 1; // contains Manifest
+  // none of the following are required if there are no signatures
+  string hash_algo = 2; // algo used to hash manifest to fingerprint before signing
+  repeated string key_name = 3;
+  repeated bytes signature = 4;
+}
+
 // Mostly modeled on nar Header
 message Entry {
   string path = 1;         // Path of the file entry, relative inside the NAR
@@ -41,10 +49,9 @@ message Entry {
 message ManifestMeta {
   // meta info for what this manifest was generated from
   string narinfo_url = 1;  // url that narinfo was fetched from
-  bytes nar_hash = 2;      // nar hash (extracted from narinfo)
-  bytes narinfo = 3;       // dump of raw narinfo (includes references, signatures, etc.)
+  bytes narinfo = 2;       // dump of raw narinfo (includes references, signatures, etc.)
 
   string generator = 10;     // software version of generator
-  int64 generated_time = 11; // timestamp when this was generated
+  int64 generated_time = 11; // timestamp when this was generated (unix seconds)
 }
 

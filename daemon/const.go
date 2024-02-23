@@ -14,11 +14,3 @@ const (
 	chunkShift = 16
 	chunkSize  = 1 << chunkShift
 )
-
-var (
-	// binary paths (can be overridden by ldflags)
-	gzipBin = "gzip"
-	nixBin  = "nix"
-	xzBin   = "xz"
-	zstdBin = "zstd"
-)
