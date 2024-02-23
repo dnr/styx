@@ -12,7 +12,7 @@ enum EntryType {
   SYMLINK = 3;
 }
 
-message Index {
+message Manifest {
   // Entries and required parameters
   repeated Entry entries = 1;
   int32 tail_cutoff = 2;
@@ -21,7 +21,7 @@ message Index {
   int32 hash_bits = 5;
 
   // Metadata on how this was generated
-  IndexMeta meta = 10;
+  ManifestMeta meta = 10;
 }
 
 // Mostly modeled on nar Header
@@ -38,8 +38,8 @@ message Entry {
   bytes digests = 7;
 }
 
-message IndexMeta {
-  // meta info for what this index was generated from
+message ManifestMeta {
+  // meta info for what this manifest was generated from
   string narinfo_url = 1;  // url that narinfo was fetched from
   bytes nar_hash = 2;      // nar hash (extracted from narinfo)
   bytes narinfo = 3;       // dump of raw narinfo (includes references, signatures, etc.)

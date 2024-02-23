@@ -1,4 +1,4 @@
-package styx
+package daemon
 
 // References:
 // https://www.kernel.org/doc/html/latest/filesystems/caching/cachefiles.html

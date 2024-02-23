@@ -1,4 +1,4 @@
-package styx
+package erofs
 
 import (
 	"bytes"

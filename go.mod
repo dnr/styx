@@ -3,7 +3,6 @@ module github.com/dnr/styx
 go 1.21.5
 
 require (
-	github.com/alfred-landrum/fromenv v2.0.0+incompatible
 	github.com/lunixbochs/struc v0.0.0-20200707160740-784aaebc1d40
 	github.com/nix-community/go-nix v0.0.0-20231219074122-93cb24a86856
 	github.com/spf13/cobra v1.8.0

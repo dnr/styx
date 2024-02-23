@@ -1,4 +1,4 @@
-package styx
+package daemon
 
 import (
 	"bytes"
@@ -18,16 +18,24 @@ import (
 
 type (
 	server struct {
-		cfg  *config
+		cfg  *Config
 		db   *bbolt.DB
 		pool *sync.Pool
 	}
+
+	Config struct {
+		DevPath   string
+		CachePath string
+
+		// One of these is required:
+		ChunkReadURL  string
+		ChunkLocalDir string
+	}
 )
 
-func CachefilesServer() *server {
-	cfg := loadConfig()
+func CachefilesServer(cfg Config) *server {
 	return &server{
-		cfg:  cfg,
+		cfg:  &cfg,
 		pool: &sync.Pool{New: func() any { return make([]byte, CACHEFILES_MSG_MAX_SIZE) }},
 	}
 }

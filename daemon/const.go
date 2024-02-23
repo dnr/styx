@@ -1,4 +1,4 @@
-package styx
+package daemon
 
 const (
 	// tag for cachefiled. not sure if it's useful to have more than one.
@@ -7,6 +7,9 @@ const (
 	domainId = "styx"
 
 	dbFilename = "styx.bolt"
+
+	// agree with manifester.socket
+	socket = "styx.sock"
 
 	// TODO: eventually these can be configurable but let's fix them for now for simplicity
 	blockShift = 12
