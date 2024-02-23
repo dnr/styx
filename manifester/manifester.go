@@ -29,9 +29,17 @@ import (
 	"github.com/dnr/styx/pb"
 )
 
+const (
+	defaultTailCutoff = 480
+	defaultChunkSize  = 1 << 16
+	defaultHashAlgo   = "sha256"
+	defaultHashBits   = 192
+)
+
 type (
 	server struct {
-		cfg *Config
+		cfg           *Config
+		builderParams builderParams
 
 		s3cache *s3manager.Uploader
 	}
@@ -66,7 +74,12 @@ func ManifestServer(cfg Config) *server {
 	}
 
 	return &server{
-		cfg:     &cfg,
+		cfg: &cfg,
+		builderParams: builderParams{
+			tailCutoff: defaultTailCutoff,
+			chunkSize:  defaultChunkSize,
+			hashBits:   defaultHashBits,
+		},
 		s3cache: s3cache,
 	}
 }
@@ -189,7 +202,7 @@ func (s *server) handleManifest(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	manifest, err := s.buildManifest(io.TeeReader(narOut, narHasher))
+	manifest, err := s.buildManifest(io.TeeReader(narOut, narHasher), s.builderParams)
 	if err != nil {
 		log.Println("manifest generation error", err)
 		w.WriteHeader(http.StatusInternalServerError)

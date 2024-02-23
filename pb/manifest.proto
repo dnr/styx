@@ -36,14 +36,13 @@ message SignedManifest {
 message Entry {
   string path = 1;         // Path of the file entry, relative inside the NAR
   EntryType type = 2;      // Typeflag is the type of header entry.
-  string link_target = 3;  // Target of symlink (valid for SYMLINK)
-  int64 size = 4;          // Logical file size in bytes
-  bool executable = 5;     // Set to true for files that are executable
+  int64 size = 3;          // Logical file size in bytes
+  bool executable = 4;     // Set to true for files that are executable
   // For REGULAR and SYMLINK:
   // If size <= tail_cutoff || type == SYMLINK, data is here:
-  bytes tail_data = 6;
+  bytes tail_data = 5;
   // Otherwise, this is a series of concatenated digests, one per chunk:
-  bytes digests = 7;
+  bytes digests = 6;
 }
 
 message ManifestMeta {
