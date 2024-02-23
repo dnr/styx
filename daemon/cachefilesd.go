@@ -2,9 +2,12 @@ package daemon
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
+	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"path"
@@ -49,6 +52,56 @@ func (s *server) openDb() (err error) {
 	return
 }
 
+func (s *server) startSocketServer() (err error) {
+	socketPath := path.Join(s.cfg.CachePath, Socket)
+	l, err := net.ListenUnix("unix", &net.UnixAddr{Net: "unix", Name: socketPath})
+	if err != nil {
+		return err
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/mount", s.handleMountReq)
+	mux.HandleFunc("/umount", s.handleUmountReq)
+	mux.HandleFunc("/delete", s.handleDeleteReq)
+	go http.Serve(l, mux)
+	return nil
+}
+
+func (s *server) handleMountReq(out http.ResponseWriter, req *http.Request) {
+	var r MountReq
+	var res MountResp
+	if err := json.NewDecoder(req.Body).Decode(&r); err != nil {
+		out.WriteHeader(http.StatusBadRequest)
+	}
+
+	// TODO
+
+	json.NewEncoder(out).Encode(res)
+}
+
+func (s *server) handleUmountReq(out http.ResponseWriter, req *http.Request) {
+	var r UmountReq
+	var res UmountResp
+	if err := json.NewDecoder(req.Body).Decode(&r); err != nil {
+		out.WriteHeader(http.StatusBadRequest)
+	}
+
+	// TODO
+
+	json.NewEncoder(out).Encode(res)
+}
+
+func (s *server) handleDeleteReq(out http.ResponseWriter, req *http.Request) {
+	var r DeleteReq
+	var res DeleteResp
+	if err := json.NewDecoder(req.Body).Decode(&r); err != nil {
+		out.WriteHeader(http.StatusBadRequest)
+	}
+
+	// TODO
+
+	json.NewEncoder(out).Encode(res)
+}
+
 func (s *server) setupEnv() error {
 	err := exec.Command("modprobe", "cachefiles").Run()
 	if err != nil {
@@ -76,6 +129,10 @@ func (s *server) Run() error {
 
 	devnode, err := s.openDevNode()
 	if err != nil {
+		return err
+	}
+
+	if err = s.startSocketServer(); err != nil {
 		return err
 	}
 

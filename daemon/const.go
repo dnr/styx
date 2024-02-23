@@ -8,9 +8,6 @@ const (
 
 	dbFilename = "styx.bolt"
 
-	// agree with manifester.socket
-	socket = "styx.sock"
-
 	// TODO: eventually these can be configurable but let's fix them for now for simplicity
 	blockShift = 12
 	blockSize  = 1 << blockShift
