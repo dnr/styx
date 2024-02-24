@@ -7,7 +7,6 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"hash"
 	"hash/crc32"
 	"io"
 	"math"
@@ -21,11 +20,10 @@ import (
 
 type (
 	builder struct {
-		err error
-		nar *nar.Reader
-		hsh hash.Hash
-		out io.Writer
+		p builderParams
+	}
 
+	builderParams struct {
 		blk blkshift
 	}
 
@@ -53,18 +51,17 @@ type (
 	}
 )
 
-func NewBuilder(r io.Reader, out io.Writer) *builder {
-	hsh := sha256.New()
-	nr, err := nar.NewReader(io.TeeReader(r, hsh))
-	if err != nil {
-		return &builder{err: err}
-	}
-	return &builder{nar: nr, hsh: hsh, out: out, blk: blkshift(12)}
+func NewBuilder() *builder {
+	return &builder{p: builderParams{
+		blk: blkshift(12),
+	}}
 }
 
-func (b *builder) Build() error {
-	if b.err != nil {
-		return b.err
+func (b *builder) BuildFromNar(r io.Reader, out io.Writer) error {
+	narHasher := sha256.New()
+	nr, err := nar.NewReader(io.TeeReader(r, narHasher))
+	if err != nil {
+		return err
 	}
 
 	const inodeshift = blkshift(5)
@@ -81,10 +78,10 @@ func (b *builder) Build() error {
 
 	allowedTail := func(tail int64) bool {
 		// tail has to fit in a block with the inode
-		return tail > 0 && tail <= b.blk.size()-inodesize
+		return tail > 0 && tail <= b.p.blk.size()-inodesize
 	}
 	setDataOnInode := func(i *inodebuilder, data []byte) {
-		tail := b.blk.leftover(int64(len(data)))
+		tail := b.p.blk.leftover(int64(len(data)))
 		i.i.ISize = truncU32(len(data))
 		if !allowedTail(tail) {
 			tail = 0
@@ -103,7 +100,7 @@ func (b *builder) Build() error {
 	// pass 1: read nar
 
 	for {
-		h, err := b.nar.Next()
+		h, err := nr.Next()
 		if err == io.EOF {
 			break
 		} else if err != nil {
@@ -154,7 +151,7 @@ func (b *builder) Build() error {
 				if h.Size > math.MaxUint32 {
 					return fmt.Errorf("TODO: support larger files with extended inode")
 				}
-				data, err := readFullFromNar(b.nar, h)
+				data, err := readFullFromNar(nr, h)
 				if err != nil {
 					return err
 				}
@@ -191,10 +188,10 @@ func (b *builder) Build() error {
 	// pass 2: pack inodes and tails
 
 	// 2.1: directory sizes
-	dummy := make([]byte, b.blk.size())
+	dummy := make([]byte, b.p.blk.size())
 	for _, db := range dirs {
-		db.sortAndSize(b.blk)
-		tail := b.blk.leftover(db.size)
+		db.sortAndSize(b.p.blk)
+		tail := b.p.blk.leftover(db.size)
 		if !allowedTail(tail) {
 			tail = 0
 		}
@@ -206,23 +203,23 @@ func (b *builder) Build() error {
 	// all inodes have correct len(taildata)
 	// files have correct taildata but dirs do not
 
-	inodebase := max(4096, b.blk.size())
+	inodebase := max(4096, b.p.blk.size())
 
 	// 2.2: lay out inodes and tails
 	// using greedy for now. TODO: use best fit or something
 	p := int64(0) // position relative to metadata area
-	remaining := b.blk.size()
+	remaining := b.p.blk.size()
 	for i, inode := range inodes {
 		need := inodesize + inodeshift.roundup(int64(len(inode.taildata)))
 		if need > remaining {
 			p += remaining
-			remaining = b.blk.size()
+			remaining = b.p.blk.size()
 		}
 		inodes[i].nid = truncU64(p >> inodeshift)
 		p += need
 		remaining -= need
 	}
-	if remaining < b.blk.size() {
+	if remaining < b.p.blk.size() {
 		p += remaining
 	}
 
@@ -232,7 +229,7 @@ func (b *builder) Build() error {
 	// 2.3: write actual dirs to buffers
 	for _, db := range dirs {
 		var buf bytes.Buffer
-		db.write(&buf, b.blk)
+		db.write(&buf, b.p.blk)
 		if int64(buf.Len()) != db.size {
 			panic("oops, bug")
 		}
@@ -247,8 +244,8 @@ func (b *builder) Build() error {
 
 	// 2.4: lay out full blocks
 	for _, data := range datablocks {
-		data.i.i.IU = truncU32(p >> b.blk)
-		p += b.blk.roundup(int64(len(data.data)))
+		data.i.i.IU = truncU32(p >> b.p.blk)
+		p += b.p.blk.roundup(int64(len(data.data)))
 	}
 	fmt.Printf("final calculated size %d\n", p)
 
@@ -260,13 +257,13 @@ func (b *builder) Build() error {
 	// 3.1: fill in super
 	super := erofs_super_block{
 		Magic:       0xE0F5E1E2,
-		BlkSzBits:   truncU8(b.blk),
+		BlkSzBits:   truncU8(b.p.blk),
 		RootNid:     truncU16(root.nid),
 		Inos:        truncU64(len(inodes)),
-		Blocks:      truncU32(p >> b.blk),
-		MetaBlkAddr: truncU32(inodebase >> b.blk),
+		Blocks:      truncU32(p >> b.p.blk),
+		MetaBlkAddr: truncU32(inodebase >> b.p.blk),
 	}
-	narhash := b.hsh.Sum(nil)
+	narhash := narHasher.Sum(nil)
 	copy(super.Uuid[:], narhash)
 	copy(super.VolumeName[:], "styx-"+base64.RawURLEncoding.EncodeToString(narhash)[:10])
 
@@ -274,29 +271,29 @@ func (b *builder) Build() error {
 	pack(c, &super)
 	super.Checksum = c.Sum32()
 
-	pad(b.out, EROFS_SUPER_OFFSET)
-	pack(b.out, &super)
-	pad(b.out, inodebase-EROFS_SUPER_OFFSET-128)
+	pad(out, EROFS_SUPER_OFFSET)
+	pack(out, &super)
+	pad(out, inodebase-EROFS_SUPER_OFFSET-128)
 
 	// 3.2: inodes and tails
-	remaining = b.blk.size()
+	remaining = b.p.blk.size()
 	for _, i := range inodes {
 		need := inodesize + inodeshift.roundup(int64(len(i.taildata)))
 		if need > remaining {
-			pad(b.out, remaining)
-			remaining = b.blk.size()
+			pad(out, remaining)
+			remaining = b.p.blk.size()
 		}
-		pack(b.out, i.i)
-		writeAndPad(b.out, i.taildata, inodeshift)
+		pack(out, i.i)
+		writeAndPad(out, i.taildata, inodeshift)
 		remaining -= need
 	}
-	if remaining < b.blk.size() {
-		pad(b.out, remaining)
+	if remaining < b.p.blk.size() {
+		pad(out, remaining)
 	}
 
 	// 3.4: full blocks
 	for _, data := range datablocks {
-		writeAndPad(b.out, data.data, b.blk)
+		writeAndPad(out, data.data, b.p.blk)
 	}
 
 	return nil

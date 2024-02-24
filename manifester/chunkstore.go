@@ -14,8 +14,14 @@ import (
 )
 
 type (
-	chunkStore interface {
+	ChunkStore interface {
 		PutIfNotExists(ctx context.Context, key string, data func() []byte) error
+	}
+
+	ChunkStoreConfig struct {
+		// One of these is required:
+		ChunkBucket   string
+		ChunkLocalDir string
 	}
 
 	localDirChunkStore struct {
@@ -41,13 +47,17 @@ func (l *localDirChunkStore) PutIfNotExists(ctx context.Context, key string, dat
 		return nil
 	}
 	d := data()
-	tmpfn := fn + ".tmp"
-	if err := os.WriteFile(tmpfn, d, 0644); err != nil {
-		_ = os.Remove(tmpfn)
+	if out, err := os.CreateTemp(l.dir, key+".tmp*"); err != nil {
 		return err
-	}
-	if err := os.Rename(tmpfn, fn); err != nil {
-		_ = os.Remove(tmpfn)
+	} else if n, err := out.Write(d); err != nil || n != len(d) {
+		_ = out.Close()
+		_ = os.Remove(out.Name())
+		return err
+	} else if err := out.Close(); err != nil {
+		_ = os.Remove(out.Name())
+		return err
+	} else if err := os.Rename(out.Name(), fn); err != nil {
+		_ = os.Remove(out.Name())
 		return err
 	}
 	return nil
@@ -87,7 +97,7 @@ func (s *s3ChunkStore) PutIfNotExists(ctx context.Context, key string, data func
 	return err
 }
 
-func makeChunkStore(cfg *Config) (chunkStore, error) {
+func NewChunkStore(cfg ChunkStoreConfig) (ChunkStore, error) {
 	if len(cfg.ChunkLocalDir) > 0 {
 		return newLocalDirChunkStore(cfg.ChunkLocalDir)
 	} else if len(cfg.ChunkBucket) > 0 {

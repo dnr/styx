@@ -19,7 +19,6 @@ import (
 	"github.com/nix-community/go-nix/pkg/narinfo"
 	"github.com/nix-community/go-nix/pkg/narinfo/signature"
 	"golang.org/x/exp/slices"
-	"golang.org/x/sync/semaphore"
 	"google.golang.org/protobuf/proto"
 
 	"github.com/dnr/styx/common"
@@ -35,22 +34,16 @@ const (
 
 type (
 	server struct {
-		cfg           *Config
-		builderParams builderParams
-
-		cs       chunkStore
-		chunksem *semaphore.Weighted
-		chunkenc *zstd.Encoder
+		cfg *Config
+		mb  *ManifestBuilder
 	}
 
 	Config struct {
-		Bind string
-
+		Bind             string
 		AllowedUpstreams []string
 
-		// One of these is required:
-		ChunkBucket   string
-		ChunkLocalDir string
+		ChunkStore      ChunkStoreConfig
+		ManifestBuilder ManifestBuilderConfig
 
 		// Verify loaded narinfo against these keys. Nil means don't verify.
 		PublicKeys []signature.PublicKey
@@ -60,27 +53,17 @@ type (
 )
 
 func ManifestServer(cfg Config) (*server, error) {
-	cs, err := makeChunkStore(&cfg)
+	cs, err := NewChunkStore(cfg.ChunkStore)
 	if err != nil {
 		return nil, err
 	}
-	chunkenc, err := zstd.NewWriter(nil,
-		zstd.WithEncoderLevel(zstd.SpeedBestCompression),
-		zstd.WithEncoderCRC(false),
-	)
+	mb, err := NewManifestBuilder(cfg.ManifestBuilder, cs)
 	if err != nil {
 		return nil, err
 	}
 	return &server{
 		cfg: &cfg,
-		builderParams: builderParams{
-			tailCutoff: defaultTailCutoff,
-			chunkSize:  defaultChunkSize,
-			hashBits:   defaultHashBits,
-		},
-		cs:       cs,
-		chunksem: semaphore.NewWeighted(50),
-		chunkenc: chunkenc,
+		mb:  mb,
 	}, nil
 }
 
@@ -202,7 +185,7 @@ func (s *server) handleManifest(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	manifest, err := s.buildManifest(req.Context(), io.TeeReader(narOut, narHasher), s.builderParams)
+	manifest, err := s.mb.Build(req.Context(), io.TeeReader(narOut, narHasher))
 	if err != nil {
 		log.Println("manifest generation error", err)
 		w.WriteHeader(http.StatusInternalServerError)

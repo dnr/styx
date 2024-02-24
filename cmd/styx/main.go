@@ -24,23 +24,27 @@ func main() {
 		return daemon.CachefilesServer(dcfg).Run()
 	}
 
+	var cscfg manifester.ChunkStoreConfig
+	csflags := func(c *cobra.Command) {
+		c.Flags().StringVar(&cscfg.ChunkBucket, "chunkbucket", "", "s3 bucket to put chunks and cached manifests")
+		c.Flags().StringVar(&cscfg.ChunkLocalDir, "chunklocaldir", "", "local directory to put chunks")
+	}
+
 	manifesterCmd := &cobra.Command{
 		Use:   "manifester",
 		Short: "act as manifester server",
 	}
 	var mcfg manifester.Config
-
 	manifesterCmd.Flags().StringVar(&mcfg.Bind, "bind", ":7420", "address to listen on")
 	manifesterCmd.Flags().StringArrayVar(&mcfg.AllowedUpstreams, "allowed-upstream", []string{"cache.nixos.org"}, "allowed upstream binary caches")
-	manifesterCmd.Flags().StringVar(&mcfg.ChunkBucket, "chunkbucket", "",
-		"s3 bucket to put chunks and cached manifests")
-	manifesterCmd.Flags().StringVar(&mcfg.ChunkLocalDir, "chunklocaldir", "", "local directory to put chunks")
+	csflags(manifesterCmd)
 	pubkeys := manifesterCmd.Flags().StringArray("pubkey",
 		[]string{"cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY="},
 		"verify narinfo with this public key")
 	signkeys := manifesterCmd.Flags().StringArray("signkey", nil, "sign manifest with key from this file")
 
 	manifesterCmd.RunE = func(c *cobra.Command, args []string) error {
+		mcfg.ChunkStore = cscfg
 		for _, pk := range *pubkeys {
 			if k, err := signature.ParsePublicKey(pk); err != nil {
 				return err
@@ -57,7 +61,11 @@ func main() {
 				mcfg.SigningKeys = append(mcfg.SigningKeys, k)
 			}
 		}
-		return manifester.ManifestServer(mcfg).Run()
+		m, err := manifester.ManifestServer(mcfg)
+		if err != nil {
+			return err
+		}
+		return m.Run()
 	}
 
 	clientCmd := &cobra.Command{
@@ -83,6 +91,23 @@ func main() {
 			RunE:  debugNarToErofs,
 		},
 	)
+	nartomanifestCmd := &cobra.Command{
+		Use:   "nartomanifest <nar file> <manifest>",
+		Short: "create a manifest from a nar file",
+		Args:  cobra.ExactArgs(2),
+		RunE:  func(c *cobra.Command, args []string) error { return debugNarToManifest(c, args, cscfg) },
+	}
+	csflags(nartomanifestCmd)
+	debugCmd.AddCommand(nartomanifestCmd)
+
+	// debugCmd.AddCommand(
+	// 	&cobra.Command{
+	// 		Use:   "manifesttoerofs <manifest> <erofs image>",
+	// 		Short: "create a manifest from a nar file",
+	// 		Args:  cobra.ExactArgs(2),
+	// 		RunE:  debugManifestErofs,
+	// 	},
+	// )
 
 	root := &cobra.Command{
 		Use:   "styx",
