@@ -1,6 +1,7 @@
 package manifester
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/base64"
 	"errors"
@@ -18,7 +19,7 @@ type (
 	}
 )
 
-func (s *server) buildManifest(r io.Reader, params builderParams) (*pb.Manifest, error) {
+func (s *server) buildManifest(ctx context.Context, r io.Reader, params builderParams) (*pb.Manifest, error) {
 	m := &pb.Manifest{
 		TailCutoff: int32(params.tailCutoff),
 		ChunkSize:  int32(params.chunkSize),
@@ -76,7 +77,7 @@ func (s *server) buildManifest(r io.Reader, params builderParams) (*pb.Manifest,
 				e.Digests = make([]byte, nChunks*(params.hashBits>>3))
 				expected += nChunks
 				for i := 0; i < nChunks; i++ {
-					go s.handleChunk(params, data, e.Digests, i, errC)
+					go s.handleChunk(ctx, params, data, e.Digests, i, errC)
 				}
 			}
 
@@ -103,23 +104,23 @@ func (s *server) buildManifest(r io.Reader, params builderParams) (*pb.Manifest,
 	return m, nil
 }
 
-func (s *server) handleChunk(params builderParams, data, digests []byte, i int, errC chan<- error) {
-	// TODO: semaphore
+func (s *server) handleChunk(ctx context.Context, params builderParams, data, digests []byte, i int, errC chan<- error) {
+	s.chunksem.Acquire(ctx, 1)
+	defer s.chunksem.Release(1)
 
 	start := i * params.chunkSize
 	end := min(start+params.chunkSize, len(data))
 	chunk := data[start:end]
 
-	hsh := sha256.New()
-	hsh.Write(chunk)
+	h := sha256.New()
+	h.Write(chunk)
 	offset := i * params.hashBits >> 3
-	digest := hsh.Sum(digests[offset:offset])
+	digest := h.Sum(digests[offset:offset])
 	digeststr := base64.RawURLEncoding.EncodeToString(digest)
 
-	// TODO: look up digest in store, if present return
-	// TODO: if not, compress + write to store
-
-	errC <- nil
+	errC <- s.cs.PutIfNotExists(ctx, digeststr, func() []byte {
+		return s.chunkenc.EncodeAll(chunk, nil)
+	})
 }
 
 func readFullFromNar(nr *nar.Reader, h *nar.Header) ([]byte, error) {

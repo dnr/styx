@@ -2,7 +2,6 @@ package manifester
 
 import (
 	"bytes"
-	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -15,14 +14,12 @@ import (
 	"os/exec"
 	"time"
 
-	awsconfig "github.com/aws/aws-sdk-go-v2/config"
-	s3manager "github.com/aws/aws-sdk-go-v2/feature/s3/manager"
-	s3 "github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/klauspost/compress/zstd"
 	"github.com/nix-community/go-nix/pkg/hash"
 	"github.com/nix-community/go-nix/pkg/narinfo"
 	"github.com/nix-community/go-nix/pkg/narinfo/signature"
 	"golang.org/x/exp/slices"
+	"golang.org/x/sync/semaphore"
 	"google.golang.org/protobuf/proto"
 
 	"github.com/dnr/styx/common"
@@ -41,7 +38,9 @@ type (
 		cfg           *Config
 		builderParams builderParams
 
-		s3cache *s3manager.Uploader
+		cs       chunkStore
+		chunksem *semaphore.Weighted
+		chunkenc *zstd.Encoder
 	}
 
 	Config struct {
@@ -60,19 +59,18 @@ type (
 	}
 )
 
-func ManifestServer(cfg Config) *server {
-	var s3cache *s3manager.Uploader
-	if len(cfg.ChunkBucket) > 0 {
-		if awscfg, err := awsconfig.LoadDefaultConfig(context.Background()); err == nil {
-			s3client := s3.NewFromConfig(awscfg, func(o *s3.Options) {
-				o.EndpointOptions.DisableHTTPS = true
-			})
-			s3cache = s3manager.NewUploader(s3client)
-		} else {
-			log.Print("error getting aws config: ", err)
-		}
+func ManifestServer(cfg Config) (*server, error) {
+	cs, err := makeChunkStore(&cfg)
+	if err != nil {
+		return nil, err
 	}
-
+	chunkenc, err := zstd.NewWriter(nil,
+		zstd.WithEncoderLevel(zstd.SpeedBestCompression),
+		zstd.WithEncoderCRC(false),
+	)
+	if err != nil {
+		return nil, err
+	}
 	return &server{
 		cfg: &cfg,
 		builderParams: builderParams{
@@ -80,8 +78,10 @@ func ManifestServer(cfg Config) *server {
 			chunkSize:  defaultChunkSize,
 			hashBits:   defaultHashBits,
 		},
-		s3cache: s3cache,
-	}
+		cs:       cs,
+		chunksem: semaphore.NewWeighted(50),
+		chunkenc: chunkenc,
+	}, nil
 }
 
 func (s *server) validateManifestReq(r *ManifestReq) error {
@@ -202,7 +202,7 @@ func (s *server) handleManifest(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	manifest, err := s.buildManifest(io.TeeReader(narOut, narHasher), s.builderParams)
+	manifest, err := s.buildManifest(req.Context(), io.TeeReader(narOut, narHasher), s.builderParams)
 	if err != nil {
 		log.Println("manifest generation error", err)
 		w.WriteHeader(http.StatusInternalServerError)
@@ -265,6 +265,8 @@ func (s *server) handleManifest(w http.ResponseWriter, req *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
+
+	// TODO: write manifest itself to s3 also keyed by input
 
 	zw, err := zstd.NewWriter(w)
 	if err != nil {
