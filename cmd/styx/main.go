@@ -75,12 +75,13 @@ func withDaemonConfig(c *cobra.Command) runE {
 
 	c.Flags().StringVar(&cfg.DevPath, "devpath", "/dev/cachefiles", "path to cachefiles device node")
 	c.Flags().StringVar(&cfg.CachePath, "cache", "/var/cache/styx", "path to local cache (also socket and db)")
-	c.Flags().StringVar(&cfg.ManifesterUrl, "manifester", "", "url to manifester service")
+	c.Flags().StringVar(&cfg.Upstream, "upstream", "cache.nixos.org", "upstream cache to ask manifester for")
+	c.Flags().StringVar(&cfg.ManifesterUrl, "manifester", "localhost:7420", "url to manifester service")
 
 	return chainRunE(
 		withChunkStoreRead(c),
 		func(c *cobra.Command, args []string) error {
-			cfg.ChunkStoreRead = c.Context().Value(ctxChunkStoreWrite).(manifester.ChunkStoreRead)
+			cfg.ChunkStoreRead = c.Context().Value(ctxChunkStoreRead).(manifester.ChunkStoreRead)
 			c.SetContext(context.WithValue(c.Context(), ctxDaemonConfig, cfg))
 			return nil
 		},

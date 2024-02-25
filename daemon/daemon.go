@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
@@ -9,9 +10,11 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path"
+	"strings"
 	"sync"
 	"time"
 
@@ -25,15 +28,18 @@ import (
 
 type (
 	server struct {
-		cfg  *Config
-		db   *bbolt.DB
-		pool *sync.Pool
+		cfg     *Config
+		db      *bbolt.DB
+		pool    *sync.Pool
+		builder *erofs.Builder
+		devnode int
 	}
 
 	Config struct {
 		DevPath   string
 		CachePath string
 
+		Upstream       string
 		ManifesterUrl  string
 		ChunkStoreRead manifester.ChunkStoreRead
 	}
@@ -43,8 +49,9 @@ var _ erofs.SlabManager = (*server)(nil)
 
 func CachefilesServer(cfg Config) *server {
 	return &server{
-		cfg:  &cfg,
-		pool: &sync.Pool{New: func() any { return make([]byte, CACHEFILES_MSG_MAX_SIZE) }},
+		cfg:     &cfg,
+		pool:    &sync.Pool{New: func() any { return make([]byte, CACHEFILES_MSG_MAX_SIZE) }},
+		builder: erofs.NewBuilder(),
 	}
 }
 
@@ -69,6 +76,7 @@ func (s *server) openDb() (err error) {
 
 func (s *server) startSocketServer() (err error) {
 	socketPath := path.Join(s.cfg.CachePath, Socket)
+	os.Remove(socketPath)
 	l, err := net.ListenUnix("unix", &net.UnixAddr{Net: "unix", Name: socketPath})
 	if err != nil {
 		return err
@@ -125,11 +133,11 @@ func (s *server) setupEnv() error {
 	return os.MkdirAll(s.cfg.CachePath, 0755)
 }
 
-func (s *server) openDevNode() (devnode int, err error) {
-	devnode, err = unix.Open(s.cfg.DevPath, unix.O_RDWR, 0600)
+func (s *server) openDevNode() (err error) {
+	s.devnode, err = unix.Open(s.cfg.DevPath, unix.O_RDWR, 0600)
 	if err == unix.ENOENT {
 		_ = unix.Mknod(s.cfg.DevPath, 0600|unix.S_IFCHR, 10*256+122)
-		devnode, err = unix.Open(s.cfg.DevPath, unix.O_RDWR, 0600)
+		s.devnode, err = unix.Open(s.cfg.DevPath, unix.O_RDWR, 0600)
 	}
 	return
 }
@@ -142,7 +150,7 @@ func (s *server) Run() error {
 		return err
 	}
 
-	devnode, err := s.openDevNode()
+	err := s.openDevNode()
 	if err != nil {
 		return err
 	}
@@ -151,11 +159,11 @@ func (s *server) Run() error {
 		return err
 	}
 
-	if _, err = unix.Write(devnode, []byte("dir "+s.cfg.CachePath)); err != nil {
+	if _, err = unix.Write(s.devnode, []byte("dir "+s.cfg.CachePath)); err != nil {
 		return err
-	} else if _, err = unix.Write(devnode, []byte("tag "+cacheTag)); err != nil {
+	} else if _, err = unix.Write(s.devnode, []byte("tag "+cacheTag)); err != nil {
 		return err
-	} else if _, err = unix.Write(devnode, []byte("bind ondemand")); err != nil {
+	} else if _, err = unix.Write(s.devnode, []byte("bind ondemand")); err != nil {
 		return err
 	}
 
@@ -166,7 +174,7 @@ func (s *server) Run() error {
 			// we might be spinning somehow, slow down
 			time.Sleep(time.Duration(errors) * time.Millisecond)
 		}
-		fds[0] = unix.PollFd{Fd: int32(devnode), Events: unix.POLLIN}
+		fds[0] = unix.PollFd{Fd: int32(s.devnode), Events: unix.POLLIN}
 		n, err := unix.Poll(fds, 3600*1000)
 		if err != nil {
 			log.Printf("error from poll: %v", err)
@@ -177,7 +185,7 @@ func (s *server) Run() error {
 			continue
 		}
 		buf := s.pool.Get().([]byte)
-		n, err = unix.Read(devnode, buf)
+		n, err = unix.Read(s.devnode, buf)
 		if err != nil {
 			errors++
 			log.Printf("error from read: %v", err)
@@ -227,11 +235,91 @@ func (s *server) handleMessage(_buf []byte, _n int) (retErr error) {
 	}
 }
 
-func (s *server) handleOpen(msgId, objectId, fd, flags uint32, volume, cookie []byte) error {
+func (s *server) handleOpen(msgId, objectId, fd, flags uint32, volume, cookie []byte) (retErr error) {
 	// volume is "erofs,<domain_id>" (domain_id is same as fsid if not specified)
 	// cookie is "<fsid>"
 	log.Println("OPEN", msgId, objectId, fd, flags, string(volume), string(cookie))
-	panic("unimpl")
+
+	var cacheSize int64
+
+	defer func() {
+		if retErr != nil {
+			cacheSize = int64(unix.ENODEV)
+		}
+		log.Printf("reply to msg %d obj %d size %d", cacheSize)
+		reply := fmt.Sprintf("copen %d,%d", msgId, cacheSize)
+		if _, err := unix.Write(s.devnode, []byte(reply)); err != nil {
+			log.Println("failed write to devnode", err)
+		}
+	}()
+
+	if string(volume) != "erofs,"+domainId {
+		log.Printf("WRONG DOMAIN %q", domainId)
+		return fmt.Errorf("wrong domain %q", domainId)
+	}
+
+	// slab or manifest
+	cstr := string(cookie)
+	if strings.HasPrefix(cstr, "_slab_") {
+		log.Println("OPEN SLAB", cstr)
+		cacheSize, retErr = s.handleOpenSlab(msgId, objectId, fd, flags, cstr)
+	} else if len(cstr) == 32 {
+		log.Println("OPEN MANIFEST", cstr)
+		cacheSize, retErr = s.handleOpenManifest(msgId, objectId, fd, flags, cstr)
+	} else {
+		retErr = fmt.Errorf("bad fsid %q", cstr)
+	}
+	return
+}
+
+func (s *server) handleOpenSlab(msgId, objectId, fd, flags uint32, cookie string) (int64, error) {
+	return 0, errors.New("FIXME")
+}
+
+func (s *server) handleOpenManifest(msgId, objectId, fd, flags uint32, cookie string) (int64, error) {
+	// get manifest
+	u := url.URL{
+		Scheme: "http",
+		Host:   s.cfg.ManifesterUrl,
+		Path:   manifester.ManifestPath,
+	}
+	reqBytes, err := json.Marshal(manifester.ManifestReq{
+		Upstream:      s.cfg.Upstream,
+		StorePathHash: cookie,
+	})
+	if err != nil {
+		return 0, err
+	}
+	res, err := http.Post(u.String(), "application/json", bytes.NewReader(reqBytes))
+	if err != nil {
+		return 0, fmt.Errorf("manifester http error: %w", err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		return 0, fmt.Errorf("manifester http status: %s", res.Status)
+	}
+
+	// load manifest
+
+	var image bytes.Buffer
+	ctx := context.TODO()
+	err = s.builder.BuildFromManifestWithSlab(ctx, res.Body, &image, s)
+	if err != nil {
+		return 0, err
+	}
+	buf := image.Bytes()
+	size := len(buf)
+	off := int64(0)
+	for len(buf) > 0 {
+		n, err := unix.Pwrite(int(fd), buf, off)
+		if err != nil {
+			return 0, err
+		}
+		buf = buf[n:]
+		off += int64(n)
+	}
+
+	return int64(size), nil
 }
 
 func (s *server) handleClose(msgId, objectId uint32) error {
@@ -314,5 +402,5 @@ func (s *server) AllocateBatch(blocks []uint16, digests []byte) ([]erofs.SlabLoc
 }
 
 func (s *server) SlabInfo(slabId uint16) (tag string, totalBlocks uint32) {
-	return fmt.Sprintf("styx-slab-%d", slabId), slabSize
+	return fmt.Sprintf("_slab_%d", slabId), slabSize
 }

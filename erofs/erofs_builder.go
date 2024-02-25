@@ -26,7 +26,7 @@ import (
 )
 
 type (
-	builder struct {
+	Builder struct {
 		p builderParams
 	}
 
@@ -60,13 +60,13 @@ type (
 	}
 )
 
-func NewBuilder() *builder {
-	return &builder{p: builderParams{
-		blk: blkshift(12),
+func NewBuilder() *Builder {
+	return &Builder{p: builderParams{
+		blk: blkshift(12), // TODO: make configurable
 	}}
 }
 
-func (b *builder) BuildFromNar(r io.Reader, out io.Writer) error {
+func (b *Builder) BuildFromNar(r io.Reader, out io.Writer) error {
 	narHasher := sha256.New()
 	nr, err := nar.NewReader(io.TeeReader(r, narHasher))
 	if err != nil {
@@ -309,7 +309,7 @@ func (b *builder) BuildFromNar(r io.Reader, out io.Writer) error {
 }
 
 // embed data in image
-func (b *builder) BuildFromManifestEmbed(
+func (b *Builder) BuildFromManifestEmbed(
 	ctx context.Context,
 	r io.Reader,
 	out io.Writer,
@@ -585,7 +585,7 @@ func (b *builder) BuildFromManifestEmbed(
 }
 
 // put data in slabs
-func (b *builder) BuildFromManifestWithSlab(
+func (b *Builder) BuildFromManifestWithSlab(
 	ctx context.Context,
 	r io.Reader,
 	out io.Writer,

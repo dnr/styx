@@ -142,9 +142,9 @@ func (s *server) handleManifest(w http.ResponseWriter, req *http.Request) {
 	switch ni.Compression {
 	case "", "none":
 		decompress = nil
-	case ".xz":
+	case "xz":
 		decompress = exec.Command(common.XzBin, "-d")
-	case ".zst":
+	case "zst":
 		decompress = exec.Command(common.ZstdBin, "-d")
 	default:
 		log.Println("unknown compression:", ni.Compression, "for", narUrl)
