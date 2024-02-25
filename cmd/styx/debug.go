@@ -10,6 +10,7 @@ import (
 
 	"github.com/dnr/styx/erofs"
 	"github.com/dnr/styx/manifester"
+	"github.com/dnr/styx/pb"
 )
 
 func withInFile(c *cobra.Command, args []string) error {
@@ -70,9 +71,13 @@ func debugCmd() *cobra.Command {
 					return err
 				} else if mbytes, err := proto.Marshal(manifest); err != nil {
 					return err
+				} else if sbytes, err := proto.Marshal(&pb.SignedManifest{
+					Manifest: mbytes,
+				}); err != nil {
+					return err
 				} else if enc, err := zstd.NewWriter(out); err != nil {
 					return err
-				} else if n, err := enc.Write(mbytes); err != nil || n < len(mbytes) {
+				} else if n, err := enc.Write(sbytes); err != nil || n < len(sbytes) {
 					return err
 				} else {
 					return enc.Close()

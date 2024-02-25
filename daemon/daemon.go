@@ -317,7 +317,7 @@ func (s *server) handleOpenSlab(msgId, objectId, fd, flags uint32, id uint16) (i
 		tp:     typeSlab,
 		slabId: id,
 	}
-	return slabSize, nil
+	return slabBytes, nil
 }
 
 func (s *server) handleOpenImage(msgId, objectId, fd, flags uint32, cookie string) (int64, error) {
@@ -461,7 +461,7 @@ func (s *server) handleReadImage(state *openFileState, _, _ uint64) error {
 func (s *server) handleReadSlab(state *openFileState, ln, off uint64) error {
 	var digest [fHashBytes]byte
 
-	if ln > fBlockSize {
+	if ln > fChunkSize {
 		panic("got too big slab read")
 	}
 
@@ -474,10 +474,8 @@ func (s *server) handleReadSlab(state *openFileState, ln, off uint64) error {
 		target := addrKey(truncU32(off >> fBlockShift))
 		k, v := cur.Seek(target)
 		if k == nil {
-			log.Println("@@ initial seek nil")
 			k, v = cur.Last()
 		} else if !bytes.Equal(target, k) {
-			log.Println("@@ initial seek too far")
 			k, v = cur.Prev()
 		}
 		if k == nil {
@@ -486,7 +484,6 @@ func (s *server) handleReadSlab(state *openFileState, ln, off uint64) error {
 		// reset off so we write at the right place
 		off = uint64(addrFromKey(k)) << fBlockShift
 		copy(digest[:], v)
-		log.Println("@@ got something at", off, digest)
 		return nil
 	})
 	if err != nil {
@@ -510,7 +507,10 @@ func (s *server) handleReadSlab(state *openFileState, ln, off uint64) error {
 
 // slab manager
 
-const slabSize = 1 << (40 - 12)
+const (
+	slabBytes  = 1 << 40
+	slabBlocks = slabBytes >> 12
+)
 
 func slabKey(id uint16) []byte {
 	b := make([]byte, 2)
@@ -586,5 +586,5 @@ func (s *server) AllocateBatch(blocks []uint16, digests []byte) ([]erofs.SlabLoc
 }
 
 func (s *server) SlabInfo(slabId uint16) (tag string, totalBlocks uint32) {
-	return fmt.Sprintf("_slab_%d", slabId), slabSize
+	return fmt.Sprintf("_slab_%d", slabId), slabBlocks
 }

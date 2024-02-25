@@ -1,6 +1,8 @@
 package erofs
 
-import "fmt"
+import (
+	"fmt"
+)
 
 type (
 	SlabLoc struct {
@@ -18,7 +20,7 @@ type (
 )
 
 func NewDummySlabManager() *dummySlabManager {
-	d := dummySlabManager(0)
+	d := dummySlabManager(0x1234)
 	return &d
 }
 
@@ -27,9 +29,10 @@ func (d *dummySlabManager) VerifyParams(hashBytes, blockSize, chunkSize int) err
 }
 
 func (d *dummySlabManager) AllocateBatch(blocks []uint16, digests []byte) ([]SlabLoc, error) {
-	n := len(blocks)
-	out := make([]SlabLoc, n)
+	out := make([]SlabLoc, len(blocks))
 	for i := range out {
+		// digest := digests[i*24 : (i+1)*24]
+		// log.Printf("allocating chunk len %d, digest %q", blocks[i], digest)
 		out[i].Addr = *(*uint32)(d)
 		(*d)++
 	}

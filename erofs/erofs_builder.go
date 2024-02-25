@@ -688,58 +688,54 @@ func (b *Builder) BuildFromManifestWithSlab(
 			if e.Executable {
 				i.i.IMode = unix.S_IFREG | 0755
 			}
-			if e.Size > 0 {
-				var data []byte
-				if len(e.TailData) > 0 {
-					if int64(len(e.TailData)) != e.Size {
-						return fmt.Errorf("tail data size mismatch")
-					} else if !allowedTail(e.Size) {
-						return fmt.Errorf("tail too big")
-					}
-					data = e.TailData
-					setDataOnInode(i, data)
-				} else if len(e.Digests) > 0 {
-					if e.Size > math.MaxUint32 {
-						return fmt.Errorf("TODO: support larger files with extended inode")
-					}
-					i.i.ISize = truncU32(e.Size)
-					// TODO: get chunk size in blkshift and use roundup
-					nChunks := (e.Size + int64(m.ChunkSize) - 1) / int64(m.ChunkSize)
-					if int64(len(e.Digests)) != nChunks*hashBytes {
-						return fmt.Errorf("digest list wrong size")
-					}
-					blocks := make([]uint16, nChunks)
-					allButLast := truncU16(m.ChunkSize >> b.p.blk)
-					for j := range blocks {
-						blocks[j] = allButLast
-					}
-					// TODO: write this better
-					lastChunkLen := e.Size & int64(m.ChunkSize-1)
-					blocks[len(blocks)-1] = truncU16(b.p.blk.roundup(lastChunkLen) >> b.p.blk)
-					// TODO: do in larger batches
-					locs, err := sm.AllocateBatch(blocks, e.Digests)
-					if err != nil {
-						return err
-					}
-					i.i.IFormat = formatChunked
-					i.i.IU = chunkedIU
-					idxs := make([]erofs_inode_chunk_index, nChunks)
-					for i, loc := range locs {
-						devId, ok := slabmap[loc.SlabId]
-						if !ok {
-							devId = truncU16(len(slabmap))
-							slabmap[loc.SlabId] = devId
-						}
-						idxs[i].DeviceId = devId
-						idxs[i].BlkAddr = loc.Addr
-					}
-					if i.taildata, err = packToBytes(idxs); err != nil {
-						return err
-					}
-					i.taildataIsChunkIndex = true
-				} else {
-					return fmt.Errorf("non-zero size but no taildata or digests")
+			if len(e.TailData) > 0 {
+				if int64(len(e.TailData)) != e.Size {
+					return fmt.Errorf("tail data size mismatch")
+				} else if !allowedTail(e.Size) {
+					return fmt.Errorf("tail too big")
 				}
+				setDataOnInode(i, e.TailData)
+			} else if len(e.Digests) > 0 {
+				if e.Size > math.MaxUint32 {
+					return fmt.Errorf("TODO: support larger files with extended inode")
+				}
+				i.i.ISize = truncU32(e.Size)
+				// TODO: get chunk size in blkshift and use roundup
+				nChunks := (e.Size + int64(m.ChunkSize) - 1) / int64(m.ChunkSize)
+				if int64(len(e.Digests)) != nChunks*hashBytes {
+					return fmt.Errorf("digest list wrong size")
+				}
+				blocks := make([]uint16, nChunks)
+				allButLast := truncU16(m.ChunkSize >> b.p.blk)
+				for j := range blocks {
+					blocks[j] = allButLast
+				}
+				// TODO: write this better
+				lastChunkLen := e.Size & int64(m.ChunkSize-1)
+				blocks[len(blocks)-1] = truncU16(b.p.blk.roundup(lastChunkLen) >> b.p.blk)
+				// TODO: do in larger batches
+				locs, err := sm.AllocateBatch(blocks, e.Digests)
+				if err != nil {
+					return err
+				}
+				i.i.IFormat = formatChunked
+				i.i.IU = chunkedIU
+				idxs := make([]erofs_inode_chunk_index, nChunks)
+				for i, loc := range locs {
+					devId, ok := slabmap[loc.SlabId]
+					if !ok {
+						devId = truncU16(len(slabmap))
+						slabmap[loc.SlabId] = devId
+					}
+					idxs[i].DeviceId = devId
+					idxs[i].BlkAddr = loc.Addr
+				}
+				if i.taildata, err = packToBytes(idxs); err != nil {
+					return err
+				}
+				i.taildataIsChunkIndex = true
+			} else if e.Size > 0 {
+				return fmt.Errorf("non-zero size but no taildata or digests")
 			}
 
 		case pb.EntryType_SYMLINK:
@@ -1029,7 +1025,7 @@ func writeAndPad(out io.Writer, data []byte, shift blkshift) error {
 }
 
 func inodeChunkInfo(blkbits, chunkbits blkshift) (uint32, error) {
-	if chunkbits-blkbits > 31 {
+	if chunkbits-blkbits > EROFS_CHUNK_FORMAT_BLKBITS_MASK {
 		return 0, fmt.Errorf("chunk size too big")
 	}
 	b, err := packToBytes(erofs_inode_chunk_info{
