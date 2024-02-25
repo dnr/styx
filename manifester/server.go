@@ -42,8 +42,7 @@ type (
 		Bind             string
 		AllowedUpstreams []string
 
-		ChunkStore      ChunkStoreConfig
-		ManifestBuilder ManifestBuilderConfig
+		ManifestBuilder *ManifestBuilder
 
 		// Verify loaded narinfo against these keys. Nil means don't verify.
 		PublicKeys []signature.PublicKey
@@ -53,17 +52,9 @@ type (
 )
 
 func ManifestServer(cfg Config) (*server, error) {
-	cs, err := NewChunkStore(cfg.ChunkStore)
-	if err != nil {
-		return nil, err
-	}
-	mb, err := NewManifestBuilder(cfg.ManifestBuilder, cs)
-	if err != nil {
-		return nil, err
-	}
 	return &server{
 		cfg: &cfg,
-		mb:  mb,
+		mb:  cfg.ManifestBuilder,
 	}, nil
 }
 
