@@ -727,7 +727,7 @@ func (b *Builder) BuildFromManifestWithSlab(
 						devId = truncU16(len(slabmap))
 						slabmap[loc.SlabId] = devId
 					}
-					idxs[i].DeviceId = devId
+					idxs[i].DeviceId = devId + 1
 					idxs[i].BlkAddr = loc.Addr
 				}
 				if i.taildata, err = packToBytes(idxs); err != nil {
