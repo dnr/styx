@@ -5,11 +5,6 @@ package pb;
 
 option go_package = "github.com/dnr/styx/pb";
 
-// location is not defined in proto since it needs to be encoded deterministically.
-//   u16 BE slabid
-//   u32 BE block address
-
-
 // key: "meta"
 message DbMeta {
   int32 block_size = 1;
@@ -19,24 +14,16 @@ message DbMeta {
   int32 hash_bits = 4;
 }
 
-// key: "slabs" / "<u16 BE slabid>"
-message SlabInfo {
-  int64 next_chunk = 1;
-}
+// not proto:
+// key: "slab" / "<u16 BE slabid>" / "<u32 BE block address>"
+// value: "<hash bits of digest>"
+// bucket sequence holds next chunk
 
-// key: "digests" / "<hash_bits of digest>"
-message DigestInfo {
-  bytes location = 1;
-  int32 refcount = 2;
-}
+// not proto:
+// key: "chunk" / "<hash_bits of digest>"
+// value: "<u16 BE slab id> <u32 BE block address>"
 
-// key: "locs" / "<u16 BE slabid; u32 BE block_address>"
-message LocationInfo {
-  bytes digest = 1;
-  int64 path_id = 2;
+// key: "image" / "<store path hash>"
+message DbImage {
+  int64 size = 1;
 }
-
-// // key: "paths" / "<varint pathid>"
-// message PathInfo {
-//   // TBD
-// }

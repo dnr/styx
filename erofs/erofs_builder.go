@@ -596,9 +596,11 @@ func (b *Builder) BuildFromManifestWithSlab(
 	var m *pb.Manifest
 	if zr, err := zstd.NewReader(r); err != nil {
 		return err
-	} else if mbytes, err := io.ReadAll(zr); err != nil {
+	} else if sBytes, err := io.ReadAll(zr); err != nil {
 		return err
-	} else if m, err = unmarshalAs[pb.Manifest](mbytes); err != nil {
+	} else if signed, err := unmarshalAs[pb.SignedManifest](sBytes); err != nil {
+		return err
+	} else if m, err = unmarshalAs[pb.Manifest](signed.Manifest); err != nil {
 		return err
 	}
 
@@ -700,6 +702,7 @@ func (b *Builder) BuildFromManifestWithSlab(
 					if e.Size > math.MaxUint32 {
 						return fmt.Errorf("TODO: support larger files with extended inode")
 					}
+					i.i.ISize = truncU32(e.Size)
 					// TODO: get chunk size in blkshift and use roundup
 					nChunks := (e.Size + int64(m.ChunkSize) - 1) / int64(m.ChunkSize)
 					if int64(len(e.Digests)) != nChunks*hashBytes {

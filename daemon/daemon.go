@@ -3,10 +3,12 @@ package daemon
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -14,6 +16,7 @@ import (
 	"os"
 	"os/exec"
 	"path"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -21,9 +24,16 @@ import (
 	"github.com/lunixbochs/struc"
 	"go.etcd.io/bbolt"
 	"golang.org/x/sys/unix"
+	"google.golang.org/protobuf/proto"
 
 	"github.com/dnr/styx/erofs"
 	"github.com/dnr/styx/manifester"
+	"github.com/dnr/styx/pb"
+)
+
+const (
+	typeImage uint16 = iota
+	typeSlab
 )
 
 type (
@@ -33,6 +43,21 @@ type (
 		pool    *sync.Pool
 		builder *erofs.Builder
 		devnode int
+
+		lock       sync.Mutex
+		cacheState map[uint32]*openFileState // object id -> state
+	}
+
+	openFileState struct {
+		fd uint32
+		tp uint16
+
+		// for slabs
+		slabId uint16
+
+		// for images
+		imageData       []byte
+		hasWrittenImage bool
 	}
 
 	Config struct {
@@ -49,9 +74,10 @@ var _ erofs.SlabManager = (*server)(nil)
 
 func CachefilesServer(cfg Config) *server {
 	return &server{
-		cfg:     &cfg,
-		pool:    &sync.Pool{New: func() any { return make([]byte, CACHEFILES_MSG_MAX_SIZE) }},
-		builder: erofs.NewBuilder(),
+		cfg:        &cfg,
+		pool:       &sync.Pool{New: func() any { return make([]byte, CACHEFILES_MSG_MAX_SIZE) }},
+		builder:    erofs.NewBuilder(),
+		cacheState: make(map[uint32]*openFileState),
 	}
 }
 
@@ -68,6 +94,10 @@ func (s *server) openDb() (err error) {
 		if _, err := tx.CreateBucketIfNotExists(metaBucket); err != nil {
 			return err
 		} else if _, err = tx.CreateBucketIfNotExists(chunkBucket); err != nil {
+			return err
+		} else if _, err = tx.CreateBucketIfNotExists(slabBucket); err != nil {
+			return err
+		} else if _, err = tx.CreateBucketIfNotExists(imageBucket); err != nil {
 			return err
 		}
 		return nil
@@ -186,13 +216,16 @@ func (s *server) Run() error {
 		}
 		buf := s.pool.Get().([]byte)
 		n, err = unix.Read(s.devnode, buf)
+		// log.Printf("read from socket %d bytes into buf %d", n, len(buf))
 		if err != nil {
 			errors++
 			log.Printf("error from read: %v", err)
 			continue
 		}
 		errors = 0
-		go s.handleMessage(buf, n)
+		// TODO: figure out how to handle things concurrently
+		//go s.handleMessage(buf, n)
+		s.handleMessage(buf, n)
 	}
 	return nil
 }
@@ -238,45 +271,80 @@ func (s *server) handleMessage(_buf []byte, _n int) (retErr error) {
 func (s *server) handleOpen(msgId, objectId, fd, flags uint32, volume, cookie []byte) (retErr error) {
 	// volume is "erofs,<domain_id>" (domain_id is same as fsid if not specified)
 	// cookie is "<fsid>"
-	log.Println("OPEN", msgId, objectId, fd, flags, string(volume), string(cookie))
+	// log.Println("OPEN", msgId, objectId, fd, flags, volume, cookie)
 
 	var cacheSize int64
 
 	defer func() {
 		if retErr != nil {
-			cacheSize = int64(unix.ENODEV)
+			cacheSize = -int64(unix.ENODEV)
 		}
-		log.Printf("reply to msg %d obj %d size %d", cacheSize)
 		reply := fmt.Sprintf("copen %d,%d", msgId, cacheSize)
 		if _, err := unix.Write(s.devnode, []byte(reply)); err != nil {
 			log.Println("failed write to devnode", err)
 		}
 	}()
 
-	if string(volume) != "erofs,"+domainId {
-		log.Printf("WRONG DOMAIN %q", domainId)
-		return fmt.Errorf("wrong domain %q", domainId)
+	if string(volume) != "erofs,"+domainId+"\x00" {
+		return fmt.Errorf("wrong domain %q", volume)
 	}
 
 	// slab or manifest
 	cstr := string(cookie)
-	if strings.HasPrefix(cstr, "_slab_") {
-		log.Println("OPEN SLAB", cstr)
-		cacheSize, retErr = s.handleOpenSlab(msgId, objectId, fd, flags, cstr)
+	if strings.HasPrefix(cstr, slabPrefix) {
+		log.Println("OPEN SLAB", objectId, cstr)
+		slabId, err := strconv.Atoi(cstr[len(slabPrefix):])
+		if err != nil {
+			return err
+		}
+		cacheSize, retErr = s.handleOpenSlab(msgId, objectId, fd, flags, truncU16(slabId))
+		return
 	} else if len(cstr) == 32 {
-		log.Println("OPEN MANIFEST", cstr)
-		cacheSize, retErr = s.handleOpenManifest(msgId, objectId, fd, flags, cstr)
+		log.Println("OPEN IMAGE", objectId, cstr)
+		cacheSize, retErr = s.handleOpenImage(msgId, objectId, fd, flags, cstr)
+		return
 	} else {
-		retErr = fmt.Errorf("bad fsid %q", cstr)
+		return fmt.Errorf("bad fsid %q", cstr)
 	}
-	return
 }
 
-func (s *server) handleOpenSlab(msgId, objectId, fd, flags uint32, cookie string) (int64, error) {
-	return 0, errors.New("FIXME")
+func (s *server) handleOpenSlab(msgId, objectId, fd, flags uint32, id uint16) (int64, error) {
+	// record open state
+	s.lock.Lock()
+	defer s.lock.Unlock()
+	s.cacheState[objectId] = &openFileState{
+		fd:     fd,
+		tp:     typeSlab,
+		slabId: id,
+	}
+	return slabSize, nil
 }
 
-func (s *server) handleOpenManifest(msgId, objectId, fd, flags uint32, cookie string) (int64, error) {
+func (s *server) handleOpenImage(msgId, objectId, fd, flags uint32, cookie string) (int64, error) {
+	// check if we have this image
+	var size int64
+	err := s.db.Update(func(tx *bbolt.Tx) error {
+		if rec := tx.Bucket(imageBucket).Get([]byte(cookie)); rec != nil {
+			m, err := unmarshalAs[pb.DbImage](rec)
+			if err != nil {
+				return err
+			}
+			size = m.Size
+		}
+		return nil
+	})
+	if err != nil {
+		return 0, err
+	} else if size > 0 {
+		s.lock.Lock()
+		defer s.lock.Unlock()
+		s.cacheState[objectId] = &openFileState{
+			fd: fd,
+			tp: typeImage,
+		}
+		return size, nil
+	}
+
 	// get manifest
 	u := url.URL{
 		Scheme: "http",
@@ -299,37 +367,145 @@ func (s *server) handleOpenManifest(msgId, objectId, fd, flags uint32, cookie st
 		return 0, fmt.Errorf("manifester http status: %s", res.Status)
 	}
 
-	// load manifest
-
+	// transform manifest into image (allocate chunks)
 	var image bytes.Buffer
 	ctx := context.TODO()
 	err = s.builder.BuildFromManifestWithSlab(ctx, res.Body, &image, s)
 	if err != nil {
+		return 0, fmt.Errorf("build image error: %w", err)
+	}
+	size = int64(image.Len())
+
+	// record in db
+	err = s.db.Update(func(tx *bbolt.Tx) error {
+		buf, err := proto.Marshal(&pb.DbImage{Size: size})
+		if err != nil {
+			return err
+		}
+		return tx.Bucket(imageBucket).Put([]byte(cookie), buf)
+	})
+	if err != nil {
 		return 0, err
 	}
-	buf := image.Bytes()
-	size := len(buf)
+
+	// record open state
+	s.lock.Lock()
+	defer s.lock.Unlock()
+	s.cacheState[objectId] = &openFileState{
+		fd:        fd,
+		tp:        typeImage,
+		imageData: image.Bytes(),
+	}
+
+	return size, nil
+}
+
+func (s *server) handleClose(msgId, objectId uint32) error {
+	log.Println("CLOSE", objectId)
+	s.lock.Lock()
+	defer s.lock.Unlock()
+	delete(s.cacheState, objectId)
+	return nil
+}
+
+func (s *server) handleRead(msgId, objectId uint32, ln, off uint64) error {
+	s.lock.Lock()
+	state := s.cacheState[objectId]
+	s.lock.Unlock()
+
+	if state == nil {
+		panic("missing state")
+	}
+
+	defer func() {
+		_, _, e1 := unix.Syscall(unix.SYS_IOCTL, uintptr(state.fd), CACHEFILES_IOC_READ_COMPLETE, uintptr(msgId))
+		if e1 != 0 {
+			fmt.Errorf("ioctl error %d", e1)
+		}
+	}()
+
+	switch state.tp {
+	case typeImage:
+		log.Println("READ IMAGE", objectId, ln, off)
+		return s.handleReadImage(state, ln, off)
+	case typeSlab:
+		log.Println("READ SLAB", objectId, ln, off)
+		return s.handleReadSlab(state, ln, off)
+	default:
+		panic("bad state type")
+	}
+}
+
+func (s *server) handleReadImage(state *openFileState, _, _ uint64) error {
+	// always write whole thing
 	off := int64(0)
+	buf := state.imageData
 	for len(buf) > 0 {
-		n, err := unix.Pwrite(int(fd), buf, off)
+		// TODO: larger chunks?
+		toWrite := buf[:min(4096, len(buf))]
+		n, err := unix.Pwrite(int(state.fd), toWrite, off)
 		if err != nil {
-			return 0, err
+			return err
+		} else if n != len(toWrite) {
+			return io.ErrShortWrite
 		}
 		buf = buf[n:]
 		off += int64(n)
 	}
 
-	return int64(size), nil
+	// FIXME: delete imageData since we don't need it anymore
+
+	return nil
 }
 
-func (s *server) handleClose(msgId, objectId uint32) error {
-	log.Println("CLOSE", msgId, objectId)
-	panic("unimpl")
-}
+func (s *server) handleReadSlab(state *openFileState, ln, off uint64) error {
+	var digest [fHashBytes]byte
 
-func (s *server) handleRead(msgId, objectId uint32, ln, off uint64) error {
-	log.Println("READ", msgId, objectId, ln, off)
-	panic("unimpl")
+	if ln > fBlockSize {
+		panic("got too big slab read")
+	}
+
+	err := s.db.View(func(tx *bbolt.Tx) error {
+		sb := tx.Bucket(slabBucket).Bucket(slabKey(state.slabId))
+		if sb == nil {
+			return errors.New("missing slab bucket")
+		}
+		cur := sb.Cursor()
+		target := addrKey(truncU32(off >> fBlockShift))
+		k, v := cur.Seek(target)
+		if k == nil {
+			log.Println("@@ initial seek nil")
+			k, v = cur.Last()
+		} else if !bytes.Equal(target, k) {
+			log.Println("@@ initial seek too far")
+			k, v = cur.Prev()
+		}
+		if k == nil {
+			return errors.New("ran off start of bucket")
+		}
+		// reset off so we write at the right place
+		off = uint64(addrFromKey(k)) << fBlockShift
+		copy(digest[:], v)
+		log.Println("@@ got something at", off, digest)
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+
+	ctx := context.TODO()
+	data, err := s.cfg.ChunkStoreRead.Get(ctx, base64.RawURLEncoding.EncodeToString(digest[:]))
+	if err != nil {
+		return err
+	}
+
+	n, err := unix.Pwrite(int(state.fd), data, int64(off))
+	if err != nil {
+		return err
+	} else if n != int(ln) {
+		return io.ErrShortWrite
+	}
+	return nil
 }
 
 // slab manager
@@ -348,6 +524,10 @@ func addrKey(addr uint32) []byte {
 	return b
 }
 
+func addrFromKey(b []byte) uint32 {
+	return binary.BigEndian.Uint32(b)
+}
+
 func locValue(id uint16, addr uint32) []byte {
 	loc := make([]byte, 6)
 	binary.LittleEndian.PutUint16(loc, id)
@@ -360,7 +540,7 @@ func loadLoc(b []byte) (id uint16, addr uint32) {
 }
 
 func (s *server) VerifyParams(hashBytes, blockSize, chunkSize int) error {
-	if hashBytes != fHashBytes || blockSize != fBlockSize || chunkSize == fChunkSize {
+	if hashBytes != fHashBytes || blockSize != fBlockSize || chunkSize != fChunkSize {
 		return errors.New("mismatched params")
 	}
 	return nil
@@ -370,7 +550,11 @@ func (s *server) AllocateBatch(blocks []uint16, digests []byte) ([]erofs.SlabLoc
 	n := len(blocks)
 	out := make([]erofs.SlabLoc, n)
 	err := s.db.Update(func(tx *bbolt.Tx) error {
-		cb, sb := tx.Bucket(chunkBucket), tx.Bucket(slabBucket).Bucket(slabKey(0))
+		cb, slabroot := tx.Bucket(chunkBucket), tx.Bucket(slabBucket)
+		sb, err := slabroot.CreateBucketIfNotExists(slabKey(0))
+		if err != nil {
+			return err
+		}
 
 		seq := sb.Sequence()
 

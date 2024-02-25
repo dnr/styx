@@ -8,6 +8,8 @@ const (
 
 	dbFilename = "styx.bolt"
 
+	slabPrefix = "_slab_"
+
 	// TODO: eventually these can be configurable but let's fix them for now for simplicity
 	fBlockShift = 12
 	fBlockSize  = 1 << fBlockShift
@@ -21,4 +23,5 @@ var (
 	metaBucket  = []byte("meta")
 	chunkBucket = []byte("chunk")
 	slabBucket  = []byte("slab")
+	imageBucket = []byte("image")
 )

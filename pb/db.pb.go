@@ -92,17 +92,17 @@ func (x *DbMeta) GetHashBits() int32 {
 	return 0
 }
 
-// key: "slabs" / "<u16 BE slabid>"
-type SlabInfo struct {
+// key: "image" / "<store path hash>"
+type DbImage struct {
 	state         protoimpl.MessageState
 	sizeCache     protoimpl.SizeCache
 	unknownFields protoimpl.UnknownFields
 
-	NextChunk int64 `protobuf:"varint,1,opt,name=next_chunk,json=nextChunk,proto3" json:"next_chunk,omitempty"`
+	Size int64 `protobuf:"varint,1,opt,name=size,proto3" json:"size,omitempty"`
 }
 
-func (x *SlabInfo) Reset() {
-	*x = SlabInfo{}
+func (x *DbImage) Reset() {
+	*x = DbImage{}
 	if protoimpl.UnsafeEnabled {
 		mi := &file_db_proto_msgTypes[1]
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -110,13 +110,13 @@ func (x *SlabInfo) Reset() {
 	}
 }
 
-func (x *SlabInfo) String() string {
+func (x *DbImage) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*SlabInfo) ProtoMessage() {}
+func (*DbImage) ProtoMessage() {}
 
-func (x *SlabInfo) ProtoReflect() protoreflect.Message {
+func (x *DbImage) ProtoReflect() protoreflect.Message {
 	mi := &file_db_proto_msgTypes[1]
 	if protoimpl.UnsafeEnabled && x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -128,126 +128,14 @@ func (x *SlabInfo) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use SlabInfo.ProtoReflect.Descriptor instead.
-func (*SlabInfo) Descriptor() ([]byte, []int) {
+// Deprecated: Use DbImage.ProtoReflect.Descriptor instead.
+func (*DbImage) Descriptor() ([]byte, []int) {
 	return file_db_proto_rawDescGZIP(), []int{1}
 }
 
-func (x *SlabInfo) GetNextChunk() int64 {
+func (x *DbImage) GetSize() int64 {
 	if x != nil {
-		return x.NextChunk
-	}
-	return 0
-}
-
-// key: "digests" / "<hash_bits of digest>"
-type DigestInfo struct {
-	state         protoimpl.MessageState
-	sizeCache     protoimpl.SizeCache
-	unknownFields protoimpl.UnknownFields
-
-	Location []byte `protobuf:"bytes,1,opt,name=location,proto3" json:"location,omitempty"`
-	Refcount int32  `protobuf:"varint,2,opt,name=refcount,proto3" json:"refcount,omitempty"`
-}
-
-func (x *DigestInfo) Reset() {
-	*x = DigestInfo{}
-	if protoimpl.UnsafeEnabled {
-		mi := &file_db_proto_msgTypes[2]
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		ms.StoreMessageInfo(mi)
-	}
-}
-
-func (x *DigestInfo) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*DigestInfo) ProtoMessage() {}
-
-func (x *DigestInfo) ProtoReflect() protoreflect.Message {
-	mi := &file_db_proto_msgTypes[2]
-	if protoimpl.UnsafeEnabled && x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use DigestInfo.ProtoReflect.Descriptor instead.
-func (*DigestInfo) Descriptor() ([]byte, []int) {
-	return file_db_proto_rawDescGZIP(), []int{2}
-}
-
-func (x *DigestInfo) GetLocation() []byte {
-	if x != nil {
-		return x.Location
-	}
-	return nil
-}
-
-func (x *DigestInfo) GetRefcount() int32 {
-	if x != nil {
-		return x.Refcount
-	}
-	return 0
-}
-
-// key: "locs" / "<u16 BE slabid; u32 BE block_address>"
-type LocationInfo struct {
-	state         protoimpl.MessageState
-	sizeCache     protoimpl.SizeCache
-	unknownFields protoimpl.UnknownFields
-
-	Digest []byte `protobuf:"bytes,1,opt,name=digest,proto3" json:"digest,omitempty"`
-	PathId int64  `protobuf:"varint,2,opt,name=path_id,json=pathId,proto3" json:"path_id,omitempty"`
-}
-
-func (x *LocationInfo) Reset() {
-	*x = LocationInfo{}
-	if protoimpl.UnsafeEnabled {
-		mi := &file_db_proto_msgTypes[3]
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		ms.StoreMessageInfo(mi)
-	}
-}
-
-func (x *LocationInfo) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*LocationInfo) ProtoMessage() {}
-
-func (x *LocationInfo) ProtoReflect() protoreflect.Message {
-	mi := &file_db_proto_msgTypes[3]
-	if protoimpl.UnsafeEnabled && x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use LocationInfo.ProtoReflect.Descriptor instead.
-func (*LocationInfo) Descriptor() ([]byte, []int) {
-	return file_db_proto_rawDescGZIP(), []int{3}
-}
-
-func (x *LocationInfo) GetDigest() []byte {
-	if x != nil {
-		return x.Digest
-	}
-	return nil
-}
-
-func (x *LocationInfo) GetPathId() int64 {
-	if x != nil {
-		return x.PathId
+		return x.Size
 	}
 	return 0
 }
@@ -264,20 +152,11 @@ var file_db_proto_rawDesc = []byte{
 	0x61, 0x6c, 0x67, 0x6f, 0x18, 0x03, 0x20, 0x01, 0x28, 0x09, 0x52, 0x08, 0x68, 0x61, 0x73, 0x68,
 	0x41, 0x6c, 0x67, 0x6f, 0x12, 0x1b, 0x0a, 0x09, 0x68, 0x61, 0x73, 0x68, 0x5f, 0x62, 0x69, 0x74,
 	0x73, 0x18, 0x04, 0x20, 0x01, 0x28, 0x05, 0x52, 0x08, 0x68, 0x61, 0x73, 0x68, 0x42, 0x69, 0x74,
-	0x73, 0x22, 0x29, 0x0a, 0x08, 0x53, 0x6c, 0x61, 0x62, 0x49, 0x6e, 0x66, 0x6f, 0x12, 0x1d, 0x0a,
-	0x0a, 0x6e, 0x65, 0x78, 0x74, 0x5f, 0x63, 0x68, 0x75, 0x6e, 0x6b, 0x18, 0x01, 0x20, 0x01, 0x28,
-	0x03, 0x52, 0x09, 0x6e, 0x65, 0x78, 0x74, 0x43, 0x68, 0x75, 0x6e, 0x6b, 0x22, 0x44, 0x0a, 0x0a,
-	0x44, 0x69, 0x67, 0x65, 0x73, 0x74, 0x49, 0x6e, 0x66, 0x6f, 0x12, 0x1a, 0x0a, 0x08, 0x6c, 0x6f,
-	0x63, 0x61, 0x74, 0x69, 0x6f, 0x6e, 0x18, 0x01, 0x20, 0x01, 0x28, 0x0c, 0x52, 0x08, 0x6c, 0x6f,
-	0x63, 0x61, 0x74, 0x69, 0x6f, 0x6e, 0x12, 0x1a, 0x0a, 0x08, 0x72, 0x65, 0x66, 0x63, 0x6f, 0x75,
-	0x6e, 0x74, 0x18, 0x02, 0x20, 0x01, 0x28, 0x05, 0x52, 0x08, 0x72, 0x65, 0x66, 0x63, 0x6f, 0x75,
-	0x6e, 0x74, 0x22, 0x3f, 0x0a, 0x0c, 0x4c, 0x6f, 0x63, 0x61, 0x74, 0x69, 0x6f, 0x6e, 0x49, 0x6e,
-	0x66, 0x6f, 0x12, 0x16, 0x0a, 0x06, 0x64, 0x69, 0x67, 0x65, 0x73, 0x74, 0x18, 0x01, 0x20, 0x01,
-	0x28, 0x0c, 0x52, 0x06, 0x64, 0x69, 0x67, 0x65, 0x73, 0x74, 0x12, 0x17, 0x0a, 0x07, 0x70, 0x61,
-	0x74, 0x68, 0x5f, 0x69, 0x64, 0x18, 0x02, 0x20, 0x01, 0x28, 0x03, 0x52, 0x06, 0x70, 0x61, 0x74,
-	0x68, 0x49, 0x64, 0x42, 0x18, 0x5a, 0x16, 0x67, 0x69, 0x74, 0x68, 0x75, 0x62, 0x2e, 0x63, 0x6f,
-	0x6d, 0x2f, 0x64, 0x6e, 0x72, 0x2f, 0x73, 0x74, 0x79, 0x78, 0x2f, 0x70, 0x62, 0x62, 0x06, 0x70,
-	0x72, 0x6f, 0x74, 0x6f, 0x33,
+	0x73, 0x22, 0x1d, 0x0a, 0x07, 0x44, 0x62, 0x49, 0x6d, 0x61, 0x67, 0x65, 0x12, 0x12, 0x0a, 0x04,
+	0x73, 0x69, 0x7a, 0x65, 0x18, 0x01, 0x20, 0x01, 0x28, 0x03, 0x52, 0x04, 0x73, 0x69, 0x7a, 0x65,
+	0x42, 0x18, 0x5a, 0x16, 0x67, 0x69, 0x74, 0x68, 0x75, 0x62, 0x2e, 0x63, 0x6f, 0x6d, 0x2f, 0x64,
+	0x6e, 0x72, 0x2f, 0x73, 0x74, 0x79, 0x78, 0x2f, 0x70, 0x62, 0x62, 0x06, 0x70, 0x72, 0x6f, 0x74,
+	0x6f, 0x33,
 }
 
 var (
@@ -292,12 +171,10 @@ func file_db_proto_rawDescGZIP() []byte {
 	return file_db_proto_rawDescData
 }
 
-var file_db_proto_msgTypes = make([]protoimpl.MessageInfo, 4)
+var file_db_proto_msgTypes = make([]protoimpl.MessageInfo, 2)
 var file_db_proto_goTypes = []interface{}{
-	(*DbMeta)(nil),       // 0: pb.DbMeta
-	(*SlabInfo)(nil),     // 1: pb.SlabInfo
-	(*DigestInfo)(nil),   // 2: pb.DigestInfo
-	(*LocationInfo)(nil), // 3: pb.LocationInfo
+	(*DbMeta)(nil),  // 0: pb.DbMeta
+	(*DbImage)(nil), // 1: pb.DbImage
 }
 var file_db_proto_depIdxs = []int32{
 	0, // [0:0] is the sub-list for method output_type
@@ -326,31 +203,7 @@ func file_db_proto_init() {
 			}
 		}
 		file_db_proto_msgTypes[1].Exporter = func(v interface{}, i int) interface{} {
-			switch v := v.(*SlabInfo); i {
-			case 0:
-				return &v.state
-			case 1:
-				return &v.sizeCache
-			case 2:
-				return &v.unknownFields
-			default:
-				return nil
-			}
-		}
-		file_db_proto_msgTypes[2].Exporter = func(v interface{}, i int) interface{} {
-			switch v := v.(*DigestInfo); i {
-			case 0:
-				return &v.state
-			case 1:
-				return &v.sizeCache
-			case 2:
-				return &v.unknownFields
-			default:
-				return nil
-			}
-		}
-		file_db_proto_msgTypes[3].Exporter = func(v interface{}, i int) interface{} {
-			switch v := v.(*LocationInfo); i {
+			switch v := v.(*DbImage); i {
 			case 0:
 				return &v.state
 			case 1:
@@ -368,7 +221,7 @@ func file_db_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: file_db_proto_rawDesc,
 			NumEnums:      0,
-			NumMessages:   4,
+			NumMessages:   2,
 			NumExtensions: 0,
 			NumServices:   0,
 		},
