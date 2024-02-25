@@ -67,6 +67,8 @@ type (
 		Upstream       string
 		ManifesterUrl  string
 		ChunkStoreRead manifester.ChunkStoreRead
+
+		Workers int
 	}
 )
 
@@ -164,9 +166,11 @@ func (s *server) setupEnv() error {
 }
 
 func (s *server) openDevNode() (err error) {
+	// TODO: support systemd fd saving so we can "restore" inflight requests after restart
+
 	s.devnode, err = unix.Open(s.cfg.DevPath, unix.O_RDWR, 0600)
 	if err == unix.ENOENT {
-		_ = unix.Mknod(s.cfg.DevPath, 0600|unix.S_IFCHR, 10*256+122)
+		_ = unix.Mknod(s.cfg.DevPath, 0600|unix.S_IFCHR, 10<<8+122)
 		s.devnode, err = unix.Open(s.cfg.DevPath, unix.O_RDWR, 0600)
 	}
 	return
@@ -197,10 +201,19 @@ func (s *server) Run() error {
 		return err
 	}
 
+	wchan := make(chan []byte)
+	for i := 0; i < s.cfg.Workers; i++ {
+		go func() {
+			for {
+				s.handleMessage(<-wchan)
+			}
+		}()
+	}
+
 	fds := make([]unix.PollFd, 1)
 	errors := 0
 	for {
-		if errors > 100 {
+		if errors > 10 {
 			// we might be spinning somehow, slow down
 			time.Sleep(time.Duration(errors) * time.Millisecond)
 		}
@@ -214,23 +227,34 @@ func (s *server) Run() error {
 		if n != 1 {
 			continue
 		}
-		buf := s.pool.Get().([]byte)
-		n, err = unix.Read(s.devnode, buf)
-		// log.Printf("read from socket %d bytes into buf %d", n, len(buf))
-		if err != nil {
-			errors++
-			log.Printf("error from read: %v", err)
-			continue
+		// read until we get zero
+		readAfterPoll := false
+		for {
+			buf := s.pool.Get().([]byte)
+			n, err = unix.Read(s.devnode, buf)
+			if err != nil {
+				errors++
+				log.Printf("error from read: %v", err)
+				break
+			} else if n == 0 {
+				// handle bug in linux < 6.8 where poll returns POLLIN if there are any
+				// outstanding requests, not just new ones
+				if !readAfterPoll {
+					log.Printf("empty read")
+					errors++
+				}
+				break
+			}
+			readAfterPoll = true
+			errors = 0
+			// TODO: figure out if we can increase concurrency
+			wchan <- buf[:n]
 		}
-		errors = 0
-		// TODO: figure out how to handle things concurrently
-		//go s.handleMessage(buf, n)
-		s.handleMessage(buf, n)
 	}
 	return nil
 }
 
-func (s *server) handleMessage(_buf []byte, _n int) (retErr error) {
+func (s *server) handleMessage(buf []byte) (retErr error) {
 	defer func() {
 		if r := recover(); r != nil {
 			retErr = fmt.Errorf("panic: %v", r)
@@ -238,10 +262,9 @@ func (s *server) handleMessage(_buf []byte, _n int) (retErr error) {
 		if retErr != nil {
 			log.Printf("error handling message: %v", retErr)
 		}
-		s.pool.Put(_buf)
+		s.pool.Put(buf[0:CACHEFILES_MSG_MAX_SIZE])
 	}()
 
-	buf := _buf[:_n]
 	var r bytes.Reader
 	r.Reset(buf)
 	var msg cachefiles_msg
