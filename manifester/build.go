@@ -21,7 +21,7 @@ type (
 	}
 
 	ManifestBuilder struct {
-		cs       ChunkStore
+		cs       ChunkStoreWrite
 		chunksem *semaphore.Weighted
 		chunkenc *zstd.Encoder
 		params   builderParams
@@ -32,18 +32,10 @@ type (
 	}
 )
 
-func NewManifestBuilder(cfg ManifestBuilderConfig, cs ChunkStore) (*ManifestBuilder, error) {
-	chunkenc, err := zstd.NewWriter(nil,
-		zstd.WithEncoderLevel(zstd.SpeedBestCompression),
-		zstd.WithEncoderCRC(false),
-	)
-	if err != nil {
-		return nil, err
-	}
+func NewManifestBuilder(cfg ManifestBuilderConfig, cs ChunkStoreWrite) (*ManifestBuilder, error) {
 	return &ManifestBuilder{
 		cs:       cs,
 		chunksem: semaphore.NewWeighted(int64(Or(cfg.ConcurrentChunkOps, 50))),
-		chunkenc: chunkenc,
 		params: builderParams{
 			tailCutoff: defaultTailCutoff,
 			chunkSize:  defaultChunkSize,
@@ -152,9 +144,7 @@ func (b *ManifestBuilder) handleChunk(ctx context.Context, data, digests []byte,
 	copy(digests[i*b.params.hashBits>>3:], digest)
 	digeststr := base64.RawURLEncoding.EncodeToString(digest)
 
-	errC <- b.cs.PutIfNotExists(ctx, digeststr, func() []byte {
-		return b.chunkenc.EncodeAll(chunk, nil)
-	})
+	errC <- b.cs.PutIfNotExists(ctx, digeststr, chunk)
 }
 
 func readFullFromNar(nr *nar.Reader, h *nar.Header) ([]byte, error) {

@@ -2,6 +2,9 @@ package erofs
 
 import (
 	"math"
+
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/reflect/protoreflect"
 )
 
 type (
@@ -47,4 +50,16 @@ func truncU64[L ~int | ~int64 | ~uint | ~uint64](v L) uint64 {
 		panic("overflow")
 	}
 	return uint64(v)
+}
+
+// I don't know why I can't write "proto.Message" in here, but expanding it works
+func unmarshalAs[T any, PM interface {
+	ProtoReflect() protoreflect.Message
+	*T
+}](b []byte) (*T, error) {
+	var m PM = new(T)
+	if err := proto.Unmarshal(b, m); err != nil {
+		return nil, err
+	}
+	return m, nil
 }

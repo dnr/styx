@@ -13,7 +13,8 @@ import (
 )
 
 const (
-	ctxChunkStore = iota
+	ctxChunkStoreWrite = iota
+	ctxChunkStoreRead
 	ctxManifestBuilder
 	ctxDaemonConfig
 	ctxManifesterConfig
@@ -21,18 +22,34 @@ const (
 	ctxOutFile
 )
 
-func withChunkStore(c *cobra.Command) runE {
-	var cscfg manifester.ChunkStoreConfig
+func withChunkStoreWrite(c *cobra.Command) runE {
+	var cscfg manifester.ChunkStoreWriteConfig
 
-	c.Flags().StringVar(&cscfg.ChunkBucket, "chunkbucket", "", "s3 bucket to put chunks and cached manifests")
+	c.Flags().StringVar(&cscfg.ChunkBucket, "chunkbucket", "", "s3 bucket to put chunks")
 	c.Flags().StringVar(&cscfg.ChunkLocalDir, "chunklocaldir", "", "local directory to put chunks")
 
 	return func(c *cobra.Command, args []string) error {
-		cs, err := manifester.NewChunkStore(cscfg)
+		cs, err := manifester.NewChunkStoreWrite(cscfg)
 		if err != nil {
 			return err
 		}
-		c.SetContext(context.WithValue(c.Context(), ctxChunkStore, cs))
+		c.SetContext(context.WithValue(c.Context(), ctxChunkStoreWrite, cs))
+		return nil
+	}
+}
+
+func withChunkStoreRead(c *cobra.Command) runE {
+	var cscfg manifester.ChunkStoreReadConfig
+
+	c.Flags().StringVar(&cscfg.ChunkBucket, "rchunkbucket", "", "s3 bucket to get chunks")
+	c.Flags().StringVar(&cscfg.ChunkLocalDir, "rchunklocaldir", "", "local directory to read chunks from")
+
+	return func(c *cobra.Command, args []string) error {
+		cs, err := manifester.NewChunkStoreRead(cscfg)
+		if err != nil {
+			return err
+		}
+		c.SetContext(context.WithValue(c.Context(), ctxChunkStoreRead, cs))
 		return nil
 	}
 }
@@ -40,9 +57,9 @@ func withChunkStore(c *cobra.Command) runE {
 func withManifestBuilder(c *cobra.Command) runE {
 	var mbcfg manifester.ManifestBuilderConfig
 	return chainRunE(
-		withChunkStore(c),
+		withChunkStoreWrite(c),
 		func(c *cobra.Command, args []string) error {
-			cs := c.Context().Value(ctxChunkStore).(manifester.ChunkStore)
+			cs := c.Context().Value(ctxChunkStoreWrite).(manifester.ChunkStoreWrite)
 			mb, err := manifester.NewManifestBuilder(mbcfg, cs)
 			if err != nil {
 				return err

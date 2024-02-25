@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"os"
 
 	"github.com/klauspost/compress/zstd"
@@ -85,11 +86,24 @@ func debugCmd() *cobra.Command {
 				Short: "create an erofs image from a manifest",
 				Args:  cobra.ExactArgs(2),
 			},
-			withChunkStore,
+			withChunkStoreRead,
 			withInFile,
 			withOutFile,
+			func(c *cobra.Command) {
+				c.Flags().Bool("embed", true, "embed data in erofs")
+			},
 			func(c *cobra.Command, args []string) error {
-				panic("FIXME")
+				in := c.Context().Value(ctxInFile).(*os.File)
+				out := c.Context().Value(ctxOutFile).(*os.File)
+				cs := c.Context().Value(ctxChunkStoreRead).(manifester.ChunkStoreRead)
+				embed, err := c.Flags().GetBool("embed")
+				if err != nil {
+					return err
+				}
+				if embed {
+					return erofs.NewBuilder().BuildFromManifestEmbed(c.Context(), in, out, cs)
+				}
+				return errors.New("only embed supported now")
 			},
 		),
 	)

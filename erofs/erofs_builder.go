@@ -2,6 +2,8 @@ package erofs
 
 import (
 	"bytes"
+	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/binary"
@@ -9,12 +11,17 @@ import (
 	"fmt"
 	"hash/crc32"
 	"io"
+	"log"
 	"math"
 	"path"
 	"sort"
 
+	"github.com/dnr/styx/manifester"
+	"github.com/dnr/styx/pb"
+	"github.com/klauspost/compress/zstd"
 	"github.com/lunixbochs/struc"
 	"github.com/nix-community/go-nix/pkg/nar"
+	"github.com/nix-community/go-nix/pkg/narinfo"
 	"golang.org/x/sys/unix"
 )
 
@@ -247,7 +254,7 @@ func (b *builder) BuildFromNar(r io.Reader, out io.Writer) error {
 		data.i.i.IU = truncU32(p >> b.p.blk)
 		p += b.p.blk.roundup(int64(len(data.data)))
 	}
-	fmt.Printf("final calculated size %d\n", p)
+	log.Printf("final calculated size %d", p)
 
 	// at this point:
 	// all inodes have correct IU and ISize
@@ -264,6 +271,277 @@ func (b *builder) BuildFromNar(r io.Reader, out io.Writer) error {
 		MetaBlkAddr: truncU32(inodebase >> b.p.blk),
 	}
 	narhash := narHasher.Sum(nil)
+	copy(super.Uuid[:], narhash)
+	copy(super.VolumeName[:], "styx-"+base64.RawURLEncoding.EncodeToString(narhash)[:10])
+
+	c := crc32.NewIEEE()
+	pack(c, &super)
+	super.Checksum = c.Sum32()
+
+	pad(out, EROFS_SUPER_OFFSET)
+	pack(out, &super)
+	pad(out, inodebase-EROFS_SUPER_OFFSET-128)
+
+	// 3.2: inodes and tails
+	remaining = b.p.blk.size()
+	for _, i := range inodes {
+		need := inodesize + inodeshift.roundup(int64(len(i.taildata)))
+		if need > remaining {
+			pad(out, remaining)
+			remaining = b.p.blk.size()
+		}
+		pack(out, i.i)
+		writeAndPad(out, i.taildata, inodeshift)
+		remaining -= need
+	}
+	if remaining < b.p.blk.size() {
+		pad(out, remaining)
+	}
+
+	// 3.4: full blocks
+	for _, data := range datablocks {
+		writeAndPad(out, data.data, b.p.blk)
+	}
+
+	return nil
+}
+
+// embed data in image
+func (b *builder) BuildFromManifestEmbed(ctx context.Context, r io.Reader, out io.Writer, cs manifester.ChunkStoreRead) error {
+	// TODO: move manifest encoding to shared lib
+	// TODO: verify signatures if requested
+	var m *pb.Manifest
+	if zr, err := zstd.NewReader(r); err != nil {
+		return err
+	} else if mbytes, err := io.ReadAll(zr); err != nil {
+		return err
+	} else if m, err = unmarshalAs[pb.Manifest](mbytes); err != nil {
+		return err
+	}
+
+	hashBytes := int64(m.HashBits >> 3)
+
+	const inodeshift = blkshift(5)
+	const inodesize = 1 << inodeshift
+	const layoutCompact = EROFS_INODE_LAYOUT_COMPACT << EROFS_I_VERSION_BIT
+	const formatPlain = (layoutCompact | (EROFS_INODE_FLAT_PLAIN << EROFS_I_DATALAYOUT_BIT))
+	const formatInline = (layoutCompact | (EROFS_INODE_FLAT_INLINE << EROFS_I_DATALAYOUT_BIT))
+
+	var inodes []*inodebuilder
+	var root *inodebuilder
+	var datablocks []regulardata
+	dirsmap := make(map[string]*dirbuilder)
+	var dirs []*dirbuilder
+
+	allowedTail := func(tail int64) bool {
+		// tail has to fit in a block with the inode
+		return tail > 0 && tail <= b.p.blk.size()-inodesize
+	}
+	setDataOnInode := func(i *inodebuilder, data []byte) {
+		tail := b.p.blk.leftover(int64(len(data)))
+		i.i.ISize = truncU32(len(data))
+		if !allowedTail(tail) {
+			tail = 0
+			i.i.IFormat = formatPlain
+		}
+		full := int64(len(data)) - tail
+		if full > 0 {
+			datablocks = append(datablocks, regulardata{
+				i:    i,
+				data: data[:full],
+			})
+		}
+		i.taildata = data[full:]
+	}
+
+	// pass 1: read nar
+
+	for _, e := range m.Entries {
+		// every entry gets an inode and all but the root get a dirent
+		var fstype uint16
+		i := &inodebuilder{
+			i: erofs_inode_compact{
+				IFormat: formatInline,
+				IIno:    truncU32(len(inodes) + 37),
+				INlink:  1,
+			},
+		}
+		inodes = append(inodes, i)
+
+		switch e.Type {
+		case pb.EntryType_DIRECTORY:
+			fstype = EROFS_FT_DIR
+			i.i.IMode = unix.S_IFDIR | 0755
+			i.i.INlink = 2
+			parent := i
+			if e.Path != "/" {
+				parent = dirsmap[path.Dir(e.Path)].i
+			}
+			db := &dirbuilder{
+				ents: []dbent{
+					{name: ".", tp: EROFS_FT_DIR, i: i},
+					{name: "..", tp: EROFS_FT_DIR, i: parent},
+				},
+				i: i,
+			}
+			dirs = append(dirs, db)
+			dirsmap[e.Path] = db
+
+		case pb.EntryType_REGULAR:
+			fstype = EROFS_FT_REG_FILE
+			i.i.IMode = unix.S_IFREG | 0644
+			if e.Executable {
+				i.i.IMode = unix.S_IFREG | 0755
+			}
+			if e.Size > 0 {
+				var data []byte
+				if len(e.TailData) > 0 {
+					if int64(len(e.TailData)) != e.Size {
+						return fmt.Errorf("tail data size mismatch")
+					} else if !allowedTail(e.Size) {
+						return fmt.Errorf("tail too big")
+					}
+					data = e.TailData
+				} else if len(e.Digests) > 0 {
+					if e.Size > math.MaxUint32 {
+						return fmt.Errorf("TODO: support larger files with extended inode")
+					}
+					data = make([]byte, e.Size)
+					for start := int64(0); start < e.Size; start += int64(m.ChunkSize) {
+						idx := start / int64(m.ChunkSize)
+						digest := e.Digests[idx*hashBytes : (idx+1)*hashBytes]
+						digeststr := base64.RawURLEncoding.EncodeToString(digest)
+						cdata, err := cs.Get(ctx, digeststr)
+						if err != nil {
+							return err
+						}
+						copy(data[start:], cdata)
+					}
+				} else {
+					return fmt.Errorf("non-zero size but no taildata or digests")
+				}
+				setDataOnInode(i, data)
+			}
+
+		case pb.EntryType_SYMLINK:
+			fstype = EROFS_FT_SYMLINK
+			i.i.IMode = unix.S_IFLNK | 0777
+			i.i.ISize = truncU32(len(e.TailData))
+			i.taildata = e.TailData
+
+		default:
+			return errors.New("unknown type")
+		}
+
+		// add dirent to appropriate directory
+		if e.Path == "/" {
+			root = i
+		} else {
+			dir, file := path.Split(e.Path)
+			if len(file) > EROFS_NAME_LEN {
+				return errors.New("file name too long")
+			}
+			db := dirsmap[path.Clean(dir)]
+			db.ents = append(db.ents, dbent{
+				name: file,
+				i:    i,
+				tp:   fstype,
+			})
+		}
+	}
+
+	// pass 2: pack inodes and tails
+
+	// 2.1: directory sizes
+	dummy := make([]byte, b.p.blk.size())
+	for _, db := range dirs {
+		db.sortAndSize(b.p.blk)
+		tail := b.p.blk.leftover(db.size)
+		if !allowedTail(tail) {
+			tail = 0
+		}
+		// dummy data just to track size
+		db.i.taildata = dummy[:tail]
+	}
+
+	// at this point:
+	// all inodes have correct len(taildata)
+	// files have correct taildata but dirs do not
+
+	inodebase := max(4096, b.p.blk.size())
+
+	// 2.2: lay out inodes and tails
+	// using greedy for now. TODO: use best fit or something
+	p := int64(0) // position relative to metadata area
+	remaining := b.p.blk.size()
+	for i, inode := range inodes {
+		need := inodesize + inodeshift.roundup(int64(len(inode.taildata)))
+		if need > remaining {
+			p += remaining
+			remaining = b.p.blk.size()
+		}
+		inodes[i].nid = truncU64(p >> inodeshift)
+		p += need
+		remaining -= need
+	}
+	if remaining < b.p.blk.size() {
+		p += remaining
+	}
+
+	// at this point:
+	// all inodes have correct nid
+
+	// 2.3: write actual dirs to buffers
+	for _, db := range dirs {
+		var buf bytes.Buffer
+		db.write(&buf, b.p.blk)
+		if int64(buf.Len()) != db.size {
+			panic("oops, bug")
+		}
+		setDataOnInode(db.i, buf.Bytes())
+	}
+
+	// at this point:
+	// all inodes have correct taildata
+
+	// from here on, p is relative to 0
+	p += inodebase
+
+	// 2.4: lay out full blocks
+	for _, data := range datablocks {
+		data.i.i.IU = truncU32(p >> b.p.blk)
+		p += b.p.blk.roundup(int64(len(data.data)))
+	}
+	log.Printf("final calculated size %d", p)
+
+	// at this point:
+	// all inodes have correct IU and ISize
+
+	// pass 3: write
+
+	// 3.1: fill in super
+	super := erofs_super_block{
+		Magic:       0xE0F5E1E2,
+		BlkSzBits:   truncU8(b.p.blk),
+		RootNid:     truncU16(root.nid),
+		Inos:        truncU64(len(inodes)),
+		Blocks:      truncU32(p >> b.p.blk),
+		MetaBlkAddr: truncU32(inodebase >> b.p.blk),
+	}
+
+	var narhash []byte
+	if len(m.Meta.GetNarinfo()) > 0 {
+		ni, err := narinfo.Parse(bytes.NewReader(m.Meta.Narinfo))
+		if err != nil {
+			log.Println("couldn't parse narinfo in manifest", err)
+		} else {
+			narhash = ni.NarHash.Digest()
+		}
+	}
+	if len(narhash) == 0 {
+		narhash = make([]byte, 16)
+		rand.Read(narhash)
+	}
 	copy(super.Uuid[:], narhash)
 	copy(super.VolumeName[:], "styx-"+base64.RawURLEncoding.EncodeToString(narhash)[:10])
 
