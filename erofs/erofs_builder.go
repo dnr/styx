@@ -603,6 +603,9 @@ func (b *builder) BuildFromManifestWithSlab(
 	}
 
 	hashBytes := int64(m.HashBits >> 3)
+	if err := sm.VerifyParams(int(hashBytes), int(b.p.blk.size()), int(m.ChunkSize)); err != nil {
+		return err
+	}
 
 	const inodeshift = blkshift(5)
 	const inodesize = 1 << inodeshift
@@ -702,8 +705,16 @@ func (b *builder) BuildFromManifestWithSlab(
 					if int64(len(e.Digests)) != nChunks*hashBytes {
 						return fmt.Errorf("digest list wrong size")
 					}
-					// TODO: larger batches?
-					locs, err := sm.AllocateBatch(e.Digests, int(hashBytes))
+					blocks := make([]uint16, nChunks)
+					allButLast := truncU16(m.ChunkSize >> b.p.blk)
+					for j := range blocks {
+						blocks[j] = allButLast
+					}
+					// TODO: write this better
+					lastChunkLen := e.Size & int64(m.ChunkSize-1)
+					blocks[len(blocks)-1] = truncU16(b.p.blk.roundup(lastChunkLen) >> b.p.blk)
+					// TODO: do in larger batches
+					locs, err := sm.AllocateBatch(blocks, e.Digests)
 					if err != nil {
 						return err
 					}
@@ -856,7 +867,7 @@ func (b *builder) BuildFromManifestWithSlab(
 		Blocks:          truncU32(p >> b.p.blk),
 		MetaBlkAddr:     truncU32(inodebase >> b.p.blk),
 		ExtraDevices:    truncU16(len(devs)),
-		DevtSlotOff:     (EROFS_SUPER_OFFSET + 128) / 128,
+		DevtSlotOff:     (EROFS_SUPER_OFFSET + 128) / 128, // TODO: use constants
 	}
 
 	var narhash []byte

@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"bytes"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -17,6 +18,9 @@ import (
 	"github.com/lunixbochs/struc"
 	"go.etcd.io/bbolt"
 	"golang.org/x/sys/unix"
+
+	"github.com/dnr/styx/erofs"
+	"github.com/dnr/styx/manifester"
 )
 
 type (
@@ -30,13 +34,12 @@ type (
 		DevPath   string
 		CachePath string
 
-		Manifester string
-
-		// One of these is required:
-		ChunkReadURL  string
-		ChunkLocalDir string
+		ManifesterUrl  string
+		ChunkStoreRead manifester.ChunkStoreRead
 	}
 )
+
+var _ erofs.SlabManager = (*server)(nil)
 
 func CachefilesServer(cfg Config) *server {
 	return &server{
@@ -51,7 +54,17 @@ func (s *server) openDb() (err error) {
 		FreelistType:   bbolt.FreelistMapType,
 	}
 	s.db, err = bbolt.Open(path.Join(s.cfg.CachePath, dbFilename), 0644, &opts)
-	return
+	if err != nil {
+		return err
+	}
+	return s.db.Update(func(tx *bbolt.Tx) error {
+		if _, err := tx.CreateBucketIfNotExists(metaBucket); err != nil {
+			return err
+		} else if _, err = tx.CreateBucketIfNotExists(chunkBucket); err != nil {
+			return err
+		}
+		return nil
+	})
 }
 
 func (s *server) startSocketServer() (err error) {
@@ -229,4 +242,77 @@ func (s *server) handleClose(msgId, objectId uint32) error {
 func (s *server) handleRead(msgId, objectId uint32, ln, off uint64) error {
 	log.Println("READ", msgId, objectId, ln, off)
 	panic("unimpl")
+}
+
+// slab manager
+
+const slabSize = 1 << (40 - 12)
+
+func slabKey(id uint16) []byte {
+	b := make([]byte, 2)
+	binary.BigEndian.PutUint16(b, id)
+	return b
+}
+
+func addrKey(addr uint32) []byte {
+	b := make([]byte, 4)
+	binary.BigEndian.PutUint32(b, addr)
+	return b
+}
+
+func locValue(id uint16, addr uint32) []byte {
+	loc := make([]byte, 6)
+	binary.LittleEndian.PutUint16(loc, id)
+	binary.LittleEndian.PutUint32(loc[2:], addr)
+	return loc
+}
+
+func loadLoc(b []byte) (id uint16, addr uint32) {
+	return binary.LittleEndian.Uint16(b), binary.LittleEndian.Uint32(b[2:])
+}
+
+func (s *server) VerifyParams(hashBytes, blockSize, chunkSize int) error {
+	if hashBytes != fHashBytes || blockSize != fBlockSize || chunkSize == fChunkSize {
+		return errors.New("mismatched params")
+	}
+	return nil
+}
+
+func (s *server) AllocateBatch(blocks []uint16, digests []byte) ([]erofs.SlabLoc, error) {
+	n := len(blocks)
+	out := make([]erofs.SlabLoc, n)
+	err := s.db.Update(func(tx *bbolt.Tx) error {
+		cb, sb := tx.Bucket(chunkBucket), tx.Bucket(slabBucket).Bucket(slabKey(0))
+
+		seq := sb.Sequence()
+
+		for i := range out {
+			digest := digests[i*fHashBytes : (i+1)*fHashBytes]
+			var id uint16
+			var addr uint32
+			if have := cb.Get(digest); have == nil { // allocate
+				addr = truncU32(seq)
+				seq += uint64(blocks[i])
+				if err := cb.Put(digest, locValue(id, addr)); err != nil {
+					return err
+				} else if err = sb.Put(addrKey(addr), digest); err != nil {
+					return err
+				}
+			} else {
+				id, addr = loadLoc(have)
+			}
+			out[i].SlabId = id
+			out[i].Addr = addr
+		}
+
+		return sb.SetSequence(seq)
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (s *server) SlabInfo(slabId uint16) (tag string, totalBlocks uint32) {
+	return fmt.Sprintf("styx-slab-%d", slabId), slabSize
 }

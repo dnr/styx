@@ -9,7 +9,8 @@ type (
 	}
 
 	SlabManager interface {
-		AllocateBatch(digests []byte, hashBytes int) ([]SlabLoc, error)
+		VerifyParams(hashBytes, blockSize, chunkSize int) error
+		AllocateBatch(blocks []uint16, digests []byte) ([]SlabLoc, error)
 		SlabInfo(slabId uint16) (tag string, totalBlocks uint32)
 	}
 
@@ -21,8 +22,12 @@ func NewDummySlabManager() *dummySlabManager {
 	return &d
 }
 
-func (d *dummySlabManager) AllocateBatch(digests []byte, hashBytes int) ([]SlabLoc, error) {
-	n := len(digests) / hashBytes
+func (d *dummySlabManager) VerifyParams(hashBytes, blockSize, chunkSize int) error {
+	return nil
+}
+
+func (d *dummySlabManager) AllocateBatch(blocks []uint16, digests []byte) ([]SlabLoc, error) {
+	n := len(blocks)
 	out := make([]SlabLoc, n)
 	for i := range out {
 		out[i].Addr = *(*uint32)(d)
