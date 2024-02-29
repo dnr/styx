@@ -427,7 +427,10 @@ func (s *server) handleClose(msgId, objectId uint32) error {
 	log.Println("CLOSE", objectId)
 	s.lock.Lock()
 	defer s.lock.Unlock()
-	delete(s.cacheState, objectId)
+	if state := s.cacheState[objectId]; state != nil {
+		unix.Close(int(state.fd))
+		delete(s.cacheState, objectId)
+	}
 	return nil
 }
 

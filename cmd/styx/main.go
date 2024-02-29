@@ -77,7 +77,7 @@ func withDaemonConfig(c *cobra.Command) runE {
 	c.Flags().StringVar(&cfg.CachePath, "cache", "/var/cache/styx", "path to local cache (also socket and db)")
 	c.Flags().StringVar(&cfg.Upstream, "upstream", "cache.nixos.org", "upstream cache to ask manifester for")
 	c.Flags().StringVar(&cfg.ManifesterUrl, "manifester", "localhost:7420", "url to manifester service")
-	c.Flags().IntVar(&cfg.Workers, "workers", 1, "worker goroutines for cachefilesd serving")
+	c.Flags().IntVar(&cfg.Workers, "workers", 16, "worker goroutines for cachefilesd serving")
 
 	return chainRunE(
 		withChunkStoreRead(c),
