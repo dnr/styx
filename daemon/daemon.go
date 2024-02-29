@@ -162,7 +162,7 @@ func (s *server) setupEnv() error {
 	if err != nil {
 		return err
 	}
-	return os.MkdirAll(s.cfg.CachePath, 0755)
+	return os.MkdirAll(s.cfg.CachePath, 0700)
 }
 
 func (s *server) openDevNode() (err error) {
@@ -247,7 +247,6 @@ func (s *server) Run() error {
 			}
 			readAfterPoll = true
 			errors = 0
-			// TODO: figure out if we can increase concurrency
 			wchan <- buf[:n]
 		}
 	}
@@ -467,12 +466,11 @@ func (s *server) handleReadImage(state *openFileState, _, _ uint64) error {
 	off := int64(0)
 	buf := state.imageData
 	for len(buf) > 0 {
-		// TODO: larger chunks?
-		toWrite := buf[:min(4096, len(buf))]
+		toWrite := buf[:min(16<<10, len(buf))]
 		n, err := unix.Pwrite(int(state.fd), toWrite, off)
 		if err != nil {
 			return err
-		} else if n != len(toWrite) {
+		} else if n < len(toWrite) {
 			return io.ErrShortWrite
 		}
 		buf = buf[n:]
@@ -516,17 +514,31 @@ func (s *server) handleReadSlab(state *openFileState, ln, off uint64) error {
 		return err
 	}
 
+	// TODO: enforce one read per digest
+
 	ctx := context.TODO()
 	data, err := s.cfg.ChunkStoreRead.Get(ctx, base64.RawURLEncoding.EncodeToString(digest[:]))
 	if err != nil {
 		return err
 	}
 
+	// Pad with zeros to fill whole block. This might work without padding but it seems safer,
+	// especially if we reuse slab chunks. Note that the pwrite below can return > len(data) if
+	// len(data) is not a full block, which suggests we should fill it.
+	// TODO: replace with util funcs
+	if roundedUp := (len(data) + fBlockSize - 1) &^ (fBlockSize - 1); roundedUp > len(data) {
+		data = append(data, _zeros[:roundedUp-len(data)]...)
+	}
+
+	if len(data) < int(ln) {
+		log.Printf("chunk was not big enough to cover requested range: %d vs %d", len(data), ln)
+	}
+
 	n, err := unix.Pwrite(int(state.fd), data, int64(off))
 	if err != nil {
 		return err
-	} else if n != int(ln) {
-		return io.ErrShortWrite
+	} else if n != len(data) {
+		return fmt.Errorf("short write %d != %d (ln %d)", n, len(data), ln)
 	}
 	return nil
 }
@@ -601,6 +613,8 @@ func (s *server) AllocateBatch(blocks []uint16, digests []byte) ([]erofs.SlabLoc
 			}
 			out[i].SlabId = id
 			out[i].Addr = addr
+
+			// TODO: check seq for overflow here and move to next slab
 		}
 
 		return sb.SetSequence(seq)
@@ -614,3 +628,5 @@ func (s *server) AllocateBatch(blocks []uint16, digests []byte) ([]erofs.SlabLoc
 func (s *server) SlabInfo(slabId uint16) (tag string, totalBlocks uint32) {
 	return fmt.Sprintf("_slab_%d", slabId), slabBlocks
 }
+
+var _zeros = make([]byte, fBlockSize)

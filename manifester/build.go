@@ -89,6 +89,7 @@ func (b *ManifestBuilder) Build(ctx context.Context, r io.Reader) (*pb.Manifest,
 		case nar.TypeRegular:
 			e.Type = pb.EntryType_REGULAR
 
+			// TODO: don't read full, stream this through with a concurrency limit on handleChunk
 			data, err := readFullFromNar(nr, h)
 			if err != nil {
 				retErr = err

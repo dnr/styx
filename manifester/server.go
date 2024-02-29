@@ -26,7 +26,8 @@ import (
 )
 
 const (
-	defaultTailCutoff = 480
+	// defaultTailCutoff = 480
+	defaultTailCutoff = 224
 	defaultChunkSize  = 1 << 16
 	defaultHashAlgo   = "sha256"
 	defaultHashBits   = 192
@@ -76,6 +77,8 @@ func (s *server) handleManifest(w http.ResponseWriter, req *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)
 	}
 
+	log.Println("req", r.StorePathHash, "from", r.Upstream)
+
 	// get narinfo
 
 	u := url.URL{
@@ -118,6 +121,8 @@ func (s *server) handleManifest(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	log.Println("req", r.StorePathHash, "got narinfo", ni.StorePath[44:], ni.FileSize, ni.NarSize)
+
 	// download nar
 
 	// start := time.Now()
@@ -135,6 +140,8 @@ func (s *server) handleManifest(w http.ResponseWriter, req *http.Request) {
 		w.WriteHeader(http.StatusExpectationFailed)
 		return
 	}
+
+	log.Println("req", r.StorePathHash, "downloading nar")
 
 	narOut := res.Body
 
@@ -214,6 +221,8 @@ func (s *server) handleManifest(w http.ResponseWriter, req *http.Request) {
 	}
 
 	// encode + sign manifest
+
+	log.Println("req", r.StorePathHash, "writing manifest")
 
 	manifestBytes, err := proto.Marshal(manifest)
 	if err != nil {
