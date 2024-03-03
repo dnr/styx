@@ -14,21 +14,25 @@ import (
 )
 
 type (
-	builderParams struct {
-		chunkSize  int
-		tailCutoff int
-		hashBits   int
+	BuildArgs struct {
+		SmallFileCutoff int
 	}
 
 	ManifestBuilder struct {
 		cs       ChunkStoreWrite
 		chunksem *semaphore.Weighted
 		chunkenc *zstd.Encoder
-		params   builderParams
+		params   *pb.GlobalParams
+		chunk    blkshift
 	}
 
 	ManifestBuilderConfig struct {
 		ConcurrentChunkOps int
+
+		// global params
+		ChunkShift int
+		DigestAlgo string
+		DigestBits int
 	}
 )
 
@@ -36,19 +40,19 @@ func NewManifestBuilder(cfg ManifestBuilderConfig, cs ChunkStoreWrite) (*Manifes
 	return &ManifestBuilder{
 		cs:       cs,
 		chunksem: semaphore.NewWeighted(int64(Or(cfg.ConcurrentChunkOps, 50))),
-		params: builderParams{
-			tailCutoff: defaultTailCutoff,
-			chunkSize:  defaultChunkSize,
-			hashBits:   defaultHashBits,
+		params: &pb.GlobalParams{
+			ChunkShift: int32(cfg.ChunkShift),
+			DigestAlgo: cfg.DigestAlgo,
+			DigestBits: int32(cfg.DigestBits),
 		},
+		chunk: blkshift(cfg.ChunkShift),
 	}, nil
 }
 
-func (b *ManifestBuilder) Build(ctx context.Context, r io.Reader) (*pb.Manifest, error) {
+func (b *ManifestBuilder) Build(ctx context.Context, args BuildArgs, r io.Reader) (*pb.Manifest, error) {
 	m := &pb.Manifest{
-		TailCutoff: int32(b.params.tailCutoff),
-		ChunkSize:  int32(b.params.chunkSize),
-		HashBits:   int32(b.params.hashBits),
+		Params:          b.params,
+		SmallFileCutoff: int32(args.SmallFileCutoff),
 	}
 
 	nr, err := nar.NewReader(r)
@@ -96,11 +100,11 @@ func (b *ManifestBuilder) Build(ctx context.Context, r io.Reader) (*pb.Manifest,
 				break
 			}
 
-			if h.Size <= int64(b.params.tailCutoff) {
+			if h.Size <= int64(args.SmallFileCutoff) {
 				e.TailData = data
 			} else {
-				nChunks := (len(data) + b.params.chunkSize - 1) / b.params.chunkSize
-				e.Digests = make([]byte, nChunks*(b.params.hashBits>>3))
+				nChunks := (len(data) + int(b.chunk.size()) - 1) >> b.chunk
+				e.Digests = make([]byte, nChunks*(int(b.params.DigestBits)>>3))
 				expected += nChunks
 				for i := 0; i < nChunks; i++ {
 					go b.handleChunk(ctx, data, e.Digests, i, errC)
@@ -134,15 +138,15 @@ func (b *ManifestBuilder) handleChunk(ctx context.Context, data, digests []byte,
 	b.chunksem.Acquire(ctx, 1)
 	defer b.chunksem.Release(1)
 
-	start := i * b.params.chunkSize
-	end := min(start+b.params.chunkSize, len(data))
+	start := i << b.chunk
+	end := min(start+int(b.chunk.size()), len(data))
 	chunk := data[start:end]
 
 	h := sha256.New()
 	h.Write(chunk)
 	var out [sha256.Size]byte
-	digest := h.Sum(out[0:0])[:b.params.hashBits>>3]
-	copy(digests[i*b.params.hashBits>>3:], digest)
+	digest := h.Sum(out[0:0])[:b.params.DigestBits>>3]
+	copy(digests[i*int(b.params.DigestBits)>>3:], digest)
 	digeststr := base64.RawURLEncoding.EncodeToString(digest)
 
 	errC <- b.cs.PutIfNotExists(ctx, digeststr, chunk)

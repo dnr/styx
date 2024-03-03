@@ -381,8 +381,12 @@ func (s *server) handleOpenImage(msgId, objectId, fd, flags uint32, cookie strin
 	// get manifest
 	u := s.cfg.Params.ManifesterUrl + manifester.ManifestPath
 	reqBytes, err := json.Marshal(manifester.ManifestReq{
-		Upstream:      s.cfg.Upstream,
-		StorePathHash: cookie,
+		Upstream:        s.cfg.Upstream,
+		StorePathHash:   cookie,
+		ChunkShift:      int(s.cfg.Params.Params.ChunkShift),
+		DigestAlgo:      s.cfg.Params.Params.DigestAlgo,
+		DigestBits:      int(s.cfg.Params.Params.DigestBits),
+		SmallFileCutoff: s.cfg.SmallFileCutoff,
 	})
 	if err != nil {
 		return 0, err

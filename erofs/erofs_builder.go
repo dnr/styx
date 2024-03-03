@@ -326,7 +326,8 @@ func (b *Builder) BuildFromManifestEmbed(
 		return err
 	}
 
-	hashBytes := int64(m.HashBits >> 3)
+	hashBytes := int64(m.Params.DigestBits >> 3)
+	chunkShift := blkshift(m.Params.ChunkShift)
 
 	const inodeshift = blkshift(5)
 	const inodesize = 1 << inodeshift
@@ -414,8 +415,8 @@ func (b *Builder) BuildFromManifestEmbed(
 						return fmt.Errorf("TODO: support larger files with extended inode")
 					}
 					data = make([]byte, e.Size)
-					for start := int64(0); start < e.Size; start += int64(m.ChunkSize) {
-						idx := start / int64(m.ChunkSize)
+					for start := int64(0); start < e.Size; start += chunkShift.size() {
+						idx := start >> chunkShift
 						digest := e.Digests[idx*hashBytes : (idx+1)*hashBytes]
 						digeststr := base64.RawURLEncoding.EncodeToString(digest)
 						cdata, err := cs.Get(ctx, digeststr)
@@ -592,8 +593,10 @@ func (b *Builder) BuildFromManifestWithSlab(
 	sm SlabManager,
 ) error {
 
-	hashBytes := int64(m.HashBits >> 3)
-	if err := sm.VerifyParams(int(hashBytes), int(b.p.blk.size()), int(m.ChunkSize)); err != nil {
+	hashBytes := int64(m.Params.DigestBits >> 3)
+	chunkShift := blkshift(m.Params.ChunkShift)
+
+	if err := sm.VerifyParams(int(hashBytes), int(b.p.blk.size()), int(chunkShift.size())); err != nil {
 		return err
 	}
 
@@ -688,18 +691,17 @@ func (b *Builder) BuildFromManifestWithSlab(
 					return fmt.Errorf("TODO: support larger files with extended inode")
 				}
 				i.i.ISize = truncU32(e.Size)
-				// TODO: get chunk size in blkshift and use roundup
-				nChunks := (e.Size + int64(m.ChunkSize) - 1) / int64(m.ChunkSize)
+				nChunks := chunkShift.roundup(e.Size) >> chunkShift
 				if int64(len(e.Digests)) != nChunks*hashBytes {
 					return fmt.Errorf("digest list wrong size")
 				}
 				blocks := make([]uint16, nChunks)
-				allButLast := truncU16(m.ChunkSize >> b.p.blk)
+				allButLast := truncU16(chunkShift.size() >> b.p.blk)
 				for j := range blocks {
 					blocks[j] = allButLast
 				}
 				// TODO: write this better
-				lastChunkLen := e.Size & int64(m.ChunkSize-1)
+				lastChunkLen := chunkShift.leftover(e.Size)
 				blocks[len(blocks)-1] = truncU16(b.p.blk.roundup(lastChunkLen) >> b.p.blk)
 				// TODO: do in larger batches
 				locs, err := sm.AllocateBatch(blocks, e.Digests)

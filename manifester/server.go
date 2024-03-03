@@ -25,11 +25,7 @@ import (
 )
 
 const (
-	// defaultTailCutoff = 480
-	defaultTailCutoff = 224
-	defaultChunkSize  = 1 << 16
-	defaultHashAlgo   = "sha256"
-	defaultHashBits   = 192
+	defaultSmallFileCutoff = 224
 )
 
 type (
@@ -59,9 +55,27 @@ func ManifestServer(cfg Config) (*server, error) {
 }
 
 func (s *server) validateManifestReq(r *ManifestReq) error {
+	if r.ChunkShift != int(s.mb.params.ChunkShift) {
+		return fmt.Errorf("mismatched chunk shift (this server uses %d, not %d)",
+			s.mb.params.ChunkShift, r.ChunkShift)
+	} else if r.DigestAlgo != s.mb.params.DigestAlgo {
+		return fmt.Errorf("mismatched chunk shift (this server uses %s, not %s)",
+			s.mb.params.DigestAlgo, r.DigestAlgo)
+	} else if r.DigestBits != int(s.mb.params.DigestBits) {
+		return fmt.Errorf("mismatched chunk shift (this server uses %d, not %d)",
+			s.mb.params.DigestBits, r.DigestBits)
+	}
+
 	if !slices.Contains(s.cfg.AllowedUpstreams, r.Upstream) {
 		return fmt.Errorf("invalid upstream %q", r.Upstream)
 	}
+
+	if r.SmallFileCutoff > 480 {
+		return fmt.Errorf("small file cutoff too big")
+	} else if r.SmallFileCutoff == 0 {
+		r.SmallFileCutoff = defaultSmallFileCutoff
+	}
+
 	return nil
 }
 
@@ -182,7 +196,10 @@ func (s *server) handleManifest(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	manifest, err := s.mb.Build(req.Context(), io.TeeReader(narOut, narHasher))
+	args := BuildArgs{
+		SmallFileCutoff: r.SmallFileCutoff,
+	}
+	manifest, err := s.mb.Build(req.Context(), args, io.TeeReader(narOut, narHasher))
 	if err != nil {
 		log.Println("manifest generation error", err)
 		w.WriteHeader(http.StatusInternalServerError)

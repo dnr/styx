@@ -5,6 +5,8 @@ package pb;
 
 option go_package = "github.com/dnr/styx/pb";
 
+import "params.proto";
+
 enum EntryType {
   UNKNOWN = 0;
   REGULAR = 1;
@@ -13,12 +15,9 @@ enum EntryType {
 }
 
 message Manifest {
-  // Entries and required parameters
-  repeated Entry entries = 1;
-  int32 tail_cutoff = 2;
-  int32 chunk_size = 3;
-  string hash_algo = 4;
-  int32 hash_bits = 5;
+  GlobalParams params = 1;
+  int32 small_file_cutoff = 2;
+  repeated Entry entries = 3;
 
   // Metadata on how this was generated
   ManifestMeta meta = 10;

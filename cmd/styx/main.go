@@ -41,6 +41,11 @@ func withChunkStoreWrite(c *cobra.Command) runE {
 
 func withManifestBuilder(c *cobra.Command) runE {
 	var mbcfg manifester.ManifestBuilderConfig
+
+	c.Flags().IntVar(&mbcfg.ChunkShift, "chunk_shift", 16, "chunk shift for building manifests")
+	c.Flags().StringVar(&mbcfg.DigestAlgo, "digest_algo", "sha256", "digest algo for building manifests")
+	c.Flags().IntVar(&mbcfg.DigestBits, "digest_bits", 192, "digest bits for building manifests")
+
 	return chainRunE(
 		withChunkStoreWrite(c),
 		func(c *cobra.Command, args []string) error {

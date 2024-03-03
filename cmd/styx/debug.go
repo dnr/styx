@@ -72,7 +72,8 @@ func debugCmd() *cobra.Command {
 				out := c.Context().Value(ctxOutFile).(*os.File)
 				mb := c.Context().Value(ctxManifestBuilder).(*manifester.ManifestBuilder)
 				keys := c.Context().Value(ctxSignKeys).([]signature.SecretKey)
-				if manifest, err := mb.Build(context.Background(), in); err != nil {
+				var buildArgs manifester.BuildArgs
+				if manifest, err := mb.Build(context.Background(), buildArgs, in); err != nil {
 					return err
 				} else if b, err := common.SignMessage(keys, manifest); err != nil {
 					return err

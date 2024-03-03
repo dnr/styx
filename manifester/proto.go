@@ -13,7 +13,13 @@ type (
 	ManifestReq struct {
 		Upstream      string
 		StorePathHash string
-		// TODO: pass some params here
+
+		// TODO: move this to pb and embed a GlobalParams?
+		ChunkShift int
+		DigestAlgo string
+		DigestBits int
+
+		SmallFileCutoff int
 	}
 	// response is zstd of proto SignedManifest
 
