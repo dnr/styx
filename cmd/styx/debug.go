@@ -143,7 +143,7 @@ func debugCmd() *cobra.Command {
 					return err
 				}
 
-				return b.BuildFromManifestWithSlab(c.Context(), &m, out, sm)
+				return b.BuildFromManifestWithSlab(&m, out, sm)
 			},
 		),
 		cmd(

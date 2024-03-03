@@ -24,6 +24,7 @@ import (
 	"github.com/lunixbochs/struc"
 	"github.com/nix-community/go-nix/pkg/narinfo/signature"
 	"go.etcd.io/bbolt"
+	"golang.org/x/sync/singleflight"
 	"golang.org/x/sys/unix"
 	"google.golang.org/protobuf/proto"
 
@@ -46,6 +47,7 @@ type (
 		csread      manifester.ChunkStoreRead
 		db          *bbolt.DB
 		pool        *sync.Pool
+		sf          singleflight.Group
 		builder     *erofs.Builder
 		devnode     int
 		zeros       []byte
@@ -431,8 +433,7 @@ func (s *server) handleOpenImage(msgId, objectId, fd, flags uint32, cookie strin
 
 	// transform manifest into image (allocate chunks)
 	var image bytes.Buffer
-	ctx := context.TODO()
-	err = s.builder.BuildFromManifestWithSlab(ctx, &m, &image, s)
+	err = s.builder.BuildFromManifestWithSlab(&m, &image, s)
 	if err != nil {
 		return 0, fmt.Errorf("build image error: %w", err)
 	}
@@ -525,6 +526,8 @@ func (s *server) handleReadImage(state *openFileState, _, _ uint64) error {
 }
 
 func (s *server) handleReadSlab(state *openFileState, ln, off uint64) error {
+	ctx := context.TODO()
+
 	digest := make([]byte, s.digestBytes)
 
 	if ln > (1 << s.cfg.Params.Params.ChunkShift) {
@@ -549,40 +552,41 @@ func (s *server) handleReadSlab(state *openFileState, ln, off uint64) error {
 		}
 		// reset off so we write at the right place
 		off = uint64(addrFromKey(k)) << s.blockShift
-		copy(digest[:], v)
+		copy(digest, v)
 		return nil
 	})
 	if err != nil {
 		return err
 	}
 
-	// TODO: enforce one read per digest
+	digestStr := base64.RawURLEncoding.EncodeToString(digest)
 
-	ctx := context.TODO()
-	data, err := s.csread.Get(ctx, base64.RawURLEncoding.EncodeToString(digest[:]))
-	if err != nil {
-		return err
-	}
+	// TODO: consider if this is the right scope for duplicate suppression
+	_, err, _ = s.sf.Do(digestStr, func() (any, error) {
+		data, err := s.csread.Get(ctx, digestStr)
+		if err != nil {
+			return nil, err
+		}
 
-	// Pad with zeros to fill whole block. This might work without padding but it seems safer,
-	// especially if we reuse slab chunks. Note that the pwrite below can return > len(data) if
-	// len(data) is not a full block, which suggests we should fill it.
-	// TODO: replace with util funcs
-	if roundedUp := int(s.blockShift.roundup(int64(len(data)))); roundedUp > len(data) {
-		data = append(data, s.zeros[:roundedUp-len(data)]...)
-	}
+		// Pad with zeros to fill whole block. This might work without padding but it seems safer,
+		// especially if we reuse slab chunks. Note that the pwrite below can return > len(data) if
+		// len(data) is not a full block, which suggests we should fill it.
+		if roundedUp := int(s.blockShift.roundup(int64(len(data)))); roundedUp > len(data) {
+			data = append(data, s.zeros[:roundedUp-len(data)]...)
+		}
 
-	if len(data) < int(ln) {
-		log.Printf("chunk was not big enough to cover requested range: %d vs %d", len(data), ln)
-	}
+		if len(data) < int(ln) {
+			log.Printf("chunk was not big enough to cover requested range: %d vs %d", len(data), ln)
+		}
 
-	n, err := unix.Pwrite(int(state.fd), data, int64(off))
-	if err != nil {
-		return err
-	} else if n != len(data) {
-		return fmt.Errorf("short write %d != %d (ln %d)", n, len(data), ln)
-	}
-	return nil
+		n, err := unix.Pwrite(int(state.fd), data, int64(off))
+		if err == nil && n != len(data) {
+			err = fmt.Errorf("short write %d != %d (requested %d)", n, len(data), ln)
+		}
+		return nil, err
+	})
+
+	return err
 }
 
 // slab manager

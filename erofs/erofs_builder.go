@@ -587,7 +587,6 @@ func (b *Builder) BuildFromManifestEmbed(
 
 // put data in slabs
 func (b *Builder) BuildFromManifestWithSlab(
-	ctx context.Context,
 	m *pb.Manifest,
 	out io.Writer,
 	sm SlabManager,
