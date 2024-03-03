@@ -16,4 +16,6 @@ var (
 	chunkBucket = []byte("chunk")
 	slabBucket  = []byte("slab")
 	imageBucket = []byte("image")
+
+	metaParams = []byte("params")
 )

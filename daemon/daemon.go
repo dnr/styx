@@ -107,7 +107,8 @@ func (s *server) openDb() (err error) {
 		return err
 	}
 	return s.db.Update(func(tx *bbolt.Tx) error {
-		if _, err := tx.CreateBucketIfNotExists(metaBucket); err != nil {
+		var gp pb.GlobalParams
+		if mb, err := tx.CreateBucketIfNotExists(metaBucket); err != nil {
 			return err
 		} else if _, err = tx.CreateBucketIfNotExists(chunkBucket); err != nil {
 			return err
@@ -115,8 +116,19 @@ func (s *server) openDb() (err error) {
 			return err
 		} else if _, err = tx.CreateBucketIfNotExists(imageBucket); err != nil {
 			return err
+		} else if b := mb.Get(metaParams); b == nil {
+			if b, err = proto.Marshal(s.cfg.Params.Params); err != nil {
+				return err
+			}
+			mb.Put(metaParams, b)
+		} else if err = proto.Unmarshal(b, &gp); err != nil {
+			return err
+		} else if mp := s.cfg.Params.Params; false ||
+			gp.ChunkShift != mp.ChunkShift ||
+			gp.DigestAlgo != mp.DigestAlgo ||
+			gp.DigestBits != mp.DigestBits {
+			return fmt.Errorf("mismatched global params; wipe cache and start over")
 		}
-		// TODO: verify params in meta bucket (or write new)
 		return nil
 	})
 }
