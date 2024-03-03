@@ -16,7 +16,6 @@ import (
 	"path"
 	"sort"
 
-	"github.com/dnr/styx/common"
 	"github.com/dnr/styx/manifester"
 	"github.com/dnr/styx/pb"
 	"github.com/klauspost/compress/zstd"
@@ -257,7 +256,7 @@ func (b *Builder) BuildFromNar(r io.Reader, out io.Writer) error {
 		data.i.i.IU = truncU32(p >> b.p.blk)
 		p += b.p.blk.roundup(int64(len(data.data)))
 	}
-	log.Printf("final calculated size %d", p)
+	// log.Printf("final calculated size %d", p)
 
 	// at this point:
 	// all inodes have correct IU and ISize
@@ -520,7 +519,7 @@ func (b *Builder) BuildFromManifestEmbed(
 		data.i.i.IU = truncU32(p >> b.p.blk)
 		p += b.p.blk.roundup(int64(len(data.data)))
 	}
-	log.Printf("final calculated size %d", p)
+	// log.Printf("final calculated size %d", p)
 
 	// at this point:
 	// all inodes have correct IU and ISize
@@ -588,20 +587,10 @@ func (b *Builder) BuildFromManifestEmbed(
 // put data in slabs
 func (b *Builder) BuildFromManifestWithSlab(
 	ctx context.Context,
-	r io.Reader,
+	m *pb.Manifest,
 	out io.Writer,
 	sm SlabManager,
 ) error {
-	// TODO: move manifest encoding to shared lib
-	// TODO: verify signatures if requested
-	var m pb.Manifest
-	if zr, err := zstd.NewReader(r); err != nil {
-		return err
-	} else if sBytes, err := io.ReadAll(zr); err != nil {
-		return err
-	} else if err := common.VerifyMessage(nil, sBytes, &m); err != nil {
-		return err
-	}
 
 	hashBytes := int64(m.HashBits >> 3)
 	if err := sm.VerifyParams(int(hashBytes), int(b.p.blk.size()), int(m.ChunkSize)); err != nil {
@@ -845,7 +834,7 @@ func (b *Builder) BuildFromManifestWithSlab(
 		data.i.i.IU = truncU32(p >> b.p.blk)
 		p += b.p.blk.roundup(int64(len(data.data)))
 	}
-	log.Printf("final calculated size %d", p)
+	// log.Printf("final calculated size %d", p)
 
 	// at this point:
 	// all inodes have correct IU and ISize

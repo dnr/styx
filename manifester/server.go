@@ -10,6 +10,8 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"path"
+	"strings"
 	"time"
 
 	"github.com/klauspost/compress/zstd"
@@ -256,10 +258,43 @@ func (s *server) handleChunkDiff(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
+func (s *server) handleChunk(w http.ResponseWriter, r *http.Request) {
+	// This is for local testing only, real usage goes to s3 directly
+
+	localWrite, ok := s.cfg.ManifestBuilder.cs.(*localChunkStoreWrite)
+	if !ok {
+		w.WriteHeader(http.StatusNotImplemented)
+		return
+	}
+
+	parts := strings.Split(r.URL.Path, "/")
+	if l := len(parts); l < 2 {
+		w.WriteHeader(http.StatusNotFound)
+		return
+	} else if parts[l-2] != "chunk" {
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+	key := parts[len(parts)-1]
+
+	fn := path.Join(localWrite.dir, key)
+	f, err := os.Open(fn)
+	if err != nil {
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+	defer f.Close()
+	log.Println("chunk", key)
+	w.Header().Set("Content-Encoding", "zstd")
+	w.WriteHeader(http.StatusOK)
+	io.Copy(w, f)
+}
+
 func (s *server) Run() error {
 	mux := http.NewServeMux()
 	mux.HandleFunc(ManifestPath, s.handleManifest)
 	mux.HandleFunc(ChunkDiffPath, s.handleChunkDiff)
+	mux.HandleFunc(ChunkReadPath, s.handleChunk)
 
 	srv := &http.Server{
 		Addr:    s.cfg.Bind,

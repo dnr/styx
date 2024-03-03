@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"path"
 
@@ -30,20 +32,9 @@ type (
 		ChunkLocalDir string
 	}
 
-	ChunkStoreReadConfig struct {
-		// One of these is required:
-		ChunkBucket   string
-		ChunkLocalDir string
-	}
-
 	localChunkStoreWrite struct {
 		dir string
 		enc *zstd.Encoder
-	}
-
-	localChunkStoreRead struct {
-		dir string
-		dec *zstd.Decoder
 	}
 
 	s3ChunkStoreWrite struct {
@@ -52,10 +43,9 @@ type (
 		enc      *zstd.Encoder
 	}
 
-	s3ChunkStoreRead struct {
-		bucket   string
-		s3client *s3.Client
-		dec      *zstd.Decoder
+	urlChunkStoreRead struct {
+		url string
+		dec *zstd.Decoder
 	}
 )
 
@@ -86,20 +76,6 @@ func (l *localChunkStoreWrite) PutIfNotExists(ctx context.Context, key string, d
 		return err
 	}
 	return nil
-}
-
-func newLocalChunkStoreRead(dir string, dec *zstd.Decoder) (*localChunkStoreRead, error) {
-	return &localChunkStoreRead{dir: dir, dec: dec}, nil
-}
-
-func (l *localChunkStoreRead) Get(ctx context.Context, key string) ([]byte, error) {
-	fn := path.Join(l.dir, key)
-	b, err := os.ReadFile(fn)
-	if err != nil {
-		return nil, err
-	}
-	return l.dec.DecodeAll(b, nil)
-
 }
 
 func newS3ChunkStoreWrite(bucket string, enc *zstd.Encoder) (*s3ChunkStoreWrite, error) {
@@ -137,37 +113,6 @@ func (s *s3ChunkStoreWrite) PutIfNotExists(ctx context.Context, key string, data
 	return err
 }
 
-func newS3ChunkStoreRead(bucket string, dec *zstd.Decoder) (*s3ChunkStoreRead, error) {
-	awscfg, err := awsconfig.LoadDefaultConfig(context.Background())
-	if err != nil {
-		return nil, err
-	}
-	s3client := s3.NewFromConfig(awscfg, func(o *s3.Options) {
-		o.EndpointOptions.DisableHTTPS = true
-	})
-	return &s3ChunkStoreRead{
-		bucket:   bucket,
-		s3client: s3client,
-		dec:      dec,
-	}, nil
-}
-
-func (s *s3ChunkStoreRead) Get(ctx context.Context, key string) ([]byte, error) {
-	res, err := s.s3client.GetObject(context.Background(), &s3.GetObjectInput{
-		Bucket: &s.bucket,
-		Key:    &key,
-	})
-	if err != nil {
-		return nil, err
-	}
-	defer res.Body.Close()
-	b, err := io.ReadAll(res.Body)
-	if aws.ToString(res.ContentEncoding) == "zstd" {
-		b, err = s.dec.DecodeAll(b, nil)
-	}
-	return b, err
-}
-
 func NewChunkStoreWrite(cfg ChunkStoreWriteConfig) (ChunkStoreWrite, error) {
 	enc, err := zstd.NewWriter(nil,
 		zstd.WithEncoderLevel(zstd.SpeedBestCompression),
@@ -184,17 +129,35 @@ func NewChunkStoreWrite(cfg ChunkStoreWriteConfig) (ChunkStoreWrite, error) {
 	return nil, errors.New("chunk store configuration is missing")
 }
 
-func NewChunkStoreRead(cfg ChunkStoreReadConfig) (ChunkStoreRead, error) {
+func NewChunkStoreReadUrl(url string) ChunkStoreRead {
 	dec, err := zstd.NewReader(nil,
 		zstd.WithDecoderMaxMemory(1<<20), // chunks are small
 	)
 	if err != nil {
+		panic("can't create zstd decoder")
+	}
+	return &urlChunkStoreRead{
+		url: url,
+		dec: dec,
+	}
+}
+
+func (s *urlChunkStoreRead) Get(ctx context.Context, key string) ([]byte, error) {
+	url := s.url + ChunkReadPath + key
+	res, err := http.Get(url)
+	if err != nil {
 		return nil, err
 	}
-	if len(cfg.ChunkLocalDir) > 0 {
-		return newLocalChunkStoreRead(cfg.ChunkLocalDir, dec)
-	} else if len(cfg.ChunkBucket) > 0 {
-		return newS3ChunkStoreRead(cfg.ChunkBucket, dec)
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("http error: %s", res.Status)
 	}
-	return nil, errors.New("chunk store configuration is missing")
+	b, err := io.ReadAll(res.Body)
+	if err != nil {
+		return nil, err
+	}
+	if res.Header.Get("Content-Encoding") == "zstd" {
+		b, err = s.dec.DecodeAll(b, nil)
+	}
+	return b, err
 }

@@ -14,7 +14,6 @@ import (
 
 const (
 	ctxChunkStoreWrite = iota
-	ctxChunkStoreRead  // FIXME
 	ctxManifestBuilder
 	ctxDaemonConfig
 	ctxManifesterConfig
@@ -36,23 +35,6 @@ func withChunkStoreWrite(c *cobra.Command) runE {
 			return err
 		}
 		c.SetContext(context.WithValue(c.Context(), ctxChunkStoreWrite, cs))
-		return nil
-	}
-}
-
-// FIXME
-func withChunkStoreRead(c *cobra.Command) runE {
-	var cscfg manifester.ChunkStoreReadConfig
-
-	c.Flags().StringVar(&cscfg.ChunkBucket, "rchunkbucket", "", "s3 bucket to get chunks")
-	c.Flags().StringVar(&cscfg.ChunkLocalDir, "rchunklocaldir", "", "local directory to read chunks from")
-
-	return func(c *cobra.Command, args []string) error {
-		cs, err := manifester.NewChunkStoreRead(cscfg)
-		if err != nil {
-			return err
-		}
-		c.SetContext(context.WithValue(c.Context(), ctxChunkStoreRead, cs))
 		return nil
 	}
 }
@@ -94,7 +76,7 @@ func withDaemonConfig(c *cobra.Command) runE {
 			} else if err = common.VerifyMessage(cfg.StyxPubKeys, paramsBytes, &cfg.Params); err != nil {
 				return err
 			}
-			// FIXME: &cfg
+			// FIXME: &cfg?
 			c.SetContext(context.WithValue(c.Context(), ctxDaemonConfig, cfg))
 			return nil
 		},

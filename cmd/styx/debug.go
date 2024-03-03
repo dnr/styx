@@ -91,14 +91,14 @@ func debugCmd() *cobra.Command {
 				Short: "create an erofs image from a manifest",
 				Args:  cobra.ExactArgs(2),
 			},
-			withChunkStoreRead,
 			withInFile,
 			withOutFile,
 			func(c *cobra.Command, args []string) error {
 				in := c.Context().Value(ctxInFile).(*os.File)
 				out := c.Context().Value(ctxOutFile).(*os.File)
-				cs := c.Context().Value(ctxChunkStoreRead).(manifester.ChunkStoreRead)
-				return erofs.NewBuilder().BuildFromManifestEmbed(c.Context(), in, out, cs)
+				// FIXME
+				// cs := c.Context().Value(ctxChunkStoreRead).(manifester.ChunkStoreRead)
+				return erofs.NewBuilder().BuildFromManifestEmbed(c.Context(), in, out, nil)
 			},
 		),
 		cmd(
@@ -109,11 +109,24 @@ func debugCmd() *cobra.Command {
 			},
 			withInFile,
 			withOutFile,
+			withStyxPubKeys,
 			func(c *cobra.Command, args []string) error {
 				in := c.Context().Value(ctxInFile).(*os.File)
 				out := c.Context().Value(ctxOutFile).(*os.File)
+				keys := c.Context().Value(ctxStyxPubKeys).([]signature.PublicKey)
 				sm := erofs.NewDummySlabManager()
-				return erofs.NewBuilder().BuildFromManifestWithSlab(c.Context(), in, out, sm)
+
+				// TODO: move to common place?
+				var m pb.Manifest
+				if zr, err := zstd.NewReader(in); err != nil {
+					return err
+				} else if sBytes, err := io.ReadAll(zr); err != nil {
+					return err
+				} else if err := common.VerifyMessage(keys, sBytes, &m); err != nil {
+					return err
+				}
+
+				return erofs.NewBuilder().BuildFromManifestWithSlab(c.Context(), &m, out, sm)
 			},
 		),
 		cmd(

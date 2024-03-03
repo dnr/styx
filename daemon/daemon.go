@@ -12,7 +12,6 @@ import (
 	"log"
 	"net"
 	"net/http"
-	"net/url"
 	"os"
 	"os/exec"
 	"path"
@@ -21,12 +20,14 @@ import (
 	"sync"
 	"time"
 
+	"github.com/klauspost/compress/zstd"
 	"github.com/lunixbochs/struc"
 	"github.com/nix-community/go-nix/pkg/narinfo/signature"
 	"go.etcd.io/bbolt"
 	"golang.org/x/sys/unix"
 	"google.golang.org/protobuf/proto"
 
+	"github.com/dnr/styx/common"
 	"github.com/dnr/styx/erofs"
 	"github.com/dnr/styx/manifester"
 	"github.com/dnr/styx/pb"
@@ -40,6 +41,7 @@ const (
 type (
 	server struct {
 		cfg     *Config
+		csread  manifester.ChunkStoreRead
 		db      *bbolt.DB
 		pool    *sync.Pool
 		builder *erofs.Builder
@@ -68,8 +70,7 @@ type (
 		StyxPubKeys []signature.PublicKey
 		Params      pb.DaemonParams
 
-		Upstream       string
-		ChunkStoreRead manifester.ChunkStoreRead
+		Upstream string
 
 		ErofsBlockShift int
 		SmallFileCutoff int
@@ -83,6 +84,7 @@ var _ erofs.SlabManager = (*server)(nil)
 func CachefilesServer(cfg Config) *server {
 	return &server{
 		cfg:        &cfg,
+		csread:     manifester.NewChunkStoreReadUrl(cfg.Params.ChunkReadUrl),
 		pool:       &sync.Pool{New: func() any { return make([]byte, CACHEFILES_MSG_MAX_SIZE) }},
 		builder:    erofs.NewBuilder(),
 		cacheState: make(map[uint32]*openFileState),
@@ -311,6 +313,9 @@ func (s *server) handleOpen(msgId, objectId, fd, flags uint32, volume, cookie []
 		if _, err := unix.Write(s.devnode, []byte(reply)); err != nil {
 			log.Println("failed write to devnode", err)
 		}
+		if cacheSize < 0 {
+			unix.Close(int(fd))
+		}
 	}()
 
 	if string(volume) != "erofs,"+domainId+"\x00" {
@@ -374,11 +379,7 @@ func (s *server) handleOpenImage(msgId, objectId, fd, flags uint32, cookie strin
 	}
 
 	// get manifest
-	u := url.URL{
-		Scheme: "http",
-		Host:   s.cfg.Params.ManifesterUrl,
-		Path:   manifester.ManifestPath,
-	}
+	u := s.cfg.Params.ManifesterUrl + manifester.ManifestPath
 	reqBytes, err := json.Marshal(manifester.ManifestReq{
 		Upstream:      s.cfg.Upstream,
 		StorePathHash: cookie,
@@ -386,7 +387,7 @@ func (s *server) handleOpenImage(msgId, objectId, fd, flags uint32, cookie strin
 	if err != nil {
 		return 0, err
 	}
-	res, err := http.Post(u.String(), "application/json", bytes.NewReader(reqBytes))
+	res, err := http.Post(u, "application/json", bytes.NewReader(reqBytes))
 	if err != nil {
 		return 0, fmt.Errorf("manifester http error: %w", err)
 	}
@@ -395,14 +396,26 @@ func (s *server) handleOpenImage(msgId, objectId, fd, flags uint32, cookie strin
 		return 0, fmt.Errorf("manifester http status: %s", res.Status)
 	}
 
+	var m pb.Manifest
+	var sb []byte
+	if zr, err := zstd.NewReader(res.Body); err != nil {
+		return 0, err
+	} else if sb, err = io.ReadAll(zr); err != nil {
+		return 0, err
+	} else if err := common.VerifyMessage(s.cfg.StyxPubKeys, sb, &m); err != nil {
+		return 0, err
+	}
+
 	// transform manifest into image (allocate chunks)
 	var image bytes.Buffer
 	ctx := context.TODO()
-	err = s.builder.BuildFromManifestWithSlab(ctx, res.Body, &image, s)
+	err = s.builder.BuildFromManifestWithSlab(ctx, &m, &image, s)
 	if err != nil {
 		return 0, fmt.Errorf("build image error: %w", err)
 	}
 	size = int64(image.Len())
+
+	log.Printf("new image %s, %d bytes in manifest, %d bytes in erofs", cookie, len(sb), size)
 
 	// record in db
 	err = s.db.Update(func(tx *bbolt.Tx) error {
@@ -523,7 +536,7 @@ func (s *server) handleReadSlab(state *openFileState, ln, off uint64) error {
 	// TODO: enforce one read per digest
 
 	ctx := context.TODO()
-	data, err := s.cfg.ChunkStoreRead.Get(ctx, base64.RawURLEncoding.EncodeToString(digest[:]))
+	data, err := s.csread.Get(ctx, base64.RawURLEncoding.EncodeToString(digest[:]))
 	if err != nil {
 		return err
 	}

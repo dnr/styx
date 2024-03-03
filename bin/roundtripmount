@@ -7,7 +7,7 @@ set -eux
 # sudo ./styx daemon --rchunklocaldir=/tmp/chunks
 
 for a; do
-  tmp=$(mktemp -d roundtrip.XXXXXXXXX)
+  tmp=$(mktemp -p /tmp -d roundtrip.XXXXXXXXX)
   j=$(nix path-info $a --json)
   if ! echo "$j" | jq -r '.[0].signatures' | grep -q cache.nixos.org; then
     echo "$a did not come from cache.nixos.org"

@@ -4,6 +4,9 @@ var (
 	// protocol is (mostly) json over http
 	ManifestPath  = "/manifest"
 	ChunkDiffPath = "/chunkdiff"
+
+	// chunk read protocol
+	ChunkReadPath = "/chunk/" // digest as final path component, no body
 )
 
 type (
