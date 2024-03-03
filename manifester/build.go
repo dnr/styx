@@ -10,6 +10,7 @@ import (
 	"github.com/dnr/styx/pb"
 	"github.com/klauspost/compress/zstd"
 	"github.com/nix-community/go-nix/pkg/nar"
+	"golang.org/x/sync/errgroup"
 	"golang.org/x/sync/semaphore"
 )
 
@@ -19,11 +20,12 @@ type (
 	}
 
 	ManifestBuilder struct {
-		cs       ChunkStoreWrite
-		chunksem *semaphore.Weighted
-		chunkenc *zstd.Encoder
-		params   *pb.GlobalParams
-		chunk    blkshift
+		cs          ChunkStoreWrite
+		chunksem    *semaphore.Weighted
+		chunkenc    *zstd.Encoder
+		params      *pb.GlobalParams
+		chunk       blkshift
+		digestBytes int
 	}
 
 	ManifestBuilderConfig struct {
@@ -45,7 +47,8 @@ func NewManifestBuilder(cfg ManifestBuilderConfig, cs ChunkStoreWrite) (*Manifes
 			DigestAlgo: cfg.DigestAlgo,
 			DigestBits: int32(cfg.DigestBits),
 		},
-		chunk: blkshift(cfg.ChunkShift),
+		chunk:       blkshift(cfg.ChunkShift),
+		digestBytes: cfg.DigestBits >> 3,
 	}, nil
 }
 
@@ -60,105 +63,86 @@ func (b *ManifestBuilder) Build(ctx context.Context, args BuildArgs, r io.Reader
 		return nil, err
 	}
 
-	errC := make(chan error, 100)
-	expected := 0
-	var retErr error
-
-	for {
-		h, err := nr.Next()
-		if err == io.EOF {
-			break
-		} else if err != nil {
-			retErr = err
-			break
-		} else if err = h.Validate(); err != nil {
-			retErr = err
-			break
-		} else if h.Path == "/" && h.Type != nar.TypeDirectory {
-			retErr = errors.New("can't handle bare file nars yet")
-			break
-		}
-
-		e := &pb.Entry{
-			Path:       h.Path,
-			Executable: h.Executable,
-			Size:       h.Size,
-		}
-		m.Entries = append(m.Entries, e)
-
-		switch h.Type {
-		case nar.TypeDirectory:
-			e.Type = pb.EntryType_DIRECTORY
-
-		case nar.TypeRegular:
-			e.Type = pb.EntryType_REGULAR
-
-			// TODO: don't read full, stream this through with a concurrency limit on handleChunk
-			data, err := readFullFromNar(nr, h)
-			if err != nil {
-				retErr = err
-				break
-			}
-
-			if h.Size <= int64(args.SmallFileCutoff) {
-				e.TailData = data
-			} else {
-				nChunks := (len(data) + int(b.chunk.size()) - 1) >> b.chunk
-				e.Digests = make([]byte, nChunks*(int(b.params.DigestBits)>>3))
-				expected += nChunks
-				for i := 0; i < nChunks; i++ {
-					go b.handleChunk(ctx, data, e.Digests, i, errC)
-				}
-			}
-
-		case nar.TypeSymlink:
-			e.Type = pb.EntryType_SYMLINK
-			e.TailData = []byte(h.LinkTarget)
-
-		default:
-			retErr = errors.New("unknown type")
-			break
-		}
+	eg, gCtx := errgroup.WithContext(ctx)
+	for err == nil && gCtx.Err() == nil {
+		err = b.entry(gCtx, args, m, nr, eg)
+	}
+	if err == io.EOF {
+		err = nil
 	}
 
-	for i := 0; i < expected; i++ {
-		err := <-errC
-		if err != nil && retErr == nil {
-			retErr = err
-		}
-	}
-	if retErr != nil {
-		return nil, retErr
-	}
+	err = Or(err, eg.Wait())
 
+	if err != nil {
+		return nil, err
+	}
 	return m, nil
 }
 
-func (b *ManifestBuilder) handleChunk(ctx context.Context, data, digests []byte, i int, errC chan<- error) {
-	b.chunksem.Acquire(ctx, 1)
-	defer b.chunksem.Release(1)
-
-	start := i << b.chunk
-	end := min(start+int(b.chunk.size()), len(data))
-	chunk := data[start:end]
-
-	h := sha256.New()
-	h.Write(chunk)
-	var out [sha256.Size]byte
-	digest := h.Sum(out[0:0])[:b.params.DigestBits>>3]
-	copy(digests[i*int(b.params.DigestBits)>>3:], digest)
-	digeststr := base64.RawURLEncoding.EncodeToString(digest)
-
-	errC <- b.cs.PutIfNotExists(ctx, digeststr, chunk)
-}
-
-func readFullFromNar(nr *nar.Reader, h *nar.Header) ([]byte, error) {
-	buf := make([]byte, h.Size)
-	num, err := io.ReadFull(nr, buf)
-	if err != nil {
-		return nil, err
-	} else if num != int(h.Size) {
-		return nil, io.ErrUnexpectedEOF
+func (b *ManifestBuilder) entry(ctx context.Context, args BuildArgs, m *pb.Manifest, nr *nar.Reader, eg *errgroup.Group) error {
+	h, err := nr.Next()
+	if err != nil { // including io.EOF
+		return err
+	} else if err = h.Validate(); err != nil {
+		return err
+	} else if h.Path == "/" && h.Type != nar.TypeDirectory {
+		return errors.New("can't handle bare file nars yet")
 	}
-	return buf, nil
+
+	e := &pb.Entry{
+		Path:       h.Path,
+		Executable: h.Executable,
+		Size:       h.Size,
+	}
+	m.Entries = append(m.Entries, e)
+
+	switch h.Type {
+	case nar.TypeDirectory:
+		e.Type = pb.EntryType_DIRECTORY
+
+	case nar.TypeRegular:
+		e.Type = pb.EntryType_REGULAR
+
+		if h.Size <= int64(args.SmallFileCutoff) {
+			data := make([]byte, h.Size)
+			if _, err := io.ReadFull(nr, data); err != nil {
+				return err
+			}
+			e.TailData = data
+		} else {
+			nChunks := int((h.Size + b.chunk.size() - 1) >> b.chunk)
+			digests := make([]byte, nChunks*b.digestBytes)
+			e.Digests = digests
+			remaining := h.Size
+			for remaining > 0 {
+				b.chunksem.Acquire(ctx, 1)
+				data := make([]byte, min(remaining, b.chunk.size()))
+				remaining -= int64(len(data))
+				if _, err := io.ReadFull(nr, data); err != nil {
+					b.chunksem.Release(1)
+					return err
+				}
+				digest := digests[:b.digestBytes]
+				digests = digests[b.digestBytes:]
+				eg.Go(func() error {
+					defer b.chunksem.Release(1)
+					h := sha256.New()
+					h.Write(data)
+					var out [sha256.Size]byte
+					copy(digest, h.Sum(out[0:0]))
+					digeststr := base64.RawURLEncoding.EncodeToString(digest)
+					return b.cs.PutIfNotExists(ctx, digeststr, data)
+				})
+			}
+		}
+
+	case nar.TypeSymlink:
+		e.Type = pb.EntryType_SYMLINK
+		e.TailData = []byte(h.LinkTarget)
+
+	default:
+		return errors.New("unknown type")
+	}
+
+	return nil
 }
