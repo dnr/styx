@@ -606,7 +606,7 @@ func (b *Builder) BuildFromManifestWithSlab(
 	const formatInline = (layoutCompact | (EROFS_INODE_FLAT_INLINE << EROFS_I_DATALAYOUT_BIT))
 	const formatChunked = (layoutCompact | (EROFS_INODE_CHUNK_BASED << EROFS_I_DATALAYOUT_BIT))
 
-	chunkedIU, err := inodeChunkInfo(b.blk, 16) // FIXME: use m.ChunkSize here
+	chunkedIU, err := inodeChunkInfo(b.blk, chunkShift)
 	if err != nil {
 		return err
 	}
