@@ -40,12 +40,15 @@ const (
 
 type (
 	server struct {
-		cfg     *Config
-		csread  manifester.ChunkStoreRead
-		db      *bbolt.DB
-		pool    *sync.Pool
-		builder *erofs.Builder
-		devnode int
+		cfg         *Config
+		digestBytes int
+		blockShift  blkshift
+		csread      manifester.ChunkStoreRead
+		db          *bbolt.DB
+		pool        *sync.Pool
+		builder     *erofs.Builder
+		devnode     int
+		zeros       []byte
 
 		lock       sync.Mutex
 		cacheState map[uint32]*openFileState // object id -> state
@@ -83,11 +86,14 @@ var _ erofs.SlabManager = (*server)(nil)
 
 func CachefilesServer(cfg Config) *server {
 	return &server{
-		cfg:        &cfg,
-		csread:     manifester.NewChunkStoreReadUrl(cfg.Params.ChunkReadUrl),
-		pool:       &sync.Pool{New: func() any { return make([]byte, CACHEFILES_MSG_MAX_SIZE) }},
-		builder:    erofs.NewBuilder(),
-		cacheState: make(map[uint32]*openFileState),
+		cfg:         &cfg,
+		digestBytes: int(cfg.Params.Params.DigestBits >> 3),
+		blockShift:  blkshift(cfg.ErofsBlockShift),
+		csread:      manifester.NewChunkStoreReadUrl(cfg.Params.ChunkReadUrl),
+		pool:        &sync.Pool{New: func() any { return make([]byte, CACHEFILES_MSG_MAX_SIZE) }},
+		builder:     erofs.NewBuilder(),
+		cacheState:  make(map[uint32]*openFileState),
+		zeros:       make([]byte, 1<<cfg.ErofsBlockShift),
 	}
 }
 
@@ -110,6 +116,7 @@ func (s *server) openDb() (err error) {
 		} else if _, err = tx.CreateBucketIfNotExists(imageBucket); err != nil {
 			return err
 		}
+		// TODO: verify params in meta bucket (or write new)
 		return nil
 	})
 }
@@ -506,9 +513,9 @@ func (s *server) handleReadImage(state *openFileState, _, _ uint64) error {
 }
 
 func (s *server) handleReadSlab(state *openFileState, ln, off uint64) error {
-	var digest [fHashBytes]byte
+	digest := make([]byte, s.digestBytes)
 
-	if ln > fChunkSize {
+	if ln > (1 << s.cfg.Params.Params.ChunkShift) {
 		panic("got too big slab read")
 	}
 
@@ -518,7 +525,7 @@ func (s *server) handleReadSlab(state *openFileState, ln, off uint64) error {
 			return errors.New("missing slab bucket")
 		}
 		cur := sb.Cursor()
-		target := addrKey(truncU32(off >> fBlockShift))
+		target := addrKey(truncU32(off >> s.blockShift))
 		k, v := cur.Seek(target)
 		if k == nil {
 			k, v = cur.Last()
@@ -529,7 +536,7 @@ func (s *server) handleReadSlab(state *openFileState, ln, off uint64) error {
 			return errors.New("ran off start of bucket")
 		}
 		// reset off so we write at the right place
-		off = uint64(addrFromKey(k)) << fBlockShift
+		off = uint64(addrFromKey(k)) << s.blockShift
 		copy(digest[:], v)
 		return nil
 	})
@@ -549,8 +556,8 @@ func (s *server) handleReadSlab(state *openFileState, ln, off uint64) error {
 	// especially if we reuse slab chunks. Note that the pwrite below can return > len(data) if
 	// len(data) is not a full block, which suggests we should fill it.
 	// TODO: replace with util funcs
-	if roundedUp := (len(data) + fBlockSize - 1) &^ (fBlockSize - 1); roundedUp > len(data) {
-		data = append(data, _zeros[:roundedUp-len(data)]...)
+	if roundedUp := int(s.blockShift.roundup(int64(len(data)))); roundedUp > len(data) {
+		data = append(data, s.zeros[:roundedUp-len(data)]...)
 	}
 
 	if len(data) < int(ln) {
@@ -601,7 +608,7 @@ func loadLoc(b []byte) (id uint16, addr uint32) {
 }
 
 func (s *server) VerifyParams(hashBytes, blockSize, chunkSize int) error {
-	if hashBytes != fHashBytes || blockSize != fBlockSize || chunkSize != fChunkSize {
+	if hashBytes != s.digestBytes || blockSize != int(s.blockShift.size()) || chunkSize != (1<<s.cfg.Params.Params.ChunkShift) {
 		return errors.New("mismatched params")
 	}
 	return nil
@@ -620,7 +627,7 @@ func (s *server) AllocateBatch(blocks []uint16, digests []byte) ([]erofs.SlabLoc
 		seq := sb.Sequence()
 
 		for i := range out {
-			digest := digests[i*fHashBytes : (i+1)*fHashBytes]
+			digest := digests[i*s.digestBytes : (i+1)*s.digestBytes]
 			var id uint16
 			var addr uint32
 			if have := cb.Get(digest); have == nil { // allocate
@@ -651,5 +658,3 @@ func (s *server) AllocateBatch(blocks []uint16, digests []byte) ([]erofs.SlabLoc
 func (s *server) SlabInfo(slabId uint16) (tag string, totalBlocks uint32) {
 	return fmt.Sprintf("_slab_%d", slabId), slabBlocks
 }
-
-var _zeros = make([]byte, fBlockSize)

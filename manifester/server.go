@@ -26,6 +26,7 @@ import (
 
 const (
 	defaultSmallFileCutoff = 224
+	maxSmallFileCutoff     = 480
 )
 
 type (
@@ -70,7 +71,7 @@ func (s *server) validateManifestReq(r *ManifestReq) error {
 		return fmt.Errorf("invalid upstream %q", r.Upstream)
 	}
 
-	if r.SmallFileCutoff > 480 {
+	if r.SmallFileCutoff > maxSmallFileCutoff {
 		return fmt.Errorf("small file cutoff too big")
 	} else if r.SmallFileCutoff == 0 {
 		r.SmallFileCutoff = defaultSmallFileCutoff
