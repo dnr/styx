@@ -21,6 +21,7 @@ const (
 	ctxOutFile
 	ctxSignKeys
 	ctxStyxPubKeys
+	ctxErofsBuilder
 )
 
 func withChunkStoreWrite(c *cobra.Command) runE {

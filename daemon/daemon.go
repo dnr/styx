@@ -91,7 +91,7 @@ func CachefilesServer(cfg Config) *server {
 		blockShift:  blkshift(cfg.ErofsBlockShift),
 		csread:      manifester.NewChunkStoreReadUrl(cfg.Params.ChunkReadUrl),
 		pool:        &sync.Pool{New: func() any { return make([]byte, CACHEFILES_MSG_MAX_SIZE) }},
-		builder:     erofs.NewBuilder(),
+		builder:     erofs.NewBuilder(erofs.BuilderConfig{BlockShift: cfg.ErofsBlockShift}),
 		cacheState:  make(map[uint32]*openFileState),
 		zeros:       make([]byte, 1<<cfg.ErofsBlockShift),
 	}

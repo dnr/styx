@@ -40,6 +40,16 @@ func withOutFile(c *cobra.Command, args []string) error {
 	return nil
 }
 
+func withErofsBuiler(c *cobra.Command) runE {
+	var cfg erofs.BuilderConfig
+	c.Flags().IntVar(&cfg.BlockShift, "block_shift", 12, "block size bits for local fs images")
+	return func(c *cobra.Command, args []string) error {
+		b := erofs.NewBuilder(cfg)
+		c.SetContext(context.WithValue(c.Context(), ctxErofsBuilder, b))
+		return nil
+	}
+}
+
 func debugCmd() *cobra.Command {
 	return cmd(
 		&cobra.Command{Use: "debug", Aliases: []string{"d"}, Short: "debug commands"},
@@ -51,10 +61,12 @@ func debugCmd() *cobra.Command {
 			},
 			withInFile,
 			withOutFile,
+			withErofsBuiler,
 			func(c *cobra.Command, args []string) error {
 				in := c.Context().Value(ctxInFile).(*os.File)
 				out := c.Context().Value(ctxOutFile).(*os.File)
-				return erofs.NewBuilder().BuildFromNar(in, out)
+				b := c.Context().Value(ctxErofsBuilder).(*erofs.Builder)
+				return b.BuildFromNar(in, out)
 			},
 		),
 		cmd(
@@ -94,12 +106,14 @@ func debugCmd() *cobra.Command {
 			},
 			withInFile,
 			withOutFile,
+			withErofsBuiler,
 			func(c *cobra.Command, args []string) error {
 				in := c.Context().Value(ctxInFile).(*os.File)
 				out := c.Context().Value(ctxOutFile).(*os.File)
 				// FIXME
 				// cs := c.Context().Value(ctxChunkStoreRead).(manifester.ChunkStoreRead)
-				return erofs.NewBuilder().BuildFromManifestEmbed(c.Context(), in, out, nil)
+				b := c.Context().Value(ctxErofsBuilder).(*erofs.Builder)
+				return b.BuildFromManifestEmbed(c.Context(), in, out, nil)
 			},
 		),
 		cmd(
@@ -110,10 +124,12 @@ func debugCmd() *cobra.Command {
 			},
 			withInFile,
 			withOutFile,
+			withErofsBuiler,
 			withStyxPubKeys,
 			func(c *cobra.Command, args []string) error {
 				in := c.Context().Value(ctxInFile).(*os.File)
 				out := c.Context().Value(ctxOutFile).(*os.File)
+				b := c.Context().Value(ctxErofsBuilder).(*erofs.Builder)
 				keys := c.Context().Value(ctxStyxPubKeys).([]signature.PublicKey)
 				sm := erofs.NewDummySlabManager()
 
@@ -127,7 +143,7 @@ func debugCmd() *cobra.Command {
 					return err
 				}
 
-				return erofs.NewBuilder().BuildFromManifestWithSlab(c.Context(), &m, out, sm)
+				return b.BuildFromManifestWithSlab(c.Context(), &m, out, sm)
 			},
 		),
 		cmd(
