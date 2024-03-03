@@ -3,23 +3,25 @@ package main
 import (
 	"context"
 	"log"
-	"os"
 
 	"github.com/nix-community/go-nix/pkg/narinfo/signature"
 	"github.com/spf13/cobra"
 
+	"github.com/dnr/styx/common"
 	"github.com/dnr/styx/daemon"
 	"github.com/dnr/styx/manifester"
 )
 
 const (
 	ctxChunkStoreWrite = iota
-	ctxChunkStoreRead
+	ctxChunkStoreRead  // FIXME
 	ctxManifestBuilder
 	ctxDaemonConfig
 	ctxManifesterConfig
 	ctxInFile
 	ctxOutFile
+	ctxSignKeys
+	ctxStyxPubKeys
 )
 
 func withChunkStoreWrite(c *cobra.Command) runE {
@@ -38,6 +40,7 @@ func withChunkStoreWrite(c *cobra.Command) runE {
 	}
 }
 
+// FIXME
 func withChunkStoreRead(c *cobra.Command) runE {
 	var cscfg manifester.ChunkStoreReadConfig
 
@@ -73,16 +76,25 @@ func withManifestBuilder(c *cobra.Command) runE {
 func withDaemonConfig(c *cobra.Command) runE {
 	var cfg daemon.Config
 
+	paramsUrl := c.Flags().String("params", "", "url to read global parameters from")
+	c.MarkFlagRequired("params")
 	c.Flags().StringVar(&cfg.DevPath, "devpath", "/dev/cachefiles", "path to cachefiles device node")
 	c.Flags().StringVar(&cfg.CachePath, "cache", "/var/cache/styx", "path to local cache (also socket and db)")
 	c.Flags().StringVar(&cfg.Upstream, "upstream", "cache.nixos.org", "upstream cache to ask manifester for")
-	c.Flags().StringVar(&cfg.ManifesterUrl, "manifester", "localhost:7420", "url to manifester service")
+	c.Flags().IntVar(&cfg.ErofsBlockShift, "block_shift", 12, "block size bits for local fs images")
+	c.Flags().IntVar(&cfg.SmallFileCutoff, "small_file_cutoff", 224, "cutoff for embedding small files in images")
 	c.Flags().IntVar(&cfg.Workers, "workers", 16, "worker goroutines for cachefilesd serving")
 
 	return chainRunE(
-		withChunkStoreRead(c),
+		withStyxPubKeys(c),
 		func(c *cobra.Command, args []string) error {
-			cfg.ChunkStoreRead = c.Context().Value(ctxChunkStoreRead).(manifester.ChunkStoreRead)
+			cfg.StyxPubKeys = c.Context().Value(ctxStyxPubKeys).([]signature.PublicKey)
+			if paramsBytes, err := common.LoadFromFileOrHttpUrl(*paramsUrl); err != nil {
+				return err
+			} else if err = common.VerifyMessage(cfg.StyxPubKeys, paramsBytes, &cfg.Params); err != nil {
+				return err
+			}
+			// FIXME: &cfg
 			c.SetContext(context.WithValue(c.Context(), ctxDaemonConfig, cfg))
 			return nil
 		},
@@ -93,36 +105,52 @@ func withManifesterConfig(c *cobra.Command) runE {
 	var cfg manifester.Config
 
 	c.Flags().StringVar(&cfg.Bind, "bind", ":7420", "address to listen on")
-	c.Flags().StringArrayVar(&cfg.AllowedUpstreams, "allowed-upstream", []string{"cache.nixos.org"}, "allowed upstream binary caches")
-	pubkeys := c.Flags().StringArray("pubkey",
+	c.Flags().StringArrayVar(&cfg.AllowedUpstreams, "allowed-upstream",
+		[]string{"cache.nixos.org"}, "allowed upstream binary caches")
+	pubkeys := c.Flags().StringArray("nix_pubkey",
 		[]string{"cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY="},
 		"verify narinfo with this public key")
-	signkeys := c.Flags().StringArray("signkey", nil, "sign manifest with key from this file")
 
 	return chainRunE(
+		withSignKeys(c),
 		withManifestBuilder(c),
 		func(c *cobra.Command, args []string) error {
-			for _, pk := range *pubkeys {
-				if k, err := signature.ParsePublicKey(pk); err != nil {
-					return err
-				} else {
-					cfg.PublicKeys = append(cfg.PublicKeys, k)
-				}
+			var err error
+			if cfg.PublicKeys, err = common.LoadPubKeys(*pubkeys); err != nil {
+				return err
 			}
-			for _, path := range *signkeys {
-				if skdata, err := os.ReadFile(path); err != nil {
-					return err
-				} else if k, err := signature.LoadSecretKey(string(skdata)); err != nil {
-					return err
-				} else {
-					cfg.SigningKeys = append(cfg.SigningKeys, k)
-				}
-			}
+			cfg.SigningKeys = c.Context().Value(ctxSignKeys).([]signature.SecretKey)
 			cfg.ManifestBuilder = c.Context().Value(ctxManifestBuilder).(*manifester.ManifestBuilder)
 			c.SetContext(context.WithValue(c.Context(), ctxManifesterConfig, cfg))
 			return nil
 		},
 	)
+}
+
+func withSignKeys(c *cobra.Command) runE {
+	signkeys := c.Flags().StringArray("styx_signkey", nil, "sign manifest with key from this file")
+	return func(c *cobra.Command, args []string) error {
+		keys, err := common.LoadSecretKeys(*signkeys)
+		if err != nil {
+			return err
+		}
+		c.SetContext(context.WithValue(c.Context(), ctxSignKeys, keys))
+		return nil
+	}
+}
+
+func withStyxPubKeys(c *cobra.Command) runE {
+	pubkeys := c.Flags().StringArray("styx_pubkey",
+		[]string{"styx-dev-1:SCMYzQjLTMMuy/MlovgOX0rRVCYKOj+cYAfQrqzcLu0="},
+		"verify params and manifests with this key")
+	return func(c *cobra.Command, args []string) error {
+		keys, err := common.LoadPubKeys(*pubkeys)
+		if err != nil {
+			return err
+		}
+		c.SetContext(context.WithValue(c.Context(), ctxStyxPubKeys, keys))
+		return nil
+	}
 }
 
 func main() {

@@ -2,8 +2,6 @@ package manifester
 
 import (
 	"bytes"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -19,7 +17,6 @@ import (
 	"github.com/nix-community/go-nix/pkg/narinfo"
 	"github.com/nix-community/go-nix/pkg/narinfo/signature"
 	"golang.org/x/exp/slices"
-	"google.golang.org/protobuf/proto"
 
 	"github.com/dnr/styx/common"
 	"github.com/dnr/styx/pb"
@@ -224,30 +221,14 @@ func (s *server) handleManifest(w http.ResponseWriter, req *http.Request) {
 
 	log.Println("req", r.StorePathHash, "writing manifest")
 
-	manifestBytes, err := proto.Marshal(manifest)
+	sb, err := common.SignMessage(s.cfg.SigningKeys, manifest)
 	if err != nil {
-		log.Println("marshal error:", err)
-		w.WriteHeader(http.StatusInternalServerError)
-		return
-	}
-
-	signedManifest := &pb.SignedManifest{
-		Manifest: manifestBytes,
-	}
-	if err = s.signManifest(signedManifest); err != nil {
 		log.Println("sign error:", err)
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
 
 	// encode and compress
-
-	outBytes, err := proto.Marshal(signedManifest)
-	if err != nil {
-		log.Println("marshal error:", err)
-		w.WriteHeader(http.StatusInternalServerError)
-		return
-	}
 
 	// TODO: write manifest itself to s3 also keyed by input
 
@@ -257,7 +238,7 @@ func (s *server) handleManifest(w http.ResponseWriter, req *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
-	_, err = zw.Write(outBytes)
+	_, err = zw.Write(sb)
 	if err != nil {
 		log.Println("zstd write:", err)
 		w.WriteHeader(http.StatusInternalServerError)
@@ -269,22 +250,6 @@ func (s *server) handleManifest(w http.ResponseWriter, req *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
-}
-
-func (s *server) signManifest(m *pb.SignedManifest) error {
-	h := sha256.New()
-	h.Write(m.Manifest)
-	fp := hex.EncodeToString(h.Sum(nil))
-	m.HashAlgo = "sha256"
-	for _, k := range s.cfg.SigningKeys {
-		sig, err := k.Sign(nil, fp)
-		if err != nil {
-			return err
-		}
-		m.KeyName = append(m.KeyName, sig.Name)
-		m.Signature = append(m.Signature, sig.Data)
-	}
-	return nil
 }
 
 func (s *server) handleChunkDiff(w http.ResponseWriter, r *http.Request) {

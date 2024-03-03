@@ -16,6 +16,7 @@ import (
 	"path"
 	"sort"
 
+	"github.com/dnr/styx/common"
 	"github.com/dnr/styx/manifester"
 	"github.com/dnr/styx/pb"
 	"github.com/klauspost/compress/zstd"
@@ -593,14 +594,12 @@ func (b *Builder) BuildFromManifestWithSlab(
 ) error {
 	// TODO: move manifest encoding to shared lib
 	// TODO: verify signatures if requested
-	var m *pb.Manifest
+	var m pb.Manifest
 	if zr, err := zstd.NewReader(r); err != nil {
 		return err
 	} else if sBytes, err := io.ReadAll(zr); err != nil {
 		return err
-	} else if signed, err := unmarshalAs[pb.SignedManifest](sBytes); err != nil {
-		return err
-	} else if m, err = unmarshalAs[pb.Manifest](signed.Manifest); err != nil {
+	} else if err := common.VerifyMessage(nil, sBytes, &m); err != nil {
 		return err
 	}
 

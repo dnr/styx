@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/lunixbochs/struc"
+	"github.com/nix-community/go-nix/pkg/narinfo/signature"
 	"go.etcd.io/bbolt"
 	"golang.org/x/sys/unix"
 	"google.golang.org/protobuf/proto"
@@ -64,9 +65,14 @@ type (
 		DevPath   string
 		CachePath string
 
+		StyxPubKeys []signature.PublicKey
+		Params      pb.DaemonParams
+
 		Upstream       string
-		ManifesterUrl  string
 		ChunkStoreRead manifester.ChunkStoreRead
+
+		ErofsBlockShift int
+		SmallFileCutoff int
 
 		Workers int
 	}
@@ -370,7 +376,7 @@ func (s *server) handleOpenImage(msgId, objectId, fd, flags uint32, cookie strin
 	// get manifest
 	u := url.URL{
 		Scheme: "http",
-		Host:   s.cfg.ManifesterUrl,
+		Host:   s.cfg.Params.ManifesterUrl,
 		Path:   manifester.ManifestPath,
 	}
 	reqBytes, err := json.Marshal(manifester.ManifestReq{

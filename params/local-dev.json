@@ -1,0 +1,10 @@
+{
+  "manifesterUrl": "http://localhost:7420",
+  "chunkReadUrl": "http://localhost:7420",
+  "chunkDiffUrl": "http://localhost:7420",
+  "params": {
+    "chunkShift": 16,
+    "digestAlgo": "sha256",
+    "digestBits": 192
+  }
+}

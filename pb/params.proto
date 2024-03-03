@@ -1,0 +1,34 @@
+
+syntax = "proto3";
+
+package pb;
+
+option go_package = "github.com/dnr/styx/pb";
+
+// Parameters that have to be agreed on by manifester and daemon.
+message GlobalParams {
+  // Bits of chunk size, e.g. 16 = 1<<16 byte chunks
+  int32 chunk_shift = 1;
+  // Digest algorithm, e.g. "sha256"
+  string digest_algo = 2;
+  // Bits of digest used, e.g. 192
+  int32 digest_bits = 3;
+}
+
+// Parameters that can be used to configure a styx daemon.
+message DaemonParams {
+  GlobalParams params = 1;
+  // URL for manifester service, chunk reads, and chunk diffs.
+  string manifester_url = 2;
+  string chunk_read_url = 3;
+  string chunk_diff_url = 4;
+}
+
+message SignedMessage {
+  // embedded proto message of some type
+  bytes msg = 1;
+  // none of the following are required if there are no signatures
+  string hash_algo = 2; // algorithm used to hash msg
+  repeated string key_id = 3;
+  repeated bytes signature = 4;
+}

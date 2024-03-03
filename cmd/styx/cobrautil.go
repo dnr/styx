@@ -4,19 +4,23 @@ import (
 	"log"
 
 	"github.com/spf13/cobra"
+	"golang.org/x/exp/slices"
 )
 
 type runE = func(*cobra.Command, []string) error
 
-func chainRunE(prev, f runE) runE {
-	if prev == nil {
-		return f
+func chainRunE(fs ...runE) runE {
+	fs = slices.DeleteFunc(fs, func(e runE) bool { return e == nil })
+	if len(fs) == 1 {
+		return fs[0]
 	}
 	return func(c *cobra.Command, args []string) error {
-		if err := prev(c, args); err != nil {
-			return err
+		for _, f := range fs {
+			if err := f(c, args); err != nil {
+				return err
+			}
 		}
-		return f(c, args)
+		return nil
 	}
 }
 

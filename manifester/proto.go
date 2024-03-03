@@ -10,6 +10,7 @@ type (
 	ManifestReq struct {
 		Upstream      string
 		StorePathHash string
+		// TODO: pass some params here
 	}
 	// response is zstd of proto SignedManifest
 

@@ -24,14 +24,6 @@ message Manifest {
   ManifestMeta meta = 10;
 }
 
-message SignedManifest {
-  bytes manifest = 1; // contains Manifest
-  // none of the following are required if there are no signatures
-  string hash_algo = 2; // algo used to hash manifest to fingerprint before signing
-  repeated string key_name = 3;
-  repeated bytes signature = 4;
-}
-
 // Mostly modeled on nar Header
 message Entry {
   string path = 1;         // Path of the file entry, relative inside the NAR

@@ -2,12 +2,15 @@ package main
 
 import (
 	"context"
+	"io"
 	"os"
 
 	"github.com/klauspost/compress/zstd"
+	"github.com/nix-community/go-nix/pkg/narinfo/signature"
 	"github.com/spf13/cobra"
-	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/encoding/protojson"
 
+	"github.com/dnr/styx/common"
 	"github.com/dnr/styx/erofs"
 	"github.com/dnr/styx/manifester"
 	"github.com/dnr/styx/pb"
@@ -63,21 +66,19 @@ func debugCmd() *cobra.Command {
 			withManifestBuilder,
 			withInFile,
 			withOutFile,
+			withSignKeys,
 			func(c *cobra.Command, args []string) error {
 				in := c.Context().Value(ctxInFile).(*os.File)
 				out := c.Context().Value(ctxOutFile).(*os.File)
 				mb := c.Context().Value(ctxManifestBuilder).(*manifester.ManifestBuilder)
+				keys := c.Context().Value(ctxSignKeys).([]signature.SecretKey)
 				if manifest, err := mb.Build(context.Background(), in); err != nil {
 					return err
-				} else if mbytes, err := proto.Marshal(manifest); err != nil {
-					return err
-				} else if sbytes, err := proto.Marshal(&pb.SignedManifest{
-					Manifest: mbytes,
-				}); err != nil {
+				} else if b, err := common.SignMessage(keys, manifest); err != nil {
 					return err
 				} else if enc, err := zstd.NewWriter(out); err != nil {
 					return err
-				} else if n, err := enc.Write(sbytes); err != nil || n < len(sbytes) {
+				} else if n, err := enc.Write(b); err != nil || n < len(b) {
 					return err
 				} else {
 					return enc.Close()
@@ -113,6 +114,32 @@ func debugCmd() *cobra.Command {
 				out := c.Context().Value(ctxOutFile).(*os.File)
 				sm := erofs.NewDummySlabManager()
 				return erofs.NewBuilder().BuildFromManifestWithSlab(c.Context(), in, out, sm)
+			},
+		),
+		cmd(
+			&cobra.Command{
+				Use:  "signdaemonparams <daemon params json> <out file image>",
+				Args: cobra.ExactArgs(2),
+			},
+			withSignKeys,
+			withInFile,
+			withOutFile,
+			func(c *cobra.Command, args []string) error {
+				in := c.Context().Value(ctxInFile).(*os.File)
+				out := c.Context().Value(ctxOutFile).(*os.File)
+				keys := c.Context().Value(ctxSignKeys).([]signature.SecretKey)
+				var params pb.DaemonParams
+				var sb []byte
+				if b, err := io.ReadAll(in); err != nil {
+					return err
+				} else if err = protojson.Unmarshal(b, &params); err != nil {
+					return err
+				} else if sb, err = common.SignMessage(keys, &params); err != nil {
+					return err
+				} else if _, err = out.Write(sb); err != nil {
+					return err
+				}
+				return nil
 			},
 		),
 	)
