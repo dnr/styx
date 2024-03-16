@@ -1,9 +1,9 @@
-
 syntax = "proto3";
 
 package pb;
-
 option go_package = "github.com/dnr/styx/pb";
+
+import "entry.proto";
 
 // Parameters that have to be agreed on by manifester and daemon.
 message GlobalParams {
@@ -25,10 +25,14 @@ message DaemonParams {
 }
 
 message SignedMessage {
-  // embedded proto message of some type
-  bytes msg = 1;
-  // none of the following are required if there are no signatures
-  string hash_algo = 2; // algorithm used to hash msg
+  // Params for hashing/chunking contained data, and also used for signature.
+  GlobalParams params = 1;
+  // Single entry representing contained data.
+  // Type must be REGULAR.
+  // Path may be used to add context.
+  Entry msg = 2;
+
+  // These should be the same length:
   repeated string key_id = 3;
   repeated bytes signature = 4;
 }

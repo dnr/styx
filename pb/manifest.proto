@@ -1,18 +1,10 @@
-
 syntax = "proto3";
 
 package pb;
-
 option go_package = "github.com/dnr/styx/pb";
 
 import "params.proto";
-
-enum EntryType {
-  UNKNOWN = 0;
-  REGULAR = 1;
-  DIRECTORY = 2;
-  SYMLINK = 3;
-}
+import "entry.proto";
 
 message Manifest {
   GlobalParams params = 1;
@@ -23,19 +15,6 @@ message Manifest {
   ManifestMeta meta = 10;
 }
 
-// Mostly modeled on nar Header
-message Entry {
-  string path = 1;         // Path of the file entry, relative inside the NAR
-  EntryType type = 2;      // Typeflag is the type of header entry.
-  int64 size = 3;          // Logical file size in bytes
-  bool executable = 4;     // Set to true for files that are executable
-  // For REGULAR and SYMLINK:
-  // If size <= tail_cutoff || type == SYMLINK, data is here:
-  bytes tail_data = 5;
-  // Otherwise, this is a series of concatenated digests, one per chunk:
-  bytes digests = 6;
-}
-
 message ManifestMeta {
   // meta info for what this manifest was generated from
   string narinfo_url = 1;  // url that narinfo was fetched from
@@ -44,4 +23,3 @@ message ManifestMeta {
   string generator = 10;     // software version of generator
   int64 generated_time = 11; // timestamp when this was generated (unix seconds)
 }
-

@@ -3,6 +3,6 @@
 styx: */*.go */*/*.go
 	go build ./cmd/styx
 
-generate:
+gen generate:
 	go generate ./...
 

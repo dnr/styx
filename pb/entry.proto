@@ -1,0 +1,24 @@
+syntax = "proto3";
+
+package pb;
+option go_package = "github.com/dnr/styx/pb";
+
+enum EntryType {
+  UNKNOWN = 0;
+  REGULAR = 1;
+  DIRECTORY = 2;
+  SYMLINK = 3;
+}
+
+// Mostly modeled on nar Header
+message Entry {
+  string path = 1;         // Path of the entry, relative inside the NAR
+  EntryType type = 2;      // File type (regular/directory/symlink)
+  int64 size = 3;          // Logical file size in bytes (only for REGULAR)
+  bool executable = 4;     // Set to true for files that are executable
+  // For REGULAR and SYMLINK:
+  // If size <= small_file_cutoff || type == SYMLINK, full data is here:
+  bytes inline_data = 5;
+  // Otherwise, this is a series of concatenated digests, one per chunk:
+  bytes digests = 6;
+}
