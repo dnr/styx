@@ -49,3 +49,11 @@ func unmarshalAs[T any, PM interface {
 	}
 	return m, nil
 }
+
+func valOrErr[T any](v T, err error) (T, error) {
+	if err != nil {
+		var zero T
+		return zero, err
+	}
+	return v, nil
+}

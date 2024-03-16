@@ -23,7 +23,8 @@ type (
 	}
 
 	ChunkStoreRead interface {
-		Get(ctx context.Context, key string) ([]byte, error)
+		// Data will be appended to dst and returned
+		Get(ctx context.Context, key string, dst []byte) ([]byte, error)
 	}
 
 	ChunkStoreWriteConfig struct {
@@ -151,7 +152,7 @@ func NewChunkStoreReadUrl(url, path string) ChunkStoreRead {
 	}
 }
 
-func (s *urlChunkStoreRead) Get(ctx context.Context, key string) ([]byte, error) {
+func (s *urlChunkStoreRead) Get(ctx context.Context, key string, dst []byte) ([]byte, error) {
 	url := s.url + key
 	res, err := http.Get(url)
 	if err != nil {
@@ -166,7 +167,7 @@ func (s *urlChunkStoreRead) Get(ctx context.Context, key string) ([]byte, error)
 		return nil, err
 	}
 	if res.Header.Get("Content-Encoding") == "zstd" {
-		b, err = s.dec.DecodeAll(b, nil)
+		b, err = s.dec.DecodeAll(b, dst)
 	}
 	return b, err
 }

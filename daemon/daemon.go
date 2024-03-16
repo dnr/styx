@@ -24,6 +24,7 @@ import (
 	"github.com/lunixbochs/struc"
 	"github.com/nix-community/go-nix/pkg/narinfo/signature"
 	"go.etcd.io/bbolt"
+	"golang.org/x/sync/errgroup"
 	"golang.org/x/sync/singleflight"
 	"golang.org/x/sys/unix"
 	"google.golang.org/protobuf/proto"
@@ -414,7 +415,7 @@ func (s *server) handleOpenImage(msgId, objectId, fd, flags uint32, cookie strin
 		SmallFileCutoff: s.cfg.SmallFileCutoff,
 	}
 	ctx := context.TODO()
-	sb, err := s.mcread.Get(ctx, mReq.CacheKey())
+	sb, err := s.mcread.Get(ctx, mReq.CacheKey(), nil)
 	if err != nil {
 		// not found cached, request it
 		u := s.cfg.Params.ManifesterUrl + manifester.ManifestPath
@@ -451,16 +452,16 @@ func (s *server) handleOpenImage(msgId, objectId, fd, flags uint32, cookie strin
 	}
 
 	// unmarshal into manifest
-	var m pb.Manifest
-	if len(entry.InlineData) > 0 {
-		err = proto.Unmarshal(entry.InlineData, &m)
-		if err != nil {
-			return 0, fmt.Errorf("manifest unmarshal error: %w", err)
-		}
-	} else {
-		return 0, fmt.Errorf("!!! FIXME chunked manifest")
+	data := entry.InlineData
+	if len(data) == 0 {
+		data, err = s.readChunkedData(entry)
 	}
 
+	var m pb.Manifest
+	err = proto.Unmarshal(data, &m)
+	if err != nil {
+		return 0, fmt.Errorf("manifest unmarshal error: %w", err)
+	}
 	// transform manifest into image (allocate chunks)
 	var image bytes.Buffer
 	err = s.builder.BuildFromManifestWithSlab(&m, &image, s)
@@ -593,30 +594,59 @@ func (s *server) handleReadSlab(state *openFileState, ln, off uint64) error {
 
 	// TODO: consider if this is the right scope for duplicate suppression
 	_, err, _ = s.sf.Do(digestStr, func() (any, error) {
-		data, err := s.csread.Get(ctx, digestStr)
+		buf := make([]byte, 1<<s.cfg.Params.Params.ChunkShift)
+		got, err := s.csread.Get(ctx, digestStr, buf[:0])
 		if err != nil {
 			return nil, err
 		}
 
-		// Pad with zeros to fill whole block. This might work without padding but it seems safer,
-		// especially if we reuse slab chunks. Note that the pwrite below can return > len(data) if
-		// len(data) is not a full block, which suggests we should fill it.
-		if roundedUp := int(s.blockShift.roundup(int64(len(data)))); roundedUp > len(data) {
-			data = append(data, s.zeros[:roundedUp-len(data)]...)
+		if len(got) > len(buf) {
+			return nil, fmt.Errorf("chunk overflowed chunk size: %d > %d", len(got), len(buf))
+		} else if uint64(s.blockShift.roundup(int64(len(got)))) < ln {
+			return nil, fmt.Errorf("chunk underflowed requested len: %d < %d", len(got), ln)
 		}
 
-		if len(data) < int(ln) {
-			log.Printf("chunk was not big enough to cover requested range: %d vs %d", len(data), ln)
-		}
-
-		n, err := unix.Pwrite(int(state.fd), data, int64(off))
-		if err == nil && n != len(data) {
-			err = fmt.Errorf("short write %d != %d (requested %d)", n, len(data), ln)
+		n, err := unix.Pwrite(int(state.fd), buf, int64(off))
+		if err == nil && n != len(buf) {
+			err = fmt.Errorf("short write %d != %d (requested %d)", n, len(buf), ln)
 		}
 		return nil, err
 	})
 
 	return err
+}
+
+func (s *server) readChunkedData(entry *pb.Entry) ([]byte, error) {
+	ctx := context.TODO()
+
+	out := make([]byte, entry.Size)
+	dest := out
+	digests := entry.Digests
+
+	var eg errgroup.Group
+	eg.SetLimit(20) // TODO: configurable
+
+	for len(digests) > 0 && len(dest) > 0 {
+		digest := digests[:s.digestBytes]
+		digests = digests[s.digestBytes:]
+		toRead := min(len(dest), 1<<s.cfg.Params.Params.ChunkShift)
+		buf := dest[:0]
+		dest = dest[toRead:]
+
+		// TODO: see if we can diff these chunks against some other chunks we have
+
+		eg.Go(func() error {
+			digestStr := base64.RawURLEncoding.EncodeToString(digest)
+			got, err := s.csread.Get(ctx, digestStr, buf)
+			if err != nil {
+				return err
+			} else if len(got) != toRead {
+				return fmt.Errorf("chunk was wrong size: %d vs %d", len(got), toRead)
+			}
+			return nil
+		})
+	}
+	return valOrErr(out, eg.Wait())
 }
 
 // slab manager

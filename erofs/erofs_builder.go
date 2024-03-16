@@ -419,11 +419,11 @@ func (b *Builder) BuildFromManifestEmbed(
 						idx := start >> chunkShift
 						digest := e.Digests[idx*hashBytes : (idx+1)*hashBytes]
 						digeststr := base64.RawURLEncoding.EncodeToString(digest)
-						cdata, err := cs.Get(ctx, digeststr)
+						// TODO: check that output len is as espected
+						_, err := cs.Get(ctx, digeststr, data[start:start])
 						if err != nil {
 							return err
 						}
-						copy(data[start:], cdata)
 					}
 				} else {
 					return fmt.Errorf("non-zero size but no taildata or digests")
