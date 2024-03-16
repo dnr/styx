@@ -29,3 +29,11 @@ func (b blkshift) roundup(i int64) int64 {
 func (b blkshift) leftover(i int64) int64 {
 	return i & (b.size() - 1)
 }
+
+func valOrErr[T any](v T, err error) (T, error) {
+	if err != nil {
+		var zero T
+		return zero, err
+	}
+	return v, nil
+}

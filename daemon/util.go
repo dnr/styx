@@ -44,10 +44,7 @@ func unmarshalAs[T any, PM interface {
 	*T
 }](b []byte) (*T, error) {
 	var m PM = new(T)
-	if err := proto.Unmarshal(b, m); err != nil {
-		return nil, err
-	}
-	return m, nil
+	return valOrErr(m, proto.Unmarshal(b, m))
 }
 
 func valOrErr[T any](v T, err error) (T, error) {

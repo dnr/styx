@@ -725,10 +725,7 @@ func (s *server) AllocateBatch(blocks []uint16, digests []byte) ([]erofs.SlabLoc
 
 		return sb.SetSequence(seq)
 	})
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
+	return valOrErr(out, err)
 }
 
 func (s *server) SlabInfo(slabId uint16) (tag string, totalBlocks uint32) {

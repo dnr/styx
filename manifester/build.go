@@ -73,12 +73,7 @@ func (b *ManifestBuilder) Build(ctx context.Context, args BuildArgs, r io.Reader
 		err = nil
 	}
 
-	err = Or(err, eg.Wait())
-
-	if err != nil {
-		return nil, err
-	}
-	return m, nil
+	return valOrErr(m, Or(err, eg.Wait()))
 }
 
 func (b *ManifestBuilder) ManifestAsEntry(ctx context.Context, args BuildArgs, path string, manifest *pb.Manifest) (*pb.Entry, error) {
@@ -100,12 +95,8 @@ func (b *ManifestBuilder) ManifestAsEntry(ctx context.Context, args BuildArgs, p
 
 	eg, gCtx := errgroup.WithContext(ctx)
 	entry.Digests, err = b.chunkData(gCtx, int64(len(mb)), bytes.NewReader(mb), eg)
-	err = Or(err, eg.Wait())
 
-	if err != nil {
-		return nil, err
-	}
-	return entry, nil
+	return valOrErr(entry, Or(err, eg.Wait()))
 }
 
 func (b *ManifestBuilder) entry(ctx context.Context, args BuildArgs, m *pb.Manifest, nr *nar.Reader, eg *errgroup.Group) error {

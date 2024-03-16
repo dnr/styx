@@ -1000,10 +1000,7 @@ func pack(out io.Writer, v any) error {
 func packToBytes(v any) ([]byte, error) {
 	var b bytes.Buffer
 	err := struc.PackWithOptions(&b, v, &_popts)
-	if err != nil {
-		return nil, err
-	}
-	return b.Bytes(), nil
+	return valOrErr(b.Bytes(), err)
 }
 
 func writeAndPad(out io.Writer, data []byte, shift blkshift) error {
