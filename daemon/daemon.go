@@ -45,6 +45,7 @@ type (
 		digestBytes int
 		blockShift  blkshift
 		csread      manifester.ChunkStoreRead
+		mcread      manifester.ChunkStoreRead
 		db          *bbolt.DB
 		pool        *sync.Pool
 		sf          singleflight.Group
@@ -91,7 +92,8 @@ func CachefilesServer(cfg Config) *server {
 		cfg:         &cfg,
 		digestBytes: int(cfg.Params.Params.DigestBits >> 3),
 		blockShift:  blkshift(cfg.ErofsBlockShift),
-		csread:      manifester.NewChunkStoreReadUrl(cfg.Params.ChunkReadUrl),
+		csread:      manifester.NewChunkStoreReadUrl(cfg.Params.ChunkReadUrl, manifester.ChunkReadPath),
+		mcread:      manifester.NewChunkStoreReadUrl(cfg.Params.ManifestCacheUrl, manifester.ManifestCachePath),
 		pool:        &sync.Pool{New: func() any { return make([]byte, CACHEFILES_MSG_MAX_SIZE) }},
 		builder:     erofs.NewBuilder(erofs.BuilderConfig{BlockShift: cfg.ErofsBlockShift}),
 		cacheState:  make(map[uint32]*openFileState),

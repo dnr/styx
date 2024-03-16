@@ -2,6 +2,7 @@ package manifester
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -27,6 +28,8 @@ import (
 const (
 	defaultSmallFileCutoff = 224
 	maxSmallFileCutoff     = 480
+
+	smallManifestCutoff = 32 * 1024
 )
 
 type (
@@ -237,21 +240,27 @@ func (s *server) handleManifest(w http.ResponseWriter, req *http.Request) {
 		GeneratedTime: time.Now().Unix(),
 	}
 
-	// encode + sign manifest
+	// turn into entry (maybe chunk)
 
-	log.Println("req", r.StorePathHash, "writing manifest")
+	manifestArgs := BuildArgs{SmallFileCutoff: smallManifestCutoff}
+	entry, err := s.mb.ManifestAsEntry(req.Context(), manifestArgs, common.ManifestContext, manifest)
+	if err != nil {
+		log.Println("make manifest entry error:", err)
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
 
-	sb, err := common.SignInlineMessage(s.cfg.SigningKeys, common.ManifestContext, manifest)
+	sb, err := common.SignMessageAsEntry(s.cfg.SigningKeys, s.mb.params, entry)
 	if err != nil {
 		log.Println("sign error:", err)
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
 
-	// encode and compress
+	go s.writeSignedManifest(&r, sb)
 
-	// TODO: write manifest itself to s3 also keyed by input
-
+	// compress output
+	w.Header().Set("Content-Encoding", "zstd")
 	zw, err := zstd.NewWriter(w)
 	if err != nil {
 		log.Println("zstd create:", err)
@@ -269,6 +278,16 @@ func (s *server) handleManifest(w http.ResponseWriter, req *http.Request) {
 		log.Println("zstd close:", err)
 		w.WriteHeader(http.StatusInternalServerError)
 		return
+	}
+}
+
+func (s *server) writeSignedManifest(r *ManifestReq, data []byte) {
+	// this is in the background
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	err := s.mb.cs.PutIfNotExists(ctx, ManifestCachePath, r.CacheKey(), data)
+	if err != nil {
+		log.Println("error writing signed manifest cache:", err)
 	}
 }
 

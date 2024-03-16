@@ -19,7 +19,7 @@ import (
 
 type (
 	ChunkStoreWrite interface {
-		PutIfNotExists(ctx context.Context, key string, data []byte) error
+		PutIfNotExists(ctx context.Context, path, key string, data []byte) error
 	}
 
 	ChunkStoreRead interface {
@@ -56,7 +56,8 @@ func newLocalChunkStoreWrite(dir string, enc *zstd.Encoder) (*localChunkStoreWri
 	return &localChunkStoreWrite{dir: dir, enc: enc}, nil
 }
 
-func (l *localChunkStoreWrite) PutIfNotExists(ctx context.Context, key string, data []byte) error {
+func (l *localChunkStoreWrite) PutIfNotExists(ctx context.Context, path_, key string, data []byte) error {
+	// ignore path! mix chunks and manifests in same directory
 	fn := path.Join(l.dir, key)
 	if _, err := os.Stat(fn); err == nil {
 		return nil
@@ -93,7 +94,11 @@ func newS3ChunkStoreWrite(bucket string, enc *zstd.Encoder) (*s3ChunkStoreWrite,
 	}, nil
 }
 
-func (s *s3ChunkStoreWrite) PutIfNotExists(ctx context.Context, key string, data []byte) error {
+func (s *s3ChunkStoreWrite) PutIfNotExists(ctx context.Context, path, key string, data []byte) error {
+	if path != ChunkReadPath && path != ManifestCachePath {
+		panic("path must be ChunkReadPath or ManifestCachePath")
+	}
+	key = path[1:] + key
 	_, err := s.s3client.HeadObject(ctx, &s3.HeadObjectInput{
 		Bucket: &s.bucket,
 		Key:    &key,
@@ -129,7 +134,11 @@ func NewChunkStoreWrite(cfg ChunkStoreWriteConfig) (ChunkStoreWrite, error) {
 	return nil, errors.New("chunk store configuration is missing")
 }
 
-func NewChunkStoreReadUrl(url string) ChunkStoreRead {
+// path should be either ChunkReadPath or ManifestCachePath
+func NewChunkStoreReadUrl(url, path string) ChunkStoreRead {
+	if path != ChunkReadPath && path != ManifestCachePath {
+		panic("path must be ChunkReadPath or ManifestCachePath")
+	}
 	dec, err := zstd.NewReader(nil,
 		zstd.WithDecoderMaxMemory(1<<20), // chunks are small
 	)
@@ -137,13 +146,13 @@ func NewChunkStoreReadUrl(url string) ChunkStoreRead {
 		panic("can't create zstd decoder")
 	}
 	return &urlChunkStoreRead{
-		url: url,
+		url: url + path,
 		dec: dec,
 	}
 }
 
 func (s *urlChunkStoreRead) Get(ctx context.Context, key string) ([]byte, error) {
-	url := s.url + ChunkReadPath + key
+	url := s.url + key
 	res, err := http.Get(url)
 	if err != nil {
 		return nil, err

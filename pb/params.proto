@@ -20,6 +20,7 @@ message DaemonParams {
   GlobalParams params = 1;
   // URL for manifester service, chunk reads, and chunk diffs.
   string manifester_url = 2;
+  string manifest_cache_url = 5;
   string chunk_read_url = 3;
   string chunk_diff_url = 4;
 }

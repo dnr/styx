@@ -1,5 +1,6 @@
 {
   "manifesterUrl": "http://localhost:7420",
+  "manifestCacheUrl": "http://localhost:7420",
   "chunkReadUrl": "http://localhost:7420",
   "chunkDiffUrl": "http://localhost:7420",
   "params": {

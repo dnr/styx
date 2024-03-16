@@ -128,14 +128,18 @@ func SignInlineMessage(keys []signature.SecretKey, context string, msg proto.Mes
 	if err != nil {
 		return nil, fmt.Errorf("error marshaling msg: %w", err)
 	}
+	return SignMessageAsEntry(keys, nil, &pb.Entry{
+		Path:       context,
+		Type:       pb.EntryType_REGULAR,
+		Size:       int64(len(b)),
+		InlineData: b,
+	})
+}
 
+func SignMessageAsEntry(keys []signature.SecretKey, params *pb.GlobalParams, e *pb.Entry) ([]byte, error) {
 	sm := &pb.SignedMessage{
-		Msg: &pb.Entry{
-			Path:       context,
-			Type:       pb.EntryType_REGULAR,
-			Size:       int64(len(b)),
-			InlineData: b,
-		},
+		Msg:       e,
+		Params:    params,
 		KeyId:     make([]string, len(keys)),
 		Signature: make([][]byte, len(keys)),
 	}
@@ -152,37 +156,6 @@ func SignInlineMessage(keys []signature.SecretKey, context string, msg proto.Mes
 
 	return proto.Marshal(sm)
 }
-
-/*
-func SignChunkedMessage(keys []signature.SecretKey, e *pb.Entry) ([]byte, error) {
-	b, err := proto.Marshal(msg)
-	if err != nil {
-		return nil, fmt.Errorf("error marshaling msg: %w", err)
-	}
-
-	sm := &pb.SignedMessage{
-		Msg:       b,
-		HashAlgo:  "sha256",
-		KeyId:     make([]string, len(keys)),
-		Signature: make([][]byte, len(keys)),
-	}
-
-	h := sha256.New()
-	h.Write(sm.Msg)
-	digest := string(h.Sum(nil))
-
-	for i, k := range keys {
-		sig, err := k.Sign(rand.Reader, digest)
-		if err != nil {
-			return nil, err
-		}
-		sm.KeyId[i] = sig.Name
-		sm.Signature[i] = sig.Data
-	}
-
-	return proto.Marshal(sm)
-}
-*/
 
 func entryFingerprint(e *pb.Entry) string {
 	// TODO: do we need to include params here?
