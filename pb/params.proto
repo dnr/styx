@@ -29,7 +29,7 @@ message SignedMessage {
   GlobalParams params = 1;
   // Single entry representing contained data.
   // Type must be REGULAR.
-  // Path may be used to add context.
+  // Path should represent message type and context.
   Entry msg = 2;
 
   // These should be the same length:

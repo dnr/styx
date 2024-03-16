@@ -87,7 +87,7 @@ func debugCmd() *cobra.Command {
 				var buildArgs manifester.BuildArgs
 				if manifest, err := mb.Build(context.Background(), buildArgs, in); err != nil {
 					return err
-				} else if b, err := common.SignMessage(keys, manifest); err != nil {
+				} else if b, err := common.SignInlineMessage(keys, common.ManifestContext, manifest); err != nil {
 					return err
 				} else if enc, err := zstd.NewWriter(out); err != nil {
 					return err
@@ -139,7 +139,7 @@ func debugCmd() *cobra.Command {
 					return err
 				} else if sBytes, err := io.ReadAll(zr); err != nil {
 					return err
-				} else if err := common.VerifyMessage(keys, sBytes, &m); err != nil {
+				} else if err := common.VerifyInlineMessage(keys, common.ManifestContext, sBytes, &m); err != nil {
 					return err
 				}
 
@@ -164,7 +164,7 @@ func debugCmd() *cobra.Command {
 					return err
 				} else if err = protojson.Unmarshal(b, &params); err != nil {
 					return err
-				} else if sb, err = common.SignMessage(keys, &params); err != nil {
+				} else if sb, err = common.SignInlineMessage(keys, common.DaemonParamsContext, &params); err != nil {
 					return err
 				} else if _, err = out.Write(sb); err != nil {
 					return err

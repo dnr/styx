@@ -241,7 +241,7 @@ func (s *server) handleManifest(w http.ResponseWriter, req *http.Request) {
 
 	log.Println("req", r.StorePathHash, "writing manifest")
 
-	sb, err := common.SignMessage(s.cfg.SigningKeys, manifest)
+	sb, err := common.SignInlineMessage(s.cfg.SigningKeys, common.ManifestContext, manifest)
 	if err != nil {
 		log.Println("sign error:", err)
 		w.WriteHeader(http.StatusInternalServerError)

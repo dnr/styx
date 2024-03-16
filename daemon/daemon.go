@@ -427,7 +427,7 @@ func (s *server) handleOpenImage(msgId, objectId, fd, flags uint32, cookie strin
 		return 0, err
 	} else if sb, err = io.ReadAll(zr); err != nil {
 		return 0, err
-	} else if err := common.VerifyMessage(s.cfg.StyxPubKeys, sb, &m); err != nil {
+	} else if err := common.VerifyInlineMessage(s.cfg.StyxPubKeys, common.ManifestContext, sb, &m); err != nil {
 		return 0, err
 	}
 

@@ -79,7 +79,7 @@ func withDaemonConfig(c *cobra.Command) runE {
 			cfg.StyxPubKeys = c.Context().Value(ctxStyxPubKeys).([]signature.PublicKey)
 			if paramsBytes, err := common.LoadFromFileOrHttpUrl(*paramsUrl); err != nil {
 				return err
-			} else if err = common.VerifyMessage(cfg.StyxPubKeys, paramsBytes, &cfg.Params); err != nil {
+			} else if err = common.VerifyInlineMessage(cfg.StyxPubKeys, common.DaemonParamsContext, paramsBytes, &cfg.Params); err != nil {
 				return err
 			}
 			// FIXME: &cfg?

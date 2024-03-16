@@ -8,4 +8,8 @@ var (
 	ZstdBin = "zstd"
 
 	Version = "styx v1.0"
+
+	// Context for signatures
+	ManifestContext     = "styx-manifest-1"
+	DaemonParamsContext = "styx-daemon-params-1"
 )

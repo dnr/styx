@@ -108,7 +108,7 @@ func (b *ManifestBuilder) entry(ctx context.Context, args BuildArgs, m *pb.Manif
 			if _, err := io.ReadFull(nr, data); err != nil {
 				return err
 			}
-			e.TailData = data
+			e.InlineData = data
 		} else {
 			nChunks := int((h.Size + b.chunk.size() - 1) >> b.chunk)
 			digests := make([]byte, nChunks*b.digestBytes)
@@ -138,7 +138,7 @@ func (b *ManifestBuilder) entry(ctx context.Context, args BuildArgs, m *pb.Manif
 
 	case nar.TypeSymlink:
 		e.Type = pb.EntryType_SYMLINK
-		e.TailData = []byte(h.LinkTarget)
+		e.InlineData = []byte(h.LinkTarget)
 
 	default:
 		return errors.New("unknown type")

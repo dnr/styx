@@ -403,13 +403,13 @@ func (b *Builder) BuildFromManifestEmbed(
 			}
 			if e.Size > 0 {
 				var data []byte
-				if len(e.TailData) > 0 {
-					if int64(len(e.TailData)) != e.Size {
+				if len(e.InlineData) > 0 {
+					if int64(len(e.InlineData)) != e.Size {
 						return fmt.Errorf("tail data size mismatch")
 					} else if !allowedTail(e.Size) {
 						return fmt.Errorf("tail too big")
 					}
-					data = e.TailData
+					data = e.InlineData
 				} else if len(e.Digests) > 0 {
 					if e.Size > math.MaxUint32 {
 						return fmt.Errorf("TODO: support larger files with extended inode")
@@ -434,8 +434,8 @@ func (b *Builder) BuildFromManifestEmbed(
 		case pb.EntryType_SYMLINK:
 			fstype = EROFS_FT_SYMLINK
 			i.i.IMode = unix.S_IFLNK | 0777
-			i.i.ISize = truncU32(len(e.TailData))
-			i.taildata = e.TailData
+			i.i.ISize = truncU32(len(e.InlineData))
+			i.taildata = e.InlineData
 
 		default:
 			return errors.New("unknown type")
@@ -678,13 +678,13 @@ func (b *Builder) BuildFromManifestWithSlab(
 			if e.Executable {
 				i.i.IMode = unix.S_IFREG | 0755
 			}
-			if len(e.TailData) > 0 {
-				if int64(len(e.TailData)) != e.Size {
+			if len(e.InlineData) > 0 {
+				if int64(len(e.InlineData)) != e.Size {
 					return fmt.Errorf("tail data size mismatch")
 				} else if !allowedTail(e.Size) {
 					return fmt.Errorf("tail too big")
 				}
-				setDataOnInode(i, e.TailData)
+				setDataOnInode(i, e.InlineData)
 			} else if len(e.Digests) > 0 {
 				if e.Size > math.MaxUint32 {
 					return fmt.Errorf("TODO: support larger files with extended inode")
@@ -730,8 +730,8 @@ func (b *Builder) BuildFromManifestWithSlab(
 		case pb.EntryType_SYMLINK:
 			fstype = EROFS_FT_SYMLINK
 			i.i.IMode = unix.S_IFLNK | 0777
-			i.i.ISize = truncU32(len(e.TailData))
-			i.taildata = e.TailData
+			i.i.ISize = truncU32(len(e.InlineData))
+			i.taildata = e.InlineData
 
 		default:
 			return errors.New("unknown type")

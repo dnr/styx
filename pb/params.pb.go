@@ -169,7 +169,7 @@ type SignedMessage struct {
 	Params *GlobalParams `protobuf:"bytes,1,opt,name=params,proto3" json:"params,omitempty"`
 	// Single entry representing contained data.
 	// Type must be REGULAR.
-	// Path may be used to add context.
+	// Path should represent message type and context.
 	Msg *Entry `protobuf:"bytes,2,opt,name=msg,proto3" json:"msg,omitempty"`
 	// These should be the same length:
 	KeyId     []string `protobuf:"bytes,3,rep,name=key_id,json=keyId,proto3" json:"key_id,omitempty"`
