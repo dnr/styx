@@ -402,35 +402,63 @@ func (s *server) handleOpenImage(msgId, objectId, fd, flags uint32, cookie strin
 	}
 
 	// get manifest
-	u := s.cfg.Params.ManifesterUrl + manifester.ManifestPath
-	reqBytes, err := json.Marshal(manifester.ManifestReq{
+
+	// check cached first
+	gParams := s.cfg.Params.Params
+	mReq := manifester.ManifestReq{
 		Upstream:        s.cfg.Upstream,
 		StorePathHash:   cookie,
-		ChunkShift:      int(s.cfg.Params.Params.ChunkShift),
-		DigestAlgo:      s.cfg.Params.Params.DigestAlgo,
-		DigestBits:      int(s.cfg.Params.Params.DigestBits),
+		ChunkShift:      int(gParams.ChunkShift),
+		DigestAlgo:      gParams.DigestAlgo,
+		DigestBits:      int(gParams.DigestBits),
 		SmallFileCutoff: s.cfg.SmallFileCutoff,
-	})
-	if err != nil {
-		return 0, err
 	}
-	res, err := http.Post(u, "application/json", bytes.NewReader(reqBytes))
+	ctx := context.TODO()
+	sb, err := s.mcread.Get(ctx, mReq.CacheKey())
 	if err != nil {
-		return 0, fmt.Errorf("manifester http error: %w", err)
-	}
-	defer res.Body.Close()
-	if res.StatusCode != http.StatusOK {
-		return 0, fmt.Errorf("manifester http status: %s", res.Status)
+		// not found cached, request it
+		u := s.cfg.Params.ManifesterUrl + manifester.ManifestPath
+		reqBytes, err := json.Marshal(mReq)
+		if err != nil {
+			return 0, err
+		}
+		res, err := http.Post(u, "application/json", bytes.NewReader(reqBytes))
+		if err != nil {
+			return 0, fmt.Errorf("manifester http error: %w", err)
+		}
+		defer res.Body.Close()
+		if res.StatusCode != http.StatusOK {
+			return 0, fmt.Errorf("manifester http status: %s", res.Status)
+		} else if zr, err := zstd.NewReader(res.Body); err != nil {
+			return 0, err
+		} else if sb, err = io.ReadAll(zr); err != nil {
+			return 0, err
+		}
 	}
 
+	// verify signature and params
+	entry, smParams, err := common.VerifyMessageAsEntry(s.cfg.StyxPubKeys, common.ManifestContext, sb)
+	if err != nil {
+		return 0, err
+	}
+	if smParams != nil {
+		match := smParams.ChunkShift == gParams.ChunkShift &&
+			smParams.DigestBits == gParams.DigestBits &&
+			smParams.DigestAlgo == gParams.DigestAlgo
+		if !match {
+			return 0, fmt.Errorf("chunked manifest global params mismatch")
+		}
+	}
+
+	// unmarshal into manifest
 	var m pb.Manifest
-	var sb []byte
-	if zr, err := zstd.NewReader(res.Body); err != nil {
-		return 0, err
-	} else if sb, err = io.ReadAll(zr); err != nil {
-		return 0, err
-	} else if err := common.VerifyInlineMessage(s.cfg.StyxPubKeys, common.ManifestContext, sb, &m); err != nil {
-		return 0, err
+	if len(entry.InlineData) > 0 {
+		err = proto.Unmarshal(entry.InlineData, &m)
+		if err != nil {
+			return 0, fmt.Errorf("manifest unmarshal error: %w", err)
+		}
+	} else {
+		return 0, fmt.Errorf("!!! FIXME chunked manifest")
 	}
 
 	// transform manifest into image (allocate chunks)

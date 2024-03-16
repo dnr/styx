@@ -45,27 +45,36 @@ func VerifyInlineMessage(
 	b []byte,
 	msg proto.Message,
 ) error {
+	entry, _, err := VerifyMessageAsEntry(keys, expectedContext, b)
+	if err != nil {
+		return err
+	}
+	if entry.Size != int64(len(entry.InlineData)) {
+		return fmt.Errorf("SignedMessage missing inline data")
+	}
+	return proto.Unmarshal(entry.InlineData, msg)
+}
+
+func VerifyMessageAsEntry(keys []signature.PublicKey, expectedContext string, b []byte) (*pb.Entry, *pb.GlobalParams, error) {
 	if len(keys) == 0 {
-		return fmt.Errorf("no public keys provided")
+		return nil, nil,fmt.Errorf("no public keys provided")
 	}
 
 	var sm pb.SignedMessage
 	err := proto.Unmarshal(b, &sm)
 	if err != nil {
-		return fmt.Errorf("error unmarshaling SignedMessage: %w", err)
-	}
-
-	if sm.Msg.Path != expectedContext {
-		return fmt.Errorf("SignedMessage context mismatch: %q != %q", sm.Msg.Path, expectedContext)
+		return nil, nil, fmt.Errorf("error unmarshaling SignedMessage: %w", err)
 	} else if sm.Msg == nil {
-		return fmt.Errorf("SignedMessage missing entry")
-	} else if sm.Msg.Size != int64(len(sm.Msg.InlineData)) {
-		return fmt.Errorf("SignedMessage missing inline data")
+		return nil, nil, fmt.Errorf("SignedMessage missing entry")
+	} else if sm.Msg.Path != expectedContext {
+		return nil, nil, fmt.Errorf("SignedMessage context mismatch: %q != %q", sm.Msg.Path, expectedContext)
+	} else if len(sm.Msg.Digests) > 0 && sm.Params == nil {
+		return nil, nil, fmt.Errorf("SignedMessage with chunks must have params")
 	}
 
 	sigs := make([]signature.Signature, min(len(sm.KeyId), len(sm.Signature)))
 	if len(sigs) == 0 {
-		return fmt.Errorf("no signatures in SignedMessage")
+		return nil, nil, fmt.Errorf("no signatures in SignedMessage")
 	}
 	for i := range sigs {
 		sigs[i].Name = sm.KeyId[i]
@@ -74,54 +83,11 @@ func VerifyInlineMessage(
 
 	fingerprint := entryFingerprint(sm.Msg)
 	if !signature.VerifyFirst(fingerprint, sigs, keys) {
-		return fmt.Errorf("signature verification failed")
+		return nil, nil, fmt.Errorf("signature verification failed")
 	}
 
-	return proto.Unmarshal(sm.Msg.InlineData, msg)
+	return sm.Msg, sm.Params, nil
 }
-
-/*
-func VerifyChunkedMessage(
-	keys []signature.PublicKey,
-	expectedContext string,
-	b []byte,
-) (pb.Entry, error) {
-	if len(keys) == 0 {
-		return fmt.Errorf("no public keys provided")
-	}
-
-	var sm pb.SignedMessage
-	err := proto.Unmarshal(b, &sm)
-	if err != nil {
-		return fmt.Errorf("error unmarshaling SignedMessage: %w", err)
-	}
-
-	sigs := make([]signature.Signature, min(len(sm.KeyId), len(sm.Signature)))
-	if len(sigs) == 0 {
-		return fmt.Errorf("no signatures in SignedMessage")
-	}
-	for i := range sigs {
-		sigs[i].Name = sm.KeyId[i]
-		sigs[i].Data = sm.Signature[i]
-	}
-
-	var digest string
-	switch sm.HashAlgo {
-	case "sha256":
-		h := sha256.New()
-		h.Write(sm.Msg)
-		digest = string(h.Sum(nil))
-	default:
-		return fmt.Errorf("Unknown SignedMessage hash algo %q", sm.HashAlgo)
-	}
-
-	if !signature.VerifyFirst(digest, sigs, keys) {
-		return fmt.Errorf("signature verification failed")
-	}
-
-	return proto.Unmarshal(sm.Msg, msg)
-}
-*/
 
 func SignInlineMessage(keys []signature.SecretKey, context string, msg proto.Message) ([]byte, error) {
 	b, err := proto.Marshal(msg)
