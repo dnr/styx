@@ -3,6 +3,7 @@ package daemon
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
@@ -48,11 +49,11 @@ type (
 		csread      manifester.ChunkStoreRead
 		mcread      manifester.ChunkStoreRead
 		db          *bbolt.DB
-		pool        *sync.Pool
+		msgPool     *sync.Pool
+		chunkPool   *sync.Pool
 		sf          singleflight.Group
 		builder     *erofs.Builder
 		devnode     int
-		zeros       []byte
 
 		lock       sync.Mutex
 		cacheState map[uint32]*openFileState // object id -> state
@@ -95,10 +96,10 @@ func CachefilesServer(cfg Config) *server {
 		blockShift:  blkshift(cfg.ErofsBlockShift),
 		csread:      manifester.NewChunkStoreReadUrl(cfg.Params.ChunkReadUrl, manifester.ChunkReadPath),
 		mcread:      manifester.NewChunkStoreReadUrl(cfg.Params.ManifestCacheUrl, manifester.ManifestCachePath),
-		pool:        &sync.Pool{New: func() any { return make([]byte, CACHEFILES_MSG_MAX_SIZE) }},
+		msgPool:     &sync.Pool{New: func() any { return make([]byte, CACHEFILES_MSG_MAX_SIZE) }},
+		chunkPool:   &sync.Pool{New: func() any { return make([]byte, 1<<cfg.Params.Params.ChunkShift) }},
 		builder:     erofs.NewBuilder(erofs.BuilderConfig{BlockShift: cfg.ErofsBlockShift}),
 		cacheState:  make(map[uint32]*openFileState),
-		zeros:       make([]byte, 1<<cfg.ErofsBlockShift),
 	}
 }
 
@@ -262,7 +263,7 @@ func (s *server) Run() error {
 		// read until we get zero
 		readAfterPoll := false
 		for {
-			buf := s.pool.Get().([]byte)
+			buf := s.msgPool.Get().([]byte)
 			n, err = unix.Read(s.devnode, buf)
 			if err != nil {
 				errors++
@@ -293,7 +294,7 @@ func (s *server) handleMessage(buf []byte) (retErr error) {
 		if retErr != nil {
 			log.Printf("error handling message: %v", retErr)
 		}
-		s.pool.Put(buf[0:CACHEFILES_MSG_MAX_SIZE])
+		s.msgPool.Put(buf[0:CACHEFILES_MSG_MAX_SIZE])
 	}()
 
 	var r bytes.Reader
@@ -594,21 +595,28 @@ func (s *server) handleReadSlab(state *openFileState, ln, off uint64) error {
 
 	// TODO: consider if this is the right scope for duplicate suppression
 	_, err, _ = s.sf.Do(digestStr, func() (any, error) {
-		buf := make([]byte, 1<<s.cfg.Params.Params.ChunkShift)
+		buf := s.chunkPool.Get().([]byte)
+		defer s.chunkPool.Put(buf)
+
 		got, err := s.csread.Get(ctx, digestStr, buf[:0])
 		if err != nil {
 			return nil, err
 		}
 
-		if len(got) > len(buf) {
+		if len(got) > len(buf) || &buf[0] != &got[0] {
 			return nil, fmt.Errorf("chunk overflowed chunk size: %d > %d", len(got), len(buf))
-		} else if uint64(s.blockShift.roundup(int64(len(got)))) < ln {
-			return nil, fmt.Errorf("chunk underflowed requested len: %d < %d", len(got), ln)
+		} else if err = s.checkChunkDigest(got, digest); err != nil {
+			return nil, err
+		}
+		// round up to block size
+		toWrite := buf[:s.blockShift.roundup(int64(len(got)))]
+		if len(toWrite) < int(ln) {
+			return nil, fmt.Errorf("chunk underflowed requested len: %d < %d", len(toWrite), ln)
 		}
 
-		n, err := unix.Pwrite(int(state.fd), buf, int64(off))
-		if err == nil && n != len(buf) {
-			err = fmt.Errorf("short write %d != %d (requested %d)", n, len(buf), ln)
+		n, err := unix.Pwrite(int(state.fd), toWrite, int64(off))
+		if err == nil && n != len(toWrite) {
+			err = fmt.Errorf("short write %d != %d (requested %d)", n, len(toWrite), ln)
 		}
 		return nil, err
 	})
@@ -642,11 +650,23 @@ func (s *server) readChunkedData(entry *pb.Entry) ([]byte, error) {
 				return err
 			} else if len(got) != toRead {
 				return fmt.Errorf("chunk was wrong size: %d vs %d", len(got), toRead)
+			} else if err = s.checkChunkDigest(got, digest); err != nil {
+				return err
 			}
 			return nil
 		})
 	}
 	return valOrErr(out, eg.Wait())
+}
+
+func (s *server) checkChunkDigest(got, digest []byte) error {
+	h := sha256.New() // TODO: configurable
+	h.Write(got)
+	var gotDigest [sha256.Size]byte
+	if !bytes.Equal(h.Sum(gotDigest[:0])[:s.digestBytes], digest) {
+		return fmt.Errorf("chunk digest mismatch %x != %x", gotDigest, digest)
+	}
+	return nil
 }
 
 // slab manager

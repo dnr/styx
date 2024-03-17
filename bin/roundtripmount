@@ -3,8 +3,8 @@
 set -eux
 
 # in other terminals, run:
-# ./styx manifester --chunklocaldir=/tmp/chunks
-# sudo ./styx daemon --rchunklocaldir=/tmp/chunks
+# ./styx manifester --chunklocaldir=/tmp/chunks --styx_signkey=keys/styx-dev-1.secret
+# sudo ./styx daemon --params=file://$PWD/params/local-dev.signed
 
 for a; do
   tmp=$(mktemp -p /tmp -d roundtrip.XXXXXXXXX)
@@ -15,7 +15,8 @@ for a; do
   fi
   sph=$(echo ${a#/nix/store/} | cut -c-32)
   sudo mount -t erofs -o domain_id=styx,fsid=$sph none $tmp
-  trap "sudo umount $tmp; rmdir $tmp" EXIT
+  # Comment this out to leave stuff on error
+  trap "sudo umount $tmp; rmdir $tmp; echo 'ERROR!!!'" EXIT
   diff -ur $a $tmp
   sudo umount $tmp; rmdir $tmp
   trap "" EXIT

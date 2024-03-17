@@ -167,7 +167,8 @@ func (s *urlChunkStoreRead) Get(ctx context.Context, key string, dst []byte) ([]
 		return nil, err
 	}
 	if res.Header.Get("Content-Encoding") == "zstd" {
-		b, err = s.dec.DecodeAll(b, dst)
+		return s.dec.DecodeAll(b, dst)
+	} else {
+		return append(dst, b...), nil
 	}
-	return b, err
 }
