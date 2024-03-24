@@ -11,6 +11,8 @@ import (
 // https://erofs.docs.kernel.org/en/latest/core_ondisk.html
 
 const (
+	EROFS_MAGIC = 0xE0F5E1E2
+
 	EROFS_SUPER_OFFSET = 1024
 
 	EROFS_FEATURE_COMPAT_SB_CHKSUM    = 0x00000001

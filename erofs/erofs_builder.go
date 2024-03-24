@@ -265,7 +265,7 @@ func (b *Builder) BuildFromNar(r io.Reader, out io.Writer) error {
 
 	// 3.1: fill in super
 	super := erofs_super_block{
-		Magic:       0xE0F5E1E2,
+		Magic:       EROFS_MAGIC,
 		BlkSzBits:   truncU8(b.blk),
 		RootNid:     truncU16(root.nid),
 		Inos:        truncU64(len(inodes)),
@@ -529,7 +529,7 @@ func (b *Builder) BuildFromManifestEmbed(
 
 	// 3.1: fill in super
 	super := erofs_super_block{
-		Magic:       0xE0F5E1E2,
+		Magic:       EROFS_MAGIC,
 		BlkSzBits:   truncU8(b.blk),
 		RootNid:     truncU16(root.nid),
 		Inos:        truncU64(len(inodes)),
@@ -847,7 +847,7 @@ func (b *Builder) BuildFromManifestWithSlab(
 		EROFS_FEATURE_INCOMPAT_DEVICE_TABLE)
 
 	super := erofs_super_block{
-		Magic:           0xE0F5E1E2,
+		Magic:           EROFS_MAGIC,
 		FeatureIncompat: incompat,
 		BlkSzBits:       truncU8(b.blk),
 		RootNid:         truncU16(root.nid),

@@ -160,7 +160,7 @@ func (s *server) openDevNode() (err error) {
 	return
 }
 
-// socket server
+// socket server + mount management
 
 // Reads a record in imageBucket.
 func (s *server) readImageRecord(sph string) (*pb.DbImage, error) {
@@ -289,6 +289,8 @@ func (s *server) handleQueryReq(r *QueryReq) (*QueryResp, error) {
 func (s *server) handleMountReq(r *MountReq) (*genericResp, error) {
 	if !reStorePath.MatchString(r.StorePath) {
 		return nil, mwErr(http.StatusBadRequest, "invalid store path")
+	} else if !strings.HasPrefix(r.MountPoint, "/") {
+		return nil, mwErr(http.StatusBadRequest, "mount point must be absolute path")
 	}
 	sph, _, _ := strings.Cut(r.StorePath, "-")
 
@@ -296,16 +298,26 @@ func (s *server) handleMountReq(r *MountReq) (*genericResp, error) {
 		if img.MountState == pb.MountState_Mounted {
 			return mwErr(http.StatusConflict, "already mounted")
 		}
+		img.StorePath = r.StorePath
+		img.Upstream = s.cfg.Upstream
 		img.MountState = pb.MountState_Requested
 		img.MountPoint = r.MountPoint
+		img.LastMountError = ""
 		return nil
 	})
 	if err != nil {
 		return nil, err
 	}
 
+	return nil, s.tryMount(r.StorePath, r.MountPoint)
+}
+
+func (s *server) tryMount(storePath, mountPoint string) error {
+	sph, _, _ := strings.Cut(storePath, "-")
+
+	_ = os.MkdirAll(mountPoint, 0o755)
 	opts := fmt.Sprintf("domain_id=%s,fsid=%s", domainId, sph)
-	mountErr := unix.Mount("none", r.MountPoint, "erofs", 0, opts)
+	mountErr := unix.Mount("none", mountPoint, "erofs", 0, opts)
 
 	_ = s.imageTx(sph, func(img *pb.DbImage) error {
 		if mountErr == nil {
@@ -318,7 +330,7 @@ func (s *server) handleMountReq(r *MountReq) (*genericResp, error) {
 		return nil
 	})
 
-	return nil, mountErr
+	return mountErr
 }
 
 func (s *server) handleUmountReq(r *UmountReq) (*genericResp, error) {
@@ -357,6 +369,38 @@ func (s *server) handleDeleteReq(r *DeleteReq) (*genericResp, error) {
 	return nil, errors.New("unimplemented")
 }
 
+func (s *server) restoreMounts() {
+	var toRestore []*pb.DbImage
+	_ = s.db.View(func(tx *bbolt.Tx) error {
+		cur := tx.Bucket(imageBucket).Cursor()
+		for k, v := cur.First(); k != nil; k, v = cur.Next() {
+			var img pb.DbImage
+			if err := proto.Unmarshal(v, &img); err != nil {
+				log.Print("unmarshal error iterating images", err)
+				continue
+			}
+			if img.MountState == pb.MountState_Mounted {
+				toRestore = append(toRestore, &img)
+			}
+		}
+		return nil
+	})
+	for _, img := range toRestore {
+		var st unix.Statfs_t
+		err := unix.Statfs(img.MountPoint, &st)
+		if err == nil && st.Type == erofs.EROFS_MAGIC {
+			// log.Print("restoring: ", img.StorePath, " already mounted on ", img.MountPoint)
+			continue
+		}
+		err = s.tryMount(img.StorePath, img.MountPoint)
+		if err == nil {
+			log.Print("restoring: ", img.StorePath, " restored to ", img.MountPoint)
+		} else {
+			log.Print("restoring: ", img.StorePath, " error: ", err)
+		}
+	}
+}
+
 // cachefiles server
 
 func (s *server) Run() error {
@@ -384,6 +428,16 @@ func (s *server) Run() error {
 		return err
 	}
 
+	go s.cachefilesServer()
+
+	s.restoreMounts()
+
+	// TODO: shutdown
+	<-make(chan struct{})
+	return nil
+}
+
+func (s *server) cachefilesServer() {
 	wchan := make(chan []byte)
 	for i := 0; i < s.cfg.Workers; i++ {
 		go func() {
@@ -433,7 +487,6 @@ func (s *server) Run() error {
 			wchan <- buf[:n]
 		}
 	}
-	return nil
 }
 
 func (s *server) handleMessage(buf []byte) (retErr error) {
