@@ -1,7 +1,7 @@
 package daemon
 
 const (
-	// tag for cachefiled. not sure if it's useful to have more than one.
+	// tag for cachefilesd. not sure if it's useful to have more than one.
 	cacheTag = "styx0"
 
 	domainId = "styx"

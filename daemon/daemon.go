@@ -89,6 +89,8 @@ type (
 
 var _ erofs.SlabManager = (*server)(nil)
 
+// init stuff
+
 func CachefilesServer(cfg Config) *server {
 	return &server{
 		cfg:         &cfg,
@@ -139,57 +141,6 @@ func (s *server) openDb() (err error) {
 	})
 }
 
-func (s *server) startSocketServer() (err error) {
-	socketPath := path.Join(s.cfg.CachePath, Socket)
-	os.Remove(socketPath)
-	l, err := net.ListenUnix("unix", &net.UnixAddr{Net: "unix", Name: socketPath})
-	if err != nil {
-		return err
-	}
-	mux := http.NewServeMux()
-	mux.HandleFunc("/mount", s.handleMountReq)
-	mux.HandleFunc("/umount", s.handleUmountReq)
-	mux.HandleFunc("/delete", s.handleDeleteReq)
-	go http.Serve(l, mux)
-	return nil
-}
-
-func (s *server) handleMountReq(w http.ResponseWriter, req *http.Request) {
-	var r MountReq
-	var res MountResp
-	if err := json.NewDecoder(req.Body).Decode(&r); err != nil {
-		w.WriteHeader(http.StatusBadRequest)
-	}
-
-	// TODO
-
-	json.NewEncoder(w).Encode(res)
-}
-
-func (s *server) handleUmountReq(w http.ResponseWriter, req *http.Request) {
-	var r UmountReq
-	var res UmountResp
-	if err := json.NewDecoder(req.Body).Decode(&r); err != nil {
-		w.WriteHeader(http.StatusBadRequest)
-	}
-
-	// TODO
-
-	json.NewEncoder(w).Encode(res)
-}
-
-func (s *server) handleDeleteReq(w http.ResponseWriter, req *http.Request) {
-	var r DeleteReq
-	var res DeleteResp
-	if err := json.NewDecoder(req.Body).Decode(&r); err != nil {
-		w.WriteHeader(http.StatusBadRequest)
-	}
-
-	// TODO
-
-	json.NewEncoder(w).Encode(res)
-}
-
 func (s *server) setupEnv() error {
 	err := exec.Command("modprobe", "cachefiles").Run()
 	if err != nil {
@@ -208,6 +159,205 @@ func (s *server) openDevNode() (err error) {
 	}
 	return
 }
+
+// socket server
+
+// Reads a record in imageBucket.
+func (s *server) readImageRecord(sph string) (*pb.DbImage, error) {
+	var img pb.DbImage
+	err := s.db.View(func(tx *bbolt.Tx) error {
+		if buf := tx.Bucket(imageBucket).Get([]byte(sph)); buf != nil {
+			if err := proto.Unmarshal(buf, &img); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	return valOrErr(&img, err)
+}
+
+// Does a transaction on a record in imageBucket. f should mutate its argument and return nil.
+// If f returns an error, the record will not be written.
+func (s *server) imageTx(sph string, f func(*pb.DbImage) error) error {
+	return s.db.Update(func(tx *bbolt.Tx) error {
+		var img pb.DbImage
+		b := tx.Bucket(imageBucket)
+		if buf := b.Get([]byte(sph)); buf != nil {
+			if err := proto.Unmarshal(buf, &img); err != nil {
+				return err
+			}
+		}
+		if err := f(&img); err != nil {
+			return err
+		} else if buf, err := proto.Marshal(&img); err != nil {
+			return err
+		} else {
+			return b.Put([]byte(sph), buf)
+		}
+	})
+}
+
+func (s *server) startSocketServer() (err error) {
+	socketPath := path.Join(s.cfg.CachePath, Socket)
+	os.Remove(socketPath)
+	l, err := net.ListenUnix("unix", &net.UnixAddr{Net: "unix", Name: socketPath})
+	if err != nil {
+		return err
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc(QueryPath, jsonmw(s.handleQueryReq))
+	mux.HandleFunc(MountPath, jsonmw(s.handleMountReq))
+	mux.HandleFunc(UmountPath, jsonmw(s.handleUmountReq))
+	mux.HandleFunc(DeletePath, jsonmw(s.handleDeleteReq))
+	go http.Serve(l, mux)
+	return nil
+}
+
+type errWithStatus struct {
+	error
+	status int
+}
+
+func mwErr(status int, format string, a ...any) error {
+	return &errWithStatus{
+		error:  fmt.Errorf(format, a...),
+		status: status,
+	}
+}
+
+func mwErrE(status int, e error) error {
+	return &errWithStatus{
+		error:  e,
+		status: status,
+	}
+}
+
+func jsonmw[reqT, resT any](f func(*reqT) (*resT, error)) func(w http.ResponseWriter, r *http.Request) {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-type", "application/json")
+		wEnc := json.NewEncoder(w)
+
+		var req reqT
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			wEnc.Encode(nil)
+			return
+		}
+
+		parts := make([]any, 0, 7)
+		parts = append(parts, r.URL.Path)
+
+		if encReq, err := json.Marshal(req); err == nil {
+			parts = append(parts, string(encReq))
+		}
+
+		res, err := f(&req)
+
+		if err == nil {
+			w.WriteHeader(http.StatusOK)
+			if res != nil {
+				wEnc.Encode(res)
+			} else {
+				wEnc.Encode(&genericResp{Status: Status{Success: true}})
+			}
+			parts = append(parts, " -> ", "OK")
+			log.Print(parts...)
+			return
+		}
+
+		status := http.StatusInternalServerError
+		if ewc, ok := err.(*errWithStatus); ok {
+			status = ewc.status
+		}
+
+		w.WriteHeader(status)
+		if res != nil {
+			wEnc.Encode(res)
+		} else {
+			wEnc.Encode(&genericResp{Status: Status{Success: false, Error: err.Error()}})
+		}
+		parts = append(parts, " -> ", err.Error())
+		log.Print(parts...)
+	}
+}
+
+func (s *server) handleQueryReq(r *QueryReq) (*QueryResp, error) {
+	// TODO
+	return nil, errors.New("unimplemented")
+}
+
+func (s *server) handleMountReq(r *MountReq) (*genericResp, error) {
+	if !reStorePath.MatchString(r.StorePath) {
+		return nil, mwErr(http.StatusBadRequest, "invalid store path")
+	}
+	sph, _, _ := strings.Cut(r.StorePath, "-")
+
+	err := s.imageTx(sph, func(img *pb.DbImage) error {
+		if img.MountState == pb.MountState_Mounted {
+			return mwErr(http.StatusConflict, "already mounted")
+		}
+		img.MountState = pb.MountState_Requested
+		img.MountPoint = r.MountPoint
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	opts := fmt.Sprintf("domain_id=%s,fsid=%s", domainId, sph)
+	mountErr := unix.Mount("none", r.MountPoint, "erofs", 0, opts)
+
+	_ = s.imageTx(sph, func(img *pb.DbImage) error {
+		if mountErr == nil {
+			img.MountState = pb.MountState_Mounted
+			img.LastMountError = ""
+		} else {
+			img.MountState = pb.MountState_MountError
+			img.LastMountError = mountErr.Error()
+		}
+		return nil
+	})
+
+	return nil, mountErr
+}
+
+func (s *server) handleUmountReq(r *UmountReq) (*genericResp, error) {
+	// allowed to leave out the name part here
+	sph, _, _ := strings.Cut(r.StorePath, "-")
+
+	var mp string
+	err := s.imageTx(sph, func(img *pb.DbImage) error {
+		if img.MountState != pb.MountState_Mounted {
+			return mwErr(http.StatusNotFound, "not mounted")
+		} else if mp = img.MountPoint; mp == "" {
+			return mwErr(http.StatusInternalServerError, "mount point not set")
+		}
+		img.MountState = pb.MountState_UnmountRequested
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	umountErr := unix.Unmount(mp, 0)
+
+	if umountErr == nil {
+		_ = s.imageTx(sph, func(img *pb.DbImage) error {
+			img.MountState = pb.MountState_Unmounted
+			img.MountPoint = ""
+			return nil
+		})
+	}
+
+	return nil, umountErr
+}
+
+func (s *server) handleDeleteReq(r *DeleteReq) (*genericResp, error) {
+	// TODO
+	return nil, errors.New("unimplemented")
+}
+
+// cachefiles server
 
 func (s *server) Run() error {
 	if err := s.setupEnv(); err != nil {
@@ -380,27 +530,16 @@ func (s *server) handleOpenSlab(msgId, objectId, fd, flags uint32, id uint16) (i
 
 func (s *server) handleOpenImage(msgId, objectId, fd, flags uint32, cookie string) (int64, error) {
 	// check if we have this image
-	var size int64
-	err := s.db.Update(func(tx *bbolt.Tx) error {
-		if rec := tx.Bucket(imageBucket).Get([]byte(cookie)); rec != nil {
-			m, err := unmarshalAs[pb.DbImage](rec)
-			if err != nil {
-				return err
-			}
-			size = m.Size
-		}
-		return nil
-	})
-	if err != nil {
+	if img, err := s.readImageRecord(cookie); err != nil {
 		return 0, err
-	} else if size > 0 {
+	} else if img.ImageSize > 0 {
 		s.lock.Lock()
 		defer s.lock.Unlock()
 		s.cacheState[objectId] = &openFileState{
 			fd: fd,
 			tp: typeImage,
 		}
-		return size, nil
+		return img.ImageSize, nil
 	}
 
 	// get manifest
@@ -469,13 +608,13 @@ func (s *server) handleOpenImage(msgId, objectId, fd, flags uint32, cookie strin
 	if err != nil {
 		return 0, fmt.Errorf("build image error: %w", err)
 	}
-	size = int64(image.Len())
+	size := int64(image.Len())
 
 	log.Printf("new image %s, %d bytes in manifest, %d bytes in erofs", cookie, len(sb), size)
 
 	// record in db
 	err = s.db.Update(func(tx *bbolt.Tx) error {
-		buf, err := proto.Marshal(&pb.DbImage{Size: size})
+		buf, err := proto.Marshal(&pb.DbImage{ImageSize: size})
 		if err != nil {
 			return err
 		}

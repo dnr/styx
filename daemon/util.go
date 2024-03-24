@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"math"
+	"regexp"
 
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
@@ -54,3 +55,5 @@ func valOrErr[T any](v T, err error) (T, error) {
 	}
 	return v, nil
 }
+
+var reStorePath = regexp.MustCompile(`^[0123456789abcdfghijklmnpqrsvwxyz]{32}-.*$`)

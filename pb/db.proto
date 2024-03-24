@@ -3,6 +3,16 @@ syntax = "proto3";
 package pb;
 option go_package = "github.com/dnr/styx/pb";
 
+enum MountState {
+  Unknown          = 0;  // initial value
+  Requested        = 1;  // requested but not mounted yet
+  Mounted          = 2;  // mounted
+  MountError       = 3;  // got error mounting
+  UnmountRequested = 4;  // was mounted then requested unmount
+  Unmounted        = 5;  // unmounted
+  Deleted          = 6;  // deleted
+}
+
 // key: "meta"
 message DbMeta {
   int32 block_size = 1;
@@ -23,5 +33,18 @@ message DbMeta {
 
 // key: "image" / "<store path hash>"
 message DbImage {
-  int64 size = 1;
+  // full store path including name
+  string store_path = 2;
+  // which upstream this was from
+  string upstream = 3;
+  // system id from syschecker
+  int64 syschecker_system = 4;
+
+  // is it mounted and where?
+  MountState mount_state = 5;
+  string mount_point = 6;
+  string last_mount_error = 7;
+
+  // size of erofs image
+  int64 image_size = 1;
 }

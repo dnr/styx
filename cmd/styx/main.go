@@ -22,6 +22,7 @@ const (
 	ctxSignKeys
 	ctxStyxPubKeys
 	ctxErofsBuilder
+	ctxStyxClient
 )
 
 func withChunkStoreWrite(c *cobra.Command) runE {
@@ -141,6 +142,14 @@ func withStyxPubKeys(c *cobra.Command) runE {
 	}
 }
 
+func withStyxClient(c *cobra.Command) runE {
+	socket := c.Flags().String("addr", "/var/cache/styx/styx.sock", "path to local styx socket")
+	return func(c *cobra.Command, args []string) error {
+		c.SetContext(context.WithValue(c.Context(), ctxStyxClient, newClient(*socket)))
+		return nil
+	}
+}
+
 func main() {
 	root := cmd(
 		&cobra.Command{
@@ -178,11 +187,49 @@ func main() {
 			},
 			cmd(
 				&cobra.Command{
-					Use:   "mount <nar file or store path> <mount point>",
+					Use:   "query <store path>",
+					Short: "asks styx if it can mount a store path",
+					Args:  cobra.ExactArgs(1),
+				},
+				withStyxClient,
+				func(c *cobra.Command, args []string) error {
+					return c.Context().Value(ctxStyxClient).(*styxClient).CallAndPrint(
+						daemon.QueryPath, &daemon.QueryReq{
+							StorePath: args[0],
+						},
+					)
+				},
+			),
+			cmd(
+				&cobra.Command{
+					Use:   "mount <store path> <mount point>",
 					Short: "mounts a nix package",
 					Args:  cobra.ExactArgs(2),
 				},
-				func(c *cobra.Command, args []string) error { panic("TODO") },
+				withStyxClient,
+				func(c *cobra.Command, args []string) error {
+					return c.Context().Value(ctxStyxClient).(*styxClient).CallAndPrint(
+						daemon.MountPath, &daemon.MountReq{
+							StorePath:  args[0],
+							MountPoint: args[1],
+						},
+					)
+				},
+			),
+			cmd(
+				&cobra.Command{
+					Use:   "umount <store path>",
+					Short: "unmounts a nix package that was previous mounted",
+					Args:  cobra.ExactArgs(1),
+				},
+				withStyxClient,
+				func(c *cobra.Command, args []string) error {
+					return c.Context().Value(ctxStyxClient).(*styxClient).CallAndPrint(
+						daemon.UmountPath, &daemon.UmountReq{
+							StorePath: args[0],
+						},
+					)
+				},
 			),
 		),
 		debugCmd(),
