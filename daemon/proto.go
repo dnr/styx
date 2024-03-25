@@ -23,6 +23,7 @@ type (
 	}
 
 	MountReq struct {
+		Upstream   string
 		StorePath  string
 		MountPoint string
 	}

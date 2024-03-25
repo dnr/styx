@@ -69,7 +69,6 @@ func withDaemonConfig(c *cobra.Command) runE {
 	c.MarkFlagRequired("params")
 	c.Flags().StringVar(&cfg.DevPath, "devpath", "/dev/cachefiles", "path to cachefiles device node")
 	c.Flags().StringVar(&cfg.CachePath, "cache", "/var/cache/styx", "path to local cache (also socket and db)")
-	c.Flags().StringVar(&cfg.Upstream, "upstream", "cache.nixos.org", "upstream cache to ask manifester for")
 	c.Flags().IntVar(&cfg.ErofsBlockShift, "block_shift", 12, "block size bits for local fs images")
 	c.Flags().IntVar(&cfg.SmallFileCutoff, "small_file_cutoff", 224, "cutoff for embedding small files in images")
 	c.Flags().IntVar(&cfg.Workers, "workers", 16, "worker goroutines for cachefilesd serving")
@@ -202,16 +201,17 @@ func main() {
 			),
 			cmd(
 				&cobra.Command{
-					Use:   "mount <store path> <mount point>",
+					Use:   "mount <upstream> <store path> <mount point>",
 					Short: "mounts a nix package",
-					Args:  cobra.ExactArgs(2),
+					Args:  cobra.ExactArgs(3),
 				},
 				withStyxClient,
 				func(c *cobra.Command, args []string) error {
 					return c.Context().Value(ctxStyxClient).(*styxClient).CallAndPrint(
 						daemon.MountPath, &daemon.MountReq{
-							StorePath:  args[0],
-							MountPoint: args[1],
+							Upstream:   args[0],
+							StorePath:  args[1],
+							MountPoint: args[2],
 						},
 					)
 				},

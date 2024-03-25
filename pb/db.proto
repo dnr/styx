@@ -47,4 +47,5 @@ message DbImage {
 
   // size of erofs image
   int64 image_size = 1;
+  int64 manifest_size = 8;
 }

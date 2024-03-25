@@ -78,8 +78,6 @@ type (
 		StyxPubKeys []signature.PublicKey
 		Params      pb.DaemonParams
 
-		Upstream string
-
 		ErofsBlockShift int
 		SmallFileCutoff int
 
@@ -289,6 +287,8 @@ func (s *server) handleQueryReq(r *QueryReq) (*QueryResp, error) {
 func (s *server) handleMountReq(r *MountReq) (*genericResp, error) {
 	if !reStorePath.MatchString(r.StorePath) {
 		return nil, mwErr(http.StatusBadRequest, "invalid store path")
+	} else if r.Upstream == "" {
+		return nil, mwErr(http.StatusBadRequest, "invalid upstream")
 	} else if !strings.HasPrefix(r.MountPoint, "/") {
 		return nil, mwErr(http.StatusBadRequest, "mount point must be absolute path")
 	}
@@ -299,7 +299,7 @@ func (s *server) handleMountReq(r *MountReq) (*genericResp, error) {
 			return mwErr(http.StatusConflict, "already mounted")
 		}
 		img.StorePath = r.StorePath
-		img.Upstream = s.cfg.Upstream
+		img.Upstream = r.Upstream
 		img.MountState = pb.MountState_Requested
 		img.MountPoint = r.MountPoint
 		img.LastMountError = ""
@@ -583,9 +583,17 @@ func (s *server) handleOpenSlab(msgId, objectId, fd, flags uint32, id uint16) (i
 
 func (s *server) handleOpenImage(msgId, objectId, fd, flags uint32, cookie string) (int64, error) {
 	// check if we have this image
-	if img, err := s.readImageRecord(cookie); err != nil {
+	img, err := s.readImageRecord(cookie)
+	if err != nil {
 		return 0, err
-	} else if img.ImageSize > 0 {
+	} else if img.Upstream == "" {
+		return 0, errors.New("missing upstream")
+	}
+	if img.MountState != pb.MountState_Mounted {
+		log.Print("got open image request with bad mount state", img.String())
+		// try to proceed anyway
+	}
+	if img.ImageSize > 0 {
 		s.lock.Lock()
 		defer s.lock.Unlock()
 		s.cacheState[objectId] = &openFileState{
@@ -600,7 +608,7 @@ func (s *server) handleOpenImage(msgId, objectId, fd, flags uint32, cookie strin
 	// check cached first
 	gParams := s.cfg.Params.Params
 	mReq := manifester.ManifestReq{
-		Upstream:        s.cfg.Upstream,
+		Upstream:        img.Upstream,
 		StorePathHash:   cookie,
 		ChunkShift:      int(gParams.ChunkShift),
 		DigestAlgo:      gParams.DigestAlgo,
@@ -663,15 +671,13 @@ func (s *server) handleOpenImage(msgId, objectId, fd, flags uint32, cookie strin
 	}
 	size := int64(image.Len())
 
-	log.Printf("new image %s, %d bytes in manifest, %d bytes in erofs", cookie, len(sb), size)
+	log.Printf("new image %s, %d bytes in manifest, %d bytes in erofs", cookie, entry.Size, size)
 
 	// record in db
-	err = s.db.Update(func(tx *bbolt.Tx) error {
-		buf, err := proto.Marshal(&pb.DbImage{ImageSize: size})
-		if err != nil {
-			return err
-		}
-		return tx.Bucket(imageBucket).Put([]byte(cookie), buf)
+	err = s.imageTx(cookie, func(img *pb.DbImage) error {
+		img.ImageSize = size
+		img.ManifestSize = entry.Size
+		return nil
 	})
 	if err != nil {
 		return 0, err
