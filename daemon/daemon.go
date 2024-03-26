@@ -67,8 +67,7 @@ type (
 		slabId uint16
 
 		// for images
-		imageData       []byte
-		hasWrittenImage bool
+		imageData []byte
 	}
 
 	Config struct {
@@ -521,9 +520,8 @@ func (s *server) handleMessage(buf []byte) (retErr error) {
 }
 
 func (s *server) handleOpen(msgId, objectId, fd, flags uint32, volume, cookie []byte) (retErr error) {
-	// volume is "erofs,<domain_id>" (domain_id is same as fsid if not specified)
+	// volume is "erofs,<domain_id>\x00" (domain_id is same as fsid if not specified)
 	// cookie is "<fsid>"
-	// log.Println("OPEN", msgId, objectId, fd, flags, volume, cookie)
 
 	var cacheSize int64
 
@@ -547,7 +545,7 @@ func (s *server) handleOpen(msgId, objectId, fd, flags uint32, volume, cookie []
 	// slab or manifest
 	cstr := string(cookie)
 	if strings.HasPrefix(cstr, slabPrefix) {
-		log.Println("OPEN SLAB", objectId, cstr)
+		log.Println("open slab", cstr, "as", objectId)
 		slabId, err := strconv.Atoi(cstr[len(slabPrefix):])
 		if err != nil {
 			return err
@@ -555,7 +553,7 @@ func (s *server) handleOpen(msgId, objectId, fd, flags uint32, volume, cookie []
 		cacheSize, retErr = s.handleOpenSlab(msgId, objectId, fd, flags, truncU16(slabId))
 		return
 	} else if len(cstr) == 32 {
-		log.Println("OPEN IMAGE", objectId, cstr)
+		log.Println("open image", cstr, "as", objectId)
 		cacheSize, retErr = s.handleOpenImage(msgId, objectId, fd, flags, cstr)
 		return
 	} else {
@@ -583,7 +581,7 @@ func (s *server) handleOpenImage(msgId, objectId, fd, flags uint32, cookie strin
 	} else if img.Upstream == "" {
 		return 0, errors.New("missing upstream")
 	}
-	if img.MountState != pb.MountState_Mounted {
+	if img.MountState != pb.MountState_Requested && img.MountState != pb.MountState_Mounted {
 		log.Print("got open image request with bad mount state", img.String())
 		// try to proceed anyway
 	}
@@ -690,7 +688,7 @@ func (s *server) handleOpenImage(msgId, objectId, fd, flags uint32, cookie strin
 }
 
 func (s *server) handleClose(msgId, objectId uint32) error {
-	log.Println("CLOSE", objectId)
+	log.Println("close", objectId)
 	s.lock.Lock()
 	defer s.lock.Unlock()
 	if state := s.cacheState[objectId]; state != nil {
@@ -718,10 +716,10 @@ func (s *server) handleRead(msgId, objectId uint32, ln, off uint64) error {
 
 	switch state.tp {
 	case typeImage:
-		log.Println("READ IMAGE", objectId, ln, off)
+		log.Printf("read image %5d: %2dk @ %#x", objectId, ln>>10, off)
 		return s.handleReadImage(state, ln, off)
 	case typeSlab:
-		log.Println("READ SLAB", objectId, ln, off)
+		log.Printf("read slab %5d: %2dk @ %#x", objectId, ln>>10, off)
 		return s.handleReadSlab(state, ln, off)
 	default:
 		panic("bad state type")
@@ -732,6 +730,9 @@ func (s *server) handleReadImage(state *openFileState, _, _ uint64) error {
 	// always write whole thing
 	off := int64(0)
 	buf := state.imageData
+	if buf == nil {
+		return errors.New("already written image")
+	}
 	for len(buf) > 0 {
 		toWrite := buf[:min(16<<10, len(buf))]
 		n, err := unix.Pwrite(int(state.fd), toWrite, off)
@@ -744,8 +745,8 @@ func (s *server) handleReadImage(state *openFileState, _, _ uint64) error {
 		off += int64(n)
 	}
 
-	// FIXME: delete imageData since we don't need it anymore
-
+	// we don't need this anymore
+	state.imageData = nil
 	return nil
 }
 
