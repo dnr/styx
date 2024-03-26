@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+
+base=/mnt/test
+
+for dir in $base/*; do
+  if [[ $(stat -f -c %t $dir) = e0f5e1e2 ]]; then
+    sudo ./styx client umount $(basename $dir)
+  fi
+done

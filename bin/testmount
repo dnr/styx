@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+
+base=/mnt/test
+upstream=cache.nixos.org
+
+for sph; do
+  sph=${sph#/nix/store/}
+  sph=${sph%%/*}
+  dir=$base/$sph
+  sudo mkdir -p $dir
+  sudo ./styx client mount $upstream $sph $dir
+done
