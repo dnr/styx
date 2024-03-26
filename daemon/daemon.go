@@ -669,6 +669,7 @@ func (s *server) handleOpenImage(msgId, objectId, fd, flags uint32, cookie strin
 	err = s.imageTx(cookie, func(img *pb.DbImage) error {
 		img.ImageSize = size
 		img.ManifestSize = entry.Size
+		img.Meta = m.Meta
 		return nil
 	})
 	if err != nil {

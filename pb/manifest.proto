@@ -5,6 +5,7 @@ option go_package = "github.com/dnr/styx/pb";
 
 import "params.proto";
 import "entry.proto";
+import "narinfo.proto";
 
 message Manifest {
   GlobalParams params = 1;
@@ -18,7 +19,7 @@ message Manifest {
 message ManifestMeta {
   // meta info for what this manifest was generated from
   string narinfo_url = 1;  // url that narinfo was fetched from
-  bytes narinfo = 2;       // dump of raw narinfo (includes references, signatures, etc.)
+  NarInfo narinfo = 2;     // parsed narinfo (includes references, signatures, etc.)
 
   string generator = 10;     // software version of generator
   int64 generated_time = 11; // timestamp when this was generated (unix seconds)

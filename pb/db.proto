@@ -3,6 +3,8 @@ syntax = "proto3";
 package pb;
 option go_package = "github.com/dnr/styx/pb";
 
+import "manifest.proto";
+
 enum MountState {
   Unknown          = 0;  // initial value
   Requested        = 1;  // requested but not mounted yet
@@ -48,4 +50,6 @@ message DbImage {
   // size of erofs image
   int64 image_size = 1;
   int64 manifest_size = 8;
+  // manifest metadata
+  ManifestMeta meta = 9;
 }

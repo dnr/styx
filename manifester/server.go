@@ -233,9 +233,26 @@ func (s *server) handleManifest(w http.ResponseWriter, req *http.Request) {
 
 	// add metadata
 
+	nipb := &pb.NarInfo{
+		StorePath:   ni.StorePath,
+		Url:         ni.URL,
+		Compression: ni.Compression,
+		FileHash:    ni.FileHash.NixString(),
+		FileSize:    int64(ni.FileSize),
+		NarHash:     ni.NarHash.NixString(),
+		NarSize:     int64(ni.NarSize),
+		References:  ni.References,
+		Deriver:     ni.Deriver,
+		System:      ni.System,
+		Signatures:  make([]string, len(ni.Signatures)),
+		Ca:          ni.CA,
+	}
+	for i, sig := range ni.Signatures {
+		nipb.Signatures[i] = sig.String()
+	}
 	manifest.Meta = &pb.ManifestMeta{
 		NarinfoUrl:    narinfoUrl,
-		Narinfo:       rawNarinfo.Bytes(),
+		Narinfo:       nipb,
 		Generator:     common.Version,
 		GeneratedTime: time.Now().Unix(),
 	}

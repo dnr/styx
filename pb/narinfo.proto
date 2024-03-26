@@ -1,0 +1,24 @@
+syntax = "proto3";
+
+package pb;
+option go_package = "github.com/dnr/styx/pb";
+
+// from github.com/nix-community/go-nix pkg/narinfo/types.go
+message NarInfo {
+  string store_path          =  1; // The full nix store path (/nix/store/…-pname-version)
+  string url                 =  2; // The relative location to the .nar[.xz,…] file. Usually nar/$fileHash.nar[.xz]
+  string compression         =  3; // The compression method file at URL is compressed with (none,xz,…)
+  string file_hash           =  4; // The hash of the file at URL (nix string format)
+  int64 file_size            =  5; // The size of the file at URL, in bytes
+  // The hash of the .nar file, after possible decompression (nix string format)
+  // Identical to FileHash if no compression is used.
+  string nar_hash            =  6;
+  // The size of the .nar file, after possible decompression, in bytes.
+  // Identical to FileSize if no compression is used.
+  int64 nar_size             =  7;
+  repeated string references =  8; // References to other store paths, contained in the .nar file
+  string deriver             =  9; // Path of the .drv for this store path
+  string system              = 10; // This doesn't seem to be used at all?
+  repeated string signatures = 11; // Signatures, if any.
+  string ca                  = 12;
+}

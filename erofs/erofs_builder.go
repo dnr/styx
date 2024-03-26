@@ -11,7 +11,6 @@ import (
 	"fmt"
 	"hash/crc32"
 	"io"
-	"log"
 	"math"
 	"path"
 	"sort"
@@ -20,8 +19,8 @@ import (
 	"github.com/dnr/styx/pb"
 	"github.com/klauspost/compress/zstd"
 	"github.com/lunixbochs/struc"
+	"github.com/nix-community/go-nix/pkg/hash"
 	"github.com/nix-community/go-nix/pkg/nar"
-	"github.com/nix-community/go-nix/pkg/narinfo"
 	"golang.org/x/sys/unix"
 )
 
@@ -538,13 +537,8 @@ func (b *Builder) BuildFromManifestEmbed(
 	}
 
 	var narhash []byte
-	if len(m.Meta.GetNarinfo()) > 0 {
-		ni, err := narinfo.Parse(bytes.NewReader(m.Meta.Narinfo))
-		if err != nil {
-			log.Println("couldn't parse narinfo in manifest", err)
-		} else {
-			narhash = ni.NarHash.Digest()
-		}
+	if h, err := hash.ParseNixBase32(m.Meta.GetNarinfo().GetNarHash()); err == nil {
+		narhash = h.Digest()
 	}
 	if len(narhash) == 0 {
 		narhash = make([]byte, 16)
@@ -859,13 +853,8 @@ func (b *Builder) BuildFromManifestWithSlab(
 	}
 
 	var narhash []byte
-	if len(m.Meta.GetNarinfo()) > 0 {
-		ni, err := narinfo.Parse(bytes.NewReader(m.Meta.Narinfo))
-		if err != nil {
-			log.Println("couldn't parse narinfo in manifest", err)
-		} else {
-			narhash = ni.NarHash.Digest()
-		}
+	if h, err := hash.ParseNixBase32(m.Meta.GetNarinfo().GetNarHash()); err == nil {
+		narhash = h.Digest()
 	}
 	if len(narhash) == 0 {
 		narhash = make([]byte, 16)
