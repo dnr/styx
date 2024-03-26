@@ -203,7 +203,6 @@ func (s *server) startSocketServer() (err error) {
 		return err
 	}
 	mux := http.NewServeMux()
-	mux.HandleFunc(QueryPath, jsonmw(s.handleQueryReq))
 	mux.HandleFunc(MountPath, jsonmw(s.handleMountReq))
 	mux.HandleFunc(UmountPath, jsonmw(s.handleUmountReq))
 	mux.HandleFunc(DeletePath, jsonmw(s.handleDeleteReq))
@@ -277,11 +276,6 @@ func jsonmw[reqT, resT any](f func(*reqT) (*resT, error)) func(w http.ResponseWr
 		parts = append(parts, " -> ", err.Error())
 		log.Print(parts...)
 	}
-}
-
-func (s *server) handleQueryReq(r *QueryReq) (*QueryResp, error) {
-	// TODO
-	return nil, errors.New("unimplemented")
 }
 
 func (s *server) handleMountReq(r *MountReq) (*genericResp, error) {

@@ -186,21 +186,6 @@ func main() {
 			},
 			cmd(
 				&cobra.Command{
-					Use:   "query <store path>",
-					Short: "asks styx if it can mount a store path",
-					Args:  cobra.ExactArgs(1),
-				},
-				withStyxClient,
-				func(c *cobra.Command, args []string) error {
-					return c.Context().Value(ctxStyxClient).(*styxClient).CallAndPrint(
-						daemon.QueryPath, &daemon.QueryReq{
-							StorePath: args[0],
-						},
-					)
-				},
-			),
-			cmd(
-				&cobra.Command{
 					Use:   "mount <upstream> <store path> <mount point>",
 					Short: "mounts a nix package",
 					Args:  cobra.ExactArgs(3),

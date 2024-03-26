@@ -5,23 +5,12 @@ var (
 	// socket is path.Join(CachePath, Socket)
 	// accessible to root only!
 	Socket     = "styx.sock"
-	QueryPath  = "/query"
 	MountPath  = "/mount"
 	UmountPath = "/umount"
 	DeletePath = "/delete"
 )
 
 type (
-	QueryReq struct {
-		StorePath string // hash plus name, e.g. "m28r6mf37cc8bwwq52kqdzdkc9yrq3ag-nix-2.18.1"
-	}
-	QueryResp struct {
-		Status
-
-		MountState string
-		NarSize    int64 // nar size from narinfo
-	}
-
 	MountReq struct {
 		Upstream   string
 		StorePath  string
