@@ -204,7 +204,7 @@ func (s *server) startSocketServer() (err error) {
 	mux := http.NewServeMux()
 	mux.HandleFunc(MountPath, jsonmw(s.handleMountReq))
 	mux.HandleFunc(UmountPath, jsonmw(s.handleUmountReq))
-	mux.HandleFunc(DeletePath, jsonmw(s.handleDeleteReq))
+	mux.HandleFunc(GcPath, jsonmw(s.handleGcReq))
 	go http.Serve(l, mux)
 	return nil
 }
@@ -289,6 +289,7 @@ func (s *server) handleMountReq(r *MountReq) (*genericResp, error) {
 
 	err := s.imageTx(sph, func(img *pb.DbImage) error {
 		if img.MountState == pb.MountState_Mounted {
+			// FIXME: check if actually mounted in fs. if not, repair.
 			return mwErr(http.StatusConflict, "already mounted")
 		}
 		img.StorePath = r.StorePath
@@ -357,7 +358,7 @@ func (s *server) handleUmountReq(r *UmountReq) (*genericResp, error) {
 	return nil, umountErr
 }
 
-func (s *server) handleDeleteReq(r *DeleteReq) (*genericResp, error) {
+func (s *server) handleGcReq(r *GcReq) (*genericResp, error) {
 	// TODO
 	return nil, errors.New("unimplemented")
 }

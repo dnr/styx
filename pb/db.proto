@@ -12,7 +12,7 @@ enum MountState {
   MountError       = 3;  // got error mounting
   UnmountRequested = 4;  // was mounted then requested unmount
   Unmounted        = 5;  // unmounted
-  Deleted          = 6;  // deleted
+  Deleted          = 6;  // deleted (not used now)
 }
 
 // key: "meta"

@@ -7,7 +7,7 @@ var (
 	Socket     = "styx.sock"
 	MountPath  = "/mount"
 	UmountPath = "/umount"
-	DeletePath = "/delete"
+	GcPath     = "/gc"
 )
 
 type (
@@ -21,8 +21,7 @@ type (
 		StorePath string
 	}
 
-	DeleteReq struct {
-		StorePath string
+	GcReq struct {
 	}
 
 	Status struct {

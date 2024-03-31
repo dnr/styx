@@ -29,7 +29,7 @@ const (
 	MountState_MountError       MountState = 3 // got error mounting
 	MountState_UnmountRequested MountState = 4 // was mounted then requested unmount
 	MountState_Unmounted        MountState = 5 // unmounted
-	MountState_Deleted          MountState = 6 // deleted
+	MountState_Deleted          MountState = 6 // deleted (not used now)
 )
 
 // Enum value maps for MountState.
