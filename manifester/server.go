@@ -58,7 +58,7 @@ func ManifestServer(cfg Config) (*server, error) {
 	}, nil
 }
 
-func (s *server) validateManifestReq(r *ManifestReq) error {
+func (s *server) validateManifestReq(r *ManifestReq, upstreamHost string) error {
 	if r.ChunkShift != int(s.mb.params.ChunkShift) {
 		return fmt.Errorf("mismatched chunk shift (this server uses %d, not %d)",
 			s.mb.params.ChunkShift, r.ChunkShift)
@@ -70,8 +70,8 @@ func (s *server) validateManifestReq(r *ManifestReq) error {
 			s.mb.params.DigestBits, r.DigestBits)
 	}
 
-	if !slices.Contains(s.cfg.AllowedUpstreams, r.Upstream) {
-		return fmt.Errorf("invalid upstream %q", r.Upstream)
+	if !slices.Contains(s.cfg.AllowedUpstreams, upstreamHost) {
+		return fmt.Errorf("invalid upstream %q", upstreamHost)
 	}
 
 	if r.SmallFileCutoff > maxSmallFileCutoff {
@@ -89,20 +89,22 @@ func (s *server) handleManifest(w http.ResponseWriter, req *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)
 	}
 
-	if err := s.validateManifestReq(&r); err != nil {
+	u, err := url.Parse(r.Upstream)
+	if err != nil {
+		log.Println("bad upstream url:", r)
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	} else if err := s.validateManifestReq(&r, u.Host); err != nil {
 		log.Println("validation error:", r)
 		w.WriteHeader(http.StatusBadRequest)
+		return
 	}
 
 	log.Println("req", r.StorePathHash, "from", r.Upstream)
 
 	// get narinfo
 
-	u := url.URL{
-		Scheme: "http",
-		Host:   r.Upstream,
-		Path:   "/" + r.StorePathHash + ".narinfo",
-	}
+	u.Path += "/" + r.StorePathHash + ".narinfo"
 	narinfoUrl := u.String()
 	res, err := http.Get(narinfoUrl)
 	if err != nil {

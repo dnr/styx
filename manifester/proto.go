@@ -31,10 +31,12 @@ type (
 	// response is SignedManifest
 
 	ChunkDiffReq struct {
-		From, To    string
+		Bases       []byte // up to 256 digests
+		Reqs        []byte // up to 256 digests
 		AcceptAlgos []string
 	}
-	// response is binary diff
+	// response is compressed concatenation of reqs, using bases as compression base
+	// (caller must know the lengths of reqs ahead of time to be able to split the result)
 )
 
 func (r *ManifestReq) CacheKey() string {

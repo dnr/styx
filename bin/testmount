@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 base=/mnt/test
-upstream=cache.nixos.org
+upstream=http://cache.nixos.org
 
 for sph; do
   sph=${sph#/nix/store/}

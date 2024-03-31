@@ -826,7 +826,7 @@ func (s *server) readChunkedData(entry *pb.Entry) ([]byte, error) {
 	digests := entry.Digests
 
 	var eg errgroup.Group
-	eg.SetLimit(20) // TODO: configurable
+	eg.SetLimit(s.cfg.Workers)
 
 	for len(digests) > 0 && len(dest) > 0 {
 		digest := digests[:s.digestBytes]
