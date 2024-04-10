@@ -9,7 +9,7 @@ in with lib; {
       params = mkOption {
         description = "url to remote params";
         type = types.str;
-        default = "https://styx-1.s3.amazonaws.com/params-dev-1";
+        default = "https://styx-1.s3.amazonaws.com/params/dev-1";
       };
       keys = mkOption {
         description = "signing keys";

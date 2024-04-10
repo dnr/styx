@@ -8,8 +8,8 @@ pkgs.mkShell {
     nix
     protobuf
     protoc-gen-go
-    #skopeo
-    #terraform
+    skopeo
+    terraform
     #xdelta
     #xz
     #gzip

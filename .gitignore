@@ -1,4 +1,5 @@
 /.direnv
+/.envrc.private
 /styx
 /notes
 /crap

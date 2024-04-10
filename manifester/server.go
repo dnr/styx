@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/aws/aws-lambda-go/lambdaurl"
 	"github.com/klauspost/compress/zstd"
 	"github.com/nix-community/go-nix/pkg/hash"
 	"github.com/nix-community/go-nix/pkg/narinfo"
@@ -255,7 +256,7 @@ func (s *server) handleManifest(w http.ResponseWriter, req *http.Request) {
 	manifest.Meta = &pb.ManifestMeta{
 		NarinfoUrl:    narinfoUrl,
 		Narinfo:       nipb,
-		Generator:     common.Version,
+		Generator:     "styx-" + common.Version,
 		GeneratedTime: time.Now().Unix(),
 	}
 
@@ -351,6 +352,11 @@ func (s *server) Run() error {
 	mux.HandleFunc(ManifestPath, s.handleManifest)
 	mux.HandleFunc(ChunkDiffPath, s.handleChunkDiff)
 	mux.HandleFunc(ChunkReadPath, s.handleChunk)
+
+	if os.Getenv("AWS_LAMBDA_RUNTIME_API") != "" {
+		lambdaurl.Start(mux)
+		return nil
+	}
 
 	srv := &http.Server{
 		Addr:    s.cfg.Bind,
