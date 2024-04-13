@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+set -euxo pipefail
+cd "$(dirname $(dirname "$0"))"
+
+store="s3://styx-1/nixcache/?compression=zstd"
+
+kernel=$(dirname $(readlink /var/run/booted-system/kernel))
+styx=$(nix-build --no-out-link -A styx-local)
+pkgs="$kernel $styx"
+
+nix store sign --key-file keys/styx-nixcache-dev-1.secret $pkgs
+nix copy --to "$store" $pkgs

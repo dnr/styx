@@ -735,6 +735,7 @@ func (s *server) handleReadImage(state *openFileState, _, _ uint64) error {
 	if buf == nil {
 		return errors.New("already written image")
 	}
+	// FIXME: write in one single call.. doing small writes ends up with this fragmented in cachefiles
 	for len(buf) > 0 {
 		toWrite := buf[:min(16<<10, len(buf))]
 		n, err := unix.Pwrite(int(state.fd), toWrite, off)
@@ -916,6 +917,10 @@ func (s *server) AllocateBatch(blocks []uint16, digests []byte) ([]erofs.SlabLoc
 		}
 
 		seq := sb.Sequence()
+		if seq == 0 {
+			// reserve first block for metadata or whatever
+			seq = 1
+		}
 
 		for i := range out {
 			digest := digests[i*s.digestBytes : (i+1)*s.digestBytes]

@@ -3,3 +3,5 @@
 /styx
 /notes
 /crap
+/keys/*.secret
+!/keys/styx-dev-1.secret

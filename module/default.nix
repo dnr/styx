@@ -9,12 +9,12 @@ in with lib; {
       params = mkOption {
         description = "url to remote params";
         type = types.str;
-        default = "https://styx-1.s3.amazonaws.com/params/dev-1";
+        default = "https://styx-1.s3.amazonaws.com/params/test-1";
       };
       keys = mkOption {
         description = "signing keys";
         type = types.listOf types.str;
-        default = ["styx-dev-1:SCMYzQjLTMMuy/MlovgOX0rRVCYKOj+cYAfQrqzcLu0="];
+        default = ["styx-test-1:bmMrKgN5yF3dGgOI67TZSfLts5IQHwdrOCZ7XHcaN+w="];
       };
       package = mkOption {
         description = "styx package";
@@ -32,7 +32,7 @@ in with lib; {
 
       # Use binary cache to avoid rebuilds:
       extra-substituters = "https://styx-1.s3.amazonaws.com/nixcache/";
-      extra-trusted-public-keys = "styx-nixcache-dev-1:IbJB9NG5antB2WpE+aE5QzmXapT2yLQb8As/FRkbm3Q=";
+      extra-trusted-public-keys = "styx-nixcache-test-1:IbJB9NG5antB2WpE+aE5QzmXapT2yLQb8As/FRkbm3Q=";
 
       # These are defaults:
       #styx-min-size = 32*1024;

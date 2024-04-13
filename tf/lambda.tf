@@ -74,6 +74,18 @@ resource "aws_s3_bucket_public_access_block" "styx" {
   restrict_public_buckets = false
 }
 
+resource "aws_s3_object" "styx-cache-info" {
+  bucket  = aws_s3_bucket.styx.id
+  key     = "nixcache/nix-cache-info"
+  content = "StoreDir: /nix/store\nPriority: 90\n"
+}
+
+resource "aws_s3_object" "styx-params-test-1" {
+  bucket  = aws_s3_bucket.styx.id
+  key     = "params/test-1"
+  source  = "../params/test-1.signed"
+}
+
 // lambda:
 
 variable "manifester_image_tag" {}
@@ -82,6 +94,7 @@ resource "aws_lambda_function" "manifester" {
   package_type = "Image"
   image_uri    = "${aws_ecr_repository.repo.repository_url}:${var.manifester_image_tag}"
 
+  # FIXME: rename to styx-manifester
   function_name = "nix-sandwich-manifester"
   role          = aws_iam_role.iam_for_lambda.arn
 
@@ -89,16 +102,16 @@ resource "aws_lambda_function" "manifester" {
 
   memory_size = 500 # MB
   ephemeral_storage {
-    size = 500 # MB
+    size = 512 # MB
   }
   timeout = 300 # seconds
   image_config {
     command = [
-      "manifester"
+      "manifester",
       // must be in the same region:
-      "--chunkbucket=${aws_s3_bucket.cache.id}"
+      "--chunkbucket=${aws_s3_bucket.styx.id}",
       # TODO: use ssm parameter store or secrets manager or kms
-      "--styx_signkey=/signkey"
+      "--styx_signkey=/signkey",
     ]
   }
 }

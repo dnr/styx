@@ -1,7 +1,7 @@
 { pkgs ? import <nixpkgs> {} }:
 pkgs.mkShell {
   buildInputs = with pkgs; [
-    #awscli2
+    awscli2
     erofs-utils
     jq
     go
