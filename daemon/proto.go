@@ -1,5 +1,7 @@
 package daemon
 
+import "github.com/dnr/styx/pb"
+
 var (
 	// protocol is json over http over unix socket
 	// socket is path.Join(CachePath, Socket)
@@ -8,6 +10,7 @@ var (
 	MountPath  = "/mount"
 	UmountPath = "/umount"
 	GcPath     = "/gc"
+	DebugPath  = "/debug"
 )
 
 type (
@@ -22,6 +25,27 @@ type (
 	}
 
 	GcReq struct {
+	}
+
+	DebugReq struct {
+	}
+	DebugResp struct {
+		Params *pb.GlobalParams
+		Images map[string]*pb.DbImage
+		Slabs  []*DebugSlabInfo
+		Chunks map[string]*DebugChunkInfo
+	}
+	DebugSlabInfo struct {
+		Index       uint16
+		NextBlock   uint64
+		TotalChunks int
+		HaveChunks  int
+	}
+	DebugChunkInfo struct {
+		Slab       uint16
+		Addr       uint32
+		StorePaths []string
+		Present    bool
 	}
 
 	Status struct {

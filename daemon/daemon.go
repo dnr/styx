@@ -228,6 +228,7 @@ func (s *server) startSocketServer() (err error) {
 	mux.HandleFunc(MountPath, jsonmw(s.handleMountReq))
 	mux.HandleFunc(UmountPath, jsonmw(s.handleUmountReq))
 	mux.HandleFunc(GcPath, jsonmw(s.handleGcReq))
+	mux.HandleFunc(DebugPath, jsonmw(s.handleDebugReq))
 	go http.Serve(l, mux)
 	return nil
 }
@@ -384,6 +385,63 @@ func (s *server) handleUmountReq(r *UmountReq) (*genericResp, error) {
 func (s *server) handleGcReq(r *GcReq) (*genericResp, error) {
 	// TODO
 	return nil, errors.New("unimplemented")
+}
+
+func (s *server) handleDebugReq(r *DebugReq) (*DebugResp, error) {
+	res := &DebugResp{
+		Images: make(map[string]*pb.DbImage),
+		Chunks: make(map[string]*DebugChunkInfo),
+	}
+	return res, s.db.View(func(tx *bbolt.Tx) error {
+		// meta
+		var gp pb.GlobalParams
+		_ = proto.Unmarshal(tx.Bucket(metaBucket).Get(metaParams), &gp)
+		res.Params = &gp
+		// images
+		cur := tx.Bucket(imageBucket).Cursor()
+		for k, v := cur.First(); k != nil; k, v = cur.Next() {
+			var img pb.DbImage
+			if err := proto.Unmarshal(v, &img); err != nil {
+				log.Print("unmarshal error iterating images", err)
+				continue
+			}
+			img.StorePath = ""
+			res.Images[img.StorePath] = &img
+		}
+		// slabs
+		slabroot := tx.Bucket(slabBucket)
+		cur = slabroot.Cursor()
+		for k, _ := cur.First(); k != nil; k, _ = cur.Next() {
+			var si DebugSlabInfo
+			si.Index = binary.BigEndian.Uint16(k)
+			sb := slabroot.Bucket(k)
+			si.NextBlock = sb.Sequence()
+			scur := sb.Cursor()
+			for sk, _ := scur.First(); sk != nil; sk, _ = scur.Next() {
+				addr := addrFromKey(sk)
+				if addr&presentMask == 0 {
+					si.TotalChunks++
+				} else {
+					si.HaveChunks++
+				}
+			}
+			res.Slabs = append(res.Slabs, &si)
+		}
+		// chunks
+		cur = tx.Bucket(chunkBucket).Cursor()
+		for k, v := cur.First(); k != nil; k, v = cur.Next() {
+			var ci DebugChunkInfo
+			ci.Slab, ci.Addr = loadLoc(v)
+			sphs := v[6:]
+			for len(sphs) > 0 {
+				ci.StorePaths = append(ci.StorePaths, nixbase32.EncodeToString(sphs[:storepath.PathHashSize]))
+				sphs = sphs[storepath.PathHashSize:]
+			}
+			ci.Present = slabroot.Bucket(slabKey(ci.Slab)).Get(addrKey(ci.Addr|presentMask)) != nil
+			res.Chunks[base64.RawURLEncoding.EncodeToString(k)] = &ci
+		}
+		return nil
+	})
 }
 
 func (s *server) restoreMounts() {

@@ -232,6 +232,18 @@ func main() {
 					)
 				},
 			),
+			cmd(
+				&cobra.Command{
+					Use:   "debug",
+					Short: "dumps info from daemon",
+				},
+				withStyxClient,
+				func(c *cobra.Command, args []string) error {
+					return c.Context().Value(ctxStyxClient).(*styxClient).CallAndPrint(
+						daemon.DebugPath, &daemon.DebugReq{},
+					)
+				},
+			),
 		),
 		debugCmd(),
 	)
