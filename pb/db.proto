@@ -15,15 +15,6 @@ enum MountState {
   Deleted          = 6;  // deleted (not used now)
 }
 
-// key: "meta"
-message DbMeta {
-  int32 block_size = 1;
-
-  int32 chunk_size = 2;
-  string hash_algo = 3;
-  int32 hash_bits = 4;
-}
-
 // not proto:
 // key: "slab" / "<u16 BE slabid>" / "<u32 BE block address>"
 // value: "<hash bits of digest>"
@@ -31,9 +22,10 @@ message DbMeta {
 
 // not proto:
 // key: "chunk" / "<hash_bits of digest>"
-// value: "<u16 BE slab id> <u32 BE block address>"
+// value: "<u16 BE slab id> <u32 BE block address> [<sph bits> ...]"
+// TODO: sph is 20 bytes/160 bits each, maybe we should shrink it?
 
-// key: "image" / "<store path hash>"
+// key: "image" / "<store path hash (nix base32)>"
 message DbImage {
   // full store path including name
   string store_path = 2;

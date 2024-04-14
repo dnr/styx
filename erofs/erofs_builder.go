@@ -581,6 +581,7 @@ func (b *Builder) BuildFromManifestEmbed(
 
 // put data in slabs
 func (b *Builder) BuildFromManifestWithSlab(
+	ctx context.Context,
 	m *pb.Manifest,
 	out io.Writer,
 	sm SlabManager,
@@ -697,7 +698,7 @@ func (b *Builder) BuildFromManifestWithSlab(
 				lastChunkLen := chunkShift.leftover(e.Size)
 				blocks[len(blocks)-1] = truncU16(b.blk.roundup(lastChunkLen) >> b.blk)
 				// TODO: do in larger batches
-				locs, err := sm.AllocateBatch(blocks, e.Digests)
+				locs, err := sm.AllocateBatch(ctx, blocks, e.Digests)
 				if err != nil {
 					return err
 				}

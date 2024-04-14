@@ -24,6 +24,8 @@ import (
 	"github.com/klauspost/compress/zstd"
 	"github.com/lunixbochs/struc"
 	"github.com/nix-community/go-nix/pkg/narinfo/signature"
+	"github.com/nix-community/go-nix/pkg/nixbase32"
+	"github.com/nix-community/go-nix/pkg/storepath"
 	"go.etcd.io/bbolt"
 	"golang.org/x/sync/errgroup"
 	"golang.org/x/sync/singleflight"
@@ -604,6 +606,15 @@ func (s *server) handleOpenImage(msgId, objectId, fd, flags uint32, cookie strin
 		return img.ImageSize, nil
 	}
 
+	// convert to binary
+	var sph [storepath.PathHashSize]byte
+	if n, err := nixbase32.Decode(sph[:], []byte(cookie)); err != nil || n != len(sph) {
+		return 0, fmt.Errorf("cookie is not a valid nix store path hash")
+	}
+
+	ctx := context.Background()
+	ctx = context.WithValue(ctx, "sph", sph)
+
 	// get manifest
 
 	// check cached first
@@ -616,10 +627,12 @@ func (s *server) handleOpenImage(msgId, objectId, fd, flags uint32, cookie strin
 		DigestBits:      int(gParams.DigestBits),
 		SmallFileCutoff: s.cfg.SmallFileCutoff,
 	}
-	ctx := context.TODO()
 	sb, err := s.mcread.Get(ctx, mReq.CacheKey(), nil)
-	if err != nil {
+	if err == nil {
+		log.Printf("got manifest for %s from cache", cookie)
+	} else {
 		// not found cached, request it
+		log.Printf("requesting manifest for %s", cookie)
 		u := strings.TrimSuffix(s.cfg.Params.ManifesterUrl, "/") + manifester.ManifestPath
 		reqBytes, err := json.Marshal(mReq)
 		if err != nil {
@@ -637,6 +650,7 @@ func (s *server) handleOpenImage(msgId, objectId, fd, flags uint32, cookie strin
 		} else if sb, err = io.ReadAll(zr); err != nil {
 			return 0, err
 		}
+		log.Printf("got manifest for %s", cookie)
 	}
 
 	// verify signature and params
@@ -656,6 +670,7 @@ func (s *server) handleOpenImage(msgId, objectId, fd, flags uint32, cookie strin
 	// unmarshal into manifest
 	data := entry.InlineData
 	if len(data) == 0 {
+		log.Printf("loading chunked manifest data for %s", cookie)
 		data, err = s.readChunkedData(entry)
 	}
 
@@ -666,7 +681,7 @@ func (s *server) handleOpenImage(msgId, objectId, fd, flags uint32, cookie strin
 	}
 	// transform manifest into image (allocate chunks)
 	var image bytes.Buffer
-	err = s.builder.BuildFromManifestWithSlab(&m, &image, s)
+	err = s.builder.BuildFromManifestWithSlab(ctx, &m, &image, s)
 	if err != nil {
 		return 0, fmt.Errorf("build image error: %w", err)
 	}
@@ -896,10 +911,11 @@ func addrFromKey(b []byte) uint32 {
 	return binary.BigEndian.Uint32(b)
 }
 
-func locValue(id uint16, addr uint32) []byte {
-	loc := make([]byte, 6)
+func locValue(id uint16, addr uint32, sph [storepath.PathHashSize]byte) []byte {
+	loc := make([]byte, 6+storepath.PathHashSize)
 	binary.LittleEndian.PutUint16(loc, id)
 	binary.LittleEndian.PutUint32(loc[2:], addr)
+	copy(loc[6:], sph[:])
 	return loc
 }
 
@@ -914,7 +930,9 @@ func (s *server) VerifyParams(hashBytes, blockSize, chunkSize int) error {
 	return nil
 }
 
-func (s *server) AllocateBatch(blocks []uint16, digests []byte) ([]erofs.SlabLoc, error) {
+func (s *server) AllocateBatch(ctx context.Context, blocks []uint16, digests []byte) ([]erofs.SlabLoc, error) {
+	sph := ctx.Value("sph").([storepath.PathHashSize]byte)
+
 	n := len(blocks)
 	out := make([]erofs.SlabLoc, n)
 	err := s.db.Update(func(tx *bbolt.Tx) error {
@@ -934,16 +952,21 @@ func (s *server) AllocateBatch(blocks []uint16, digests []byte) ([]erofs.SlabLoc
 			digest := digests[i*s.digestBytes : (i+1)*s.digestBytes]
 			var id uint16
 			var addr uint32
-			if have := cb.Get(digest); have == nil { // allocate
+			if loc := cb.Get(digest); loc == nil { // allocate
 				addr = truncU32(seq)
 				seq += uint64(blocks[i])
-				if err := cb.Put(digest, locValue(id, addr)); err != nil {
+				if err := cb.Put(digest, locValue(id, addr, sph)); err != nil {
 					return err
 				} else if err = sb.Put(addrKey(addr), digest); err != nil {
 					return err
 				}
 			} else {
-				id, addr = loadLoc(have)
+				if newLoc := appendSph(loc, sph); newLoc != nil {
+					if err := cb.Put(digest, newLoc); err != nil {
+						return err
+					}
+				}
+				id, addr = loadLoc(loc)
 			}
 			out[i].SlabId = id
 			out[i].Addr = addr
@@ -958,4 +981,17 @@ func (s *server) AllocateBatch(blocks []uint16, digests []byte) ([]erofs.SlabLoc
 
 func (s *server) SlabInfo(slabId uint16) (tag string, totalBlocks uint32) {
 	return fmt.Sprintf("_slab_%d", slabId), slabBlocks
+}
+
+func appendSph(loc []byte, sph [storepath.PathHashSize]byte) []byte {
+	sphs := loc[6:]
+	for len(sphs) >= storepath.PathHashSize {
+		if bytes.Equal(sphs[:storepath.PathHashSize], sph[:]) {
+			return nil
+		}
+	}
+	newLoc := make([]byte, len(loc)+len(sph))
+	copy(newLoc, loc)
+	copy(newLoc[len(loc):], sph[:])
+	return newLoc
 }

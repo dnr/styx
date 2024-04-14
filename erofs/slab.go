@@ -1,6 +1,7 @@
 package erofs
 
 import (
+	"context"
 	"fmt"
 )
 
@@ -12,7 +13,7 @@ type (
 
 	SlabManager interface {
 		VerifyParams(hashBytes, blockSize, chunkSize int) error
-		AllocateBatch(blocks []uint16, digests []byte) ([]SlabLoc, error)
+		AllocateBatch(ctx context.Context, blocks []uint16, digests []byte) ([]SlabLoc, error)
 		SlabInfo(slabId uint16) (tag string, totalBlocks uint32)
 	}
 
@@ -28,7 +29,7 @@ func (d *dummySlabManager) VerifyParams(hashBytes, blockSize, chunkSize int) err
 	return nil
 }
 
-func (d *dummySlabManager) AllocateBatch(blocks []uint16, digests []byte) ([]SlabLoc, error) {
+func (d *dummySlabManager) AllocateBatch(ctx context.Context, blocks []uint16, digests []byte) ([]SlabLoc, error) {
 	out := make([]SlabLoc, len(blocks))
 	for i := range out {
 		// digest := digests[i*24 : (i+1)*24]
