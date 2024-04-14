@@ -2,6 +2,8 @@ package manifester
 
 import (
 	"bytes"
+	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -306,13 +308,132 @@ func (s *server) handleManifest(w http.ResponseWriter, req *http.Request) {
 	}
 }
 
-func (s *server) handleChunkDiff(w http.ResponseWriter, r *http.Request) {
-	w.WriteHeader(http.StatusNotImplemented)
+func (s *server) handleChunkDiff(w http.ResponseWriter, req *http.Request) {
+	const level = 3             // TODO: configurable
+	const chunksInParallel = 50 // TODO: configurable
+
+	var r ChunkDiffReq
+	if err := json.NewDecoder(req.Body).Decode(&r); err != nil {
+		log.Println("json parse error:", err)
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+
+	// load requested chunks
+	start := time.Now()
+	baseFile, baseFileLen, baseErr := s.fetchChunkSeries(req.Context(), r.Bases, chunksInParallel/2)
+	if baseErr != nil {
+		log.Println("chunk read (base) error", baseErr)
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+	defer os.Remove(baseFile)
+	reqFile, reqFileLen, reqErr := s.fetchChunkSeries(req.Context(), r.Reqs, chunksInParallel/2)
+	if reqErr != nil {
+		log.Println("chunk read (req) error", reqErr)
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+	defer os.Remove(reqFile)
+	dlDone := time.Now()
+
+	w.Header().Set("Content-Type", "application/octet-stream")
+
+	zstd := exec.CommandContext(
+		req.Context(),
+		common.ZstdBin,
+		fmt.Sprintf("-%d", level), // level
+		"--single-thread",         // improve compression (sometimes?)
+		"-c",                      // stdout
+		"--patch-from", baseFile,  // base
+		reqFile,
+	)
+	cw := countWriter{w: w}
+	zstd.Stdout = &cw
+	zstdErrPipe, err := zstd.StderrPipe()
+	if err != nil {
+		log.Println("zstd pipe error", err)
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+	if err = zstd.Start(); err != nil {
+		log.Println("zstd start error", err)
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+	stderr, copyErr := io.ReadAll(zstdErrPipe)
+
+	if err = zstd.Wait(); err != nil {
+		log.Printf("zstd error %v %q", err, string(stderr))
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	} else if copyErr != nil {
+		log.Printf("zstd stderr copy error %v %q", err, string(stderr))
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
+	digestBytes := int(s.mb.params.DigestBits >> 3)
+	log.Println(
+		"diff done",
+		"baseDigests", len(r.Bases)/digestBytes,
+		"baseBytes", baseFileLen,
+		"reqDigests", len(r.Reqs)/digestBytes,
+		"reqBytes", reqFileLen,
+		"diffLen", cw.c,
+		"dlElapsedMs", dlDone.Sub(start).Milliseconds(),
+		"zstdElapsedMs", time.Now().Sub(dlDone).Milliseconds(),
+		"zstdUserMs", zstd.ProcessState.UserTime().Milliseconds(),
+		"zstdSysMs", zstd.ProcessState.SystemTime().Milliseconds(),
+	)
+	// TODO: attach above info as trailer
+}
+
+func (s *server) fetchChunkSeries(ctx context.Context, digests []byte, parallel int) (string, int, error) {
+	digestBytes := s.mb.params.DigestBits >> 3
+	// TODO: ew, use separate setting?
+	cs := s.cfg.ManifestBuilder.cs
+
+	f, err := os.CreateTemp("", "chunks")
+	if err != nil {
+		return "", 0, err
+	}
+	defer f.Close()
+
+	type res struct {
+		b   []byte
+		err error
+	}
+	chs := make(chan chan res, parallel)
+	go func() {
+		for len(digests) > 0 {
+			digest := digests[:digestBytes]
+			digests = digests[digestBytes:]
+			ch := make(chan res)
+			chs <- ch
+			go func() {
+				digestStr := base64.RawURLEncoding.EncodeToString(digest)
+				b, err := cs.Get(ctx, ChunkReadPath, digestStr, nil)
+				ch <- res{b, err}
+			}()
+		}
+		close(chs)
+	}()
+
+	for ch := range chs {
+		res := <-ch
+		if res.err != nil {
+			return "", 0, err
+		} else if _, err := f.Write(res.b); err != nil {
+			return "", 0, err
+		}
+	}
+	pos, _ := f.Seek(0, 1)
+	return f.Name(), int(pos), nil
 }
 
 func (s *server) handleChunk(w http.ResponseWriter, r *http.Request) {
-	// This is for local testing only, real usage goes to s3 directly
-
+	// This is for local testing only, real usage goes to s3 directly!
 	localWrite, ok := s.cfg.ManifestBuilder.cs.(*localChunkStoreWrite)
 	if !ok {
 		w.WriteHeader(http.StatusNotImplemented)

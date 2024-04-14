@@ -254,7 +254,7 @@ func mwErrE(status int, e error) error {
 
 func jsonmw[reqT, resT any](f func(*reqT) (*resT, error)) func(w http.ResponseWriter, r *http.Request) {
 	return func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-type", "application/json")
+		w.Header().Set("Content-Type", "application/json")
 		wEnc := json.NewEncoder(w)
 
 		var req reqT

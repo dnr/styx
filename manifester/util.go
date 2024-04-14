@@ -1,5 +1,7 @@
 package manifester
 
+import "io"
+
 // TODO: replace with cmp.Or after go1.22
 // Or returns the first of its arguments that is not equal to the zero value.
 // If no argument is non-zero, it returns the zero value.
@@ -36,4 +38,14 @@ func valOrErr[T any](v T, err error) (T, error) {
 		return zero, err
 	}
 	return v, nil
+}
+
+type countWriter struct {
+	w io.Writer
+	c int
+}
+
+func (c *countWriter) Write(p []byte) (n int, err error) {
+	c.c += len(p)
+	return c.w.Write(p)
 }

@@ -6,6 +6,10 @@ import (
 	"fmt"
 )
 
+const (
+	ChunkDiffMaxDigests = 256
+)
+
 var (
 	// protocol is (mostly) json over http
 	ManifestPath  = "/manifest"
@@ -31,12 +35,14 @@ type (
 	// response is SignedManifest
 
 	ChunkDiffReq struct {
-		Bases       []byte // up to 256 digests
-		Reqs        []byte // up to 256 digests
+		Bases       []byte
+		Reqs        []byte
 		AcceptAlgos []string
 	}
-	// response is compressed concatenation of reqs, using bases as compression base
-	// (caller must know the lengths of reqs ahead of time to be able to split the result)
+	// Response is compressed concatenation of reqs, using bases as compression base.
+	// Bases and Reqs do not need to be the same length.
+	// (Caller must know the lengths of reqs ahead of time to be able to split the result.)
+	// Max number of digests in each is 256. With 64KiB chunks, that makes 16MiB total data.
 )
 
 func (r *ManifestReq) CacheKey() string {

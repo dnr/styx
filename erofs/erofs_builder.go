@@ -417,9 +417,9 @@ func (b *Builder) BuildFromManifestEmbed(
 					for start := int64(0); start < e.Size; start += chunkShift.size() {
 						idx := start >> chunkShift
 						digest := e.Digests[idx*hashBytes : (idx+1)*hashBytes]
-						digeststr := base64.RawURLEncoding.EncodeToString(digest)
+						digestStr := base64.RawURLEncoding.EncodeToString(digest)
 						// TODO: check that output len is as espected
-						_, err := cs.Get(ctx, digeststr, data[start:start])
+						_, err := cs.Get(ctx, digestStr, data[start:start])
 						if err != nil {
 							return err
 						}
