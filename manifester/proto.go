@@ -39,10 +39,22 @@ type (
 		Reqs        []byte
 		AcceptAlgos []string
 	}
-	// Response is compressed concatenation of reqs, using bases as compression base.
+	// Response is compressed concatenation of reqs, using bases as compression base,
+	// with ChunkDiffStats (json) appended after that.
 	// Bases and Reqs do not need to be the same length.
 	// (Caller must know the lengths of reqs ahead of time to be able to split the result.)
 	// Max number of digests in each is 256. With 64KiB chunks, that makes 16MiB total data.
+	ChunkDiffStats struct {
+		BaseChunks  int
+		BaseBytes   int
+		ReqChunks   int
+		ReqBytes    int
+		DiffBytes   int
+		DlTotalMs   int64
+		ZstdTotalMs int64
+		ZstdUserMs  int64
+		ZstdSysMs   int64
+	}
 )
 
 func (r *ManifestReq) CacheKey() string {

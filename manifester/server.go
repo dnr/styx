@@ -38,6 +38,7 @@ type (
 	server struct {
 		cfg *Config
 		mb  *ManifestBuilder
+		enc *zstd.Encoder
 	}
 
 	Config struct {
@@ -54,9 +55,14 @@ type (
 )
 
 func ManifestServer(cfg Config) (*server, error) {
+	enc, err := zstd.NewWriter(nil)
+	if err != nil {
+		return nil, err
+	}
 	return &server{
 		cfg: &cfg,
 		mb:  cfg.ManifestBuilder,
+		enc: enc,
 	}, nil
 }
 
@@ -374,19 +380,24 @@ func (s *server) handleChunkDiff(w http.ResponseWriter, req *http.Request) {
 	}
 
 	digestBytes := int(s.mb.params.DigestBits >> 3)
-	log.Println(
-		"diff done",
-		"baseDigests", len(r.Bases)/digestBytes,
-		"baseBytes", baseFileLen,
-		"reqDigests", len(r.Reqs)/digestBytes,
-		"reqBytes", reqFileLen,
-		"diffLen", cw.c,
-		"dlElapsedMs", dlDone.Sub(start).Milliseconds(),
-		"zstdElapsedMs", time.Now().Sub(dlDone).Milliseconds(),
-		"zstdUserMs", zstd.ProcessState.UserTime().Milliseconds(),
-		"zstdSysMs", zstd.ProcessState.SystemTime().Milliseconds(),
-	)
-	// TODO: attach above info as trailer
+	stats := ChunkDiffStats{
+		BaseChunks:  len(r.Bases) / digestBytes,
+		BaseBytes:   baseFileLen,
+		ReqChunks:   len(r.Reqs) / digestBytes,
+		ReqBytes:    reqFileLen,
+		DiffBytes:   cw.c,
+		DlTotalMs:   dlDone.Sub(start).Milliseconds(),
+		ZstdTotalMs: time.Now().Sub(dlDone).Milliseconds(),
+		ZstdUserMs:  zstd.ProcessState.UserTime().Milliseconds(),
+		ZstdSysMs:   zstd.ProcessState.SystemTime().Milliseconds(),
+	}
+	if statsEnc, err := json.Marshal(stats); err == nil {
+		// write json stats as new zstd stream. verified that zstd decodes this correctly as
+		// trailing data even with --patch-from.
+		w.Write(s.enc.EncodeAll(statsEnc, nil))
+	}
+
+	log.Println("diff done", stats)
 }
 
 func (s *server) fetchChunkSeries(ctx context.Context, digests []byte, parallel int) (string, int, error) {
