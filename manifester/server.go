@@ -87,16 +87,18 @@ func (s *server) validateManifestReq(r *ManifestReq, upstreamHost string) error 
 func (s *server) handleManifest(w http.ResponseWriter, req *http.Request) {
 	var r ManifestReq
 	if err := json.NewDecoder(req.Body).Decode(&r); err != nil {
+		log.Println("json parse error:", err)
 		w.WriteHeader(http.StatusBadRequest)
+		return
 	}
 
 	u, err := url.Parse(r.Upstream)
 	if err != nil {
-		log.Println("bad upstream url:", r)
+		log.Println("bad upstream url:", r.Upstream)
 		w.WriteHeader(http.StatusBadRequest)
 		return
 	} else if err := s.validateManifestReq(&r, u.Host); err != nil {
-		log.Println("validation error:", r)
+		log.Println("validation error:", err, "for", r)
 		w.WriteHeader(http.StatusBadRequest)
 		return
 	}

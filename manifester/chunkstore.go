@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path"
+	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
@@ -147,7 +148,7 @@ func NewChunkStoreReadUrl(url, path string) ChunkStoreRead {
 		panic("can't create zstd decoder")
 	}
 	return &urlChunkStoreRead{
-		url: url + path,
+		url: strings.TrimSuffix(url, "/") + path,
 		dec: dec,
 	}
 }

@@ -43,7 +43,7 @@ type (
 func NewManifestBuilder(cfg ManifestBuilderConfig, cs ChunkStoreWrite) (*ManifestBuilder, error) {
 	return &ManifestBuilder{
 		cs:       cs,
-		chunksem: semaphore.NewWeighted(int64(Or(cfg.ConcurrentChunkOps, 50))),
+		chunksem: semaphore.NewWeighted(int64(Or(cfg.ConcurrentChunkOps, 200))),
 		params: &pb.GlobalParams{
 			ChunkShift: int32(cfg.ChunkShift),
 			DigestAlgo: cfg.DigestAlgo,

@@ -612,7 +612,7 @@ func (s *server) handleOpenImage(msgId, objectId, fd, flags uint32, cookie strin
 	sb, err := s.mcread.Get(ctx, mReq.CacheKey(), nil)
 	if err != nil {
 		// not found cached, request it
-		u := s.cfg.Params.ManifesterUrl + manifester.ManifestPath
+		u := strings.TrimSuffix(s.cfg.Params.ManifesterUrl, "/") + manifester.ManifestPath
 		reqBytes, err := json.Marshal(mReq)
 		if err != nil {
 			return 0, err

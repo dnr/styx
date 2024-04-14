@@ -7,7 +7,7 @@ var (
 	XzBin   = "xz"
 	ZstdBin = "zstd"
 
-	Version = "1.0"
+	Version = "dev"
 
 	// Context for signatures
 	ManifestContext     = "styx-manifest-1"
