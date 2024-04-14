@@ -58,6 +58,9 @@ in with lib; {
         "${cfg.package}/bin/styx ${flags}";
       serviceConfig.Type = "notify";
       serviceConfig.NotifyAccess = "all";
+      serviceConfig.FileDescriptorStoreMax = "1";
+      serviceConfig.FileDescriptorStorePreserve = "yes";
+      serviceConfig.LimitNOFILE = "500000";
       #serviceConfig.TemporaryFileSystem = "/tmpfs:size=16G,mode=1777"; # force tmpfs
       #environment.TMPDIR = "/tmpfs";
     };

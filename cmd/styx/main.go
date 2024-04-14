@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"log"
+	"os"
 
 	"github.com/nix-community/go-nix/pkg/narinfo/signature"
 	"github.com/spf13/cobra"
@@ -157,6 +158,13 @@ func withStyxClient(c *cobra.Command) runE {
 }
 
 func main() {
+	if os.Getenv("NOTIFY_SOCKET") != "" || os.Getenv("AWS_LAMBDA_RUNTIME_API") != "" {
+		// running in systemd or on lambda
+		log.SetFlags(log.Lshortfile)
+	} else {
+		log.SetFlags(log.LstdFlags | log.Lshortfile)
+	}
+
 	root := cmd(
 		&cobra.Command{
 			Use:   "styx",

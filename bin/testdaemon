@@ -1,5 +1,27 @@
 #!/usr/bin/env bash
 set -eux
-make
-sudo ./styx daemon --params=https://styx-1.s3.amazonaws.com/params/test-1 --styx_pubkey=styx-test-1:bmMrKgN5yF3dGgOI67TZSfLts5IQHwdrOCZ7XHcaN+w=
 
+make
+
+flags="--params=https://styx-1.s3.amazonaws.com/params/test-1 --styx_pubkey=styx-test-1:bmMrKgN5yF3dGgOI67TZSfLts5IQHwdrOCZ7XHcaN+w="
+path=$(dirname $(which modprobe))
+
+sudo sh -eux -c "
+cat > /run/systemd/system/styx-test.service <<EOF
+[Unit]
+Description=Nix storage manager
+[Service]
+ExecStart=$PWD/styx daemon $flags
+Type=notify
+NotifyAccess=all
+FileDescriptorStoreMax=1
+FileDescriptorStorePreserve=yes
+LimitNOFILE=500000
+Environment=PATH=$path
+EOF
+
+systemctl daemon-reload
+systemctl restart styx-test
+"
+
+journalctl -f -u styx-test

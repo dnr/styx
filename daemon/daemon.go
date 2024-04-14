@@ -147,13 +147,30 @@ func (s *server) setupEnv() error {
 }
 
 func (s *server) openDevNode() (err error) {
-	// TODO: support systemd fd saving so we can "restore" inflight requests after restart
+	const name = "devnode"
+	s.devnode, err = systemdGetFd(name)
+	if err == nil {
+		if _, err = unix.Write(s.devnode, []byte("restore")); err != nil {
+			return
+		}
+		log.Println("restored cachefiles socket")
+		return
+	}
 
 	s.devnode, err = unix.Open(s.cfg.DevPath, unix.O_RDWR, 0600)
 	if err == unix.ENOENT {
 		_ = unix.Mknod(s.cfg.DevPath, 0600|unix.S_IFCHR, 10<<8+122)
 		s.devnode, err = unix.Open(s.cfg.DevPath, unix.O_RDWR, 0600)
 	}
+	if _, err = unix.Write(s.devnode, []byte("dir "+s.cfg.CachePath)); err != nil {
+		return
+	} else if _, err = unix.Write(s.devnode, []byte("tag "+cacheTag)); err != nil {
+		return
+	} else if _, err = unix.Write(s.devnode, []byte("bind ondemand")); err != nil {
+		return
+	}
+	systemdSaveFd(name, s.devnode)
+	log.Println("set up cachefiles socket")
 	return
 }
 
@@ -404,23 +421,14 @@ func (s *server) Run() error {
 	if err := s.openDb(); err != nil {
 		return err
 	}
-
-	err := s.openDevNode()
-	if err != nil {
+	if err := s.openDevNode(); err != nil {
+		return err
+	}
+	if err := s.startSocketServer(); err != nil {
 		return err
 	}
 
-	if err = s.startSocketServer(); err != nil {
-		return err
-	}
-
-	if _, err = unix.Write(s.devnode, []byte("dir "+s.cfg.CachePath)); err != nil {
-		return err
-	} else if _, err = unix.Write(s.devnode, []byte("tag "+cacheTag)); err != nil {
-		return err
-	} else if _, err = unix.Write(s.devnode, []byte("bind ondemand")); err != nil {
-		return err
-	}
+	systemdReady()
 
 	go s.cachefilesServer()
 
