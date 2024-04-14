@@ -162,7 +162,7 @@ func (s *server) handleManifest(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	log.Println("req", r.StorePathHash, "downloading nar")
+	// log.Println("req", r.StorePathHash, "downloading nar")
 
 	narOut := res.Body
 

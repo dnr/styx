@@ -8,12 +8,12 @@ import (
 	"errors"
 	"io"
 
-	"github.com/dnr/styx/pb"
-	"github.com/klauspost/compress/zstd"
 	"github.com/nix-community/go-nix/pkg/nar"
 	"golang.org/x/sync/errgroup"
 	"golang.org/x/sync/semaphore"
 	"google.golang.org/protobuf/proto"
+
+	"github.com/dnr/styx/pb"
 )
 
 type (
@@ -24,7 +24,6 @@ type (
 	ManifestBuilder struct {
 		cs          ChunkStoreWrite
 		chunksem    *semaphore.Weighted
-		chunkenc    *zstd.Encoder
 		params      *pb.GlobalParams
 		chunk       blkshift
 		digestBytes int

@@ -30,8 +30,9 @@ type (
 
 	ChunkStoreWriteConfig struct {
 		// One of these is required:
-		ChunkBucket   string
-		ChunkLocalDir string
+		ChunkBucket      string
+		ChunkLocalDir    string
+		ZstdEncoderLevel int
 	}
 
 	localChunkStoreWrite struct {
@@ -122,7 +123,7 @@ func (s *s3ChunkStoreWrite) PutIfNotExists(ctx context.Context, path, key string
 
 func NewChunkStoreWrite(cfg ChunkStoreWriteConfig) (ChunkStoreWrite, error) {
 	enc, err := zstd.NewWriter(nil,
-		zstd.WithEncoderLevel(zstd.SpeedBestCompression),
+		zstd.WithEncoderLevel(zstd.EncoderLevelFromZstd(cfg.ZstdEncoderLevel)),
 		zstd.WithEncoderCRC(false),
 	)
 	if err != nil {
