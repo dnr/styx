@@ -14,19 +14,9 @@ skopeo --insecure-policy list-tags docker://$repourl >&/dev/null ||
 script=$(nix-build --no-out-link -A image)
 tag=$(basename $script | cut -c-12)
 
-# embed key. TODO: use ssm parameter store or secrets store or kms
-img=$($script | docker load | sed 's/Loaded image: //')
-imgK=${img}K
-cid=$(docker create $img)
-docker cp keys/styx-test-1.secret $cid:/signkey
-docker commit $cid $imgK
-docker rm $cid
-
-skopeo --insecure-policy copy \
-  docker-daemon:$imgK \
+$script | gzip --fast | skopeo --insecure-policy copy \
+  docker-archive:/dev/stdin \
   docker://$repourl:$tag
-
-docker rmi $imgK
 
 export TF_VAR_manifester_image_tag=$tag
 terraform -chdir=tf apply

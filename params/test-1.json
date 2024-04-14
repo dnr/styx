@@ -1,6 +1,6 @@
 {
-  "manifesterUrl":    "https://3yrfaza4kuqwprpe6326k3cjri0rgxtu.lambda-url.us-east-1.on.aws/",
-  "chunkDiffUrl":     "https://3yrfaza4kuqwprpe6326k3cjri0rgxtu.lambda-url.us-east-1.on.aws/",
+  "manifesterUrl":    "https://gfpltjv5viqaqhpsmlbz4atrsm0owuqh.lambda-url.us-east-1.on.aws/",
+  "chunkDiffUrl":     "https://gfpltjv5viqaqhpsmlbz4atrsm0owuqh.lambda-url.us-east-1.on.aws/",
   "manifestCacheUrl": "https://styx-1.s3.amazonaws.com/",
   "chunkReadUrl":     "https://styx-1.s3.amazonaws.com/",
   "params": {

@@ -11,10 +11,21 @@ data "aws_iam_policy_document" "assume_role" {
   }
 }
 
+data "aws_iam_policy_document" "get_parameter" {
+  statement {
+    actions   = ["ssm:GetParameter"]
+    resources = ["${aws_ssm_parameter.manifester_signkey.arn}"]
+  }
+}
+
 resource "aws_iam_role" "iam_for_lambda" {
   name                = "iam_for_lambda_styx"
   assume_role_policy  = data.aws_iam_policy_document.assume_role.json
   managed_policy_arns = ["arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"]
+  inline_policy {
+    name   = "get-parameter"
+    policy = data.aws_iam_policy_document.get_parameter.json
+  }
 }
 
 // ecr:
@@ -81,9 +92,17 @@ resource "aws_s3_object" "styx-cache-info" {
 }
 
 resource "aws_s3_object" "styx-params-test-1" {
-  bucket  = aws_s3_bucket.styx.id
-  key     = "params/test-1"
-  source  = "../params/test-1.signed"
+  bucket = aws_s3_bucket.styx.id
+  key    = "params/test-1"
+  source = "../params/test-1.signed"
+}
+
+// parameter store
+
+resource "aws_ssm_parameter" "manifester_signkey" {
+  name  = "styx-manifester-signkey-test-1"
+  type  = "SecureString"
+  value = file("../keys/styx-test-1.secret")
 }
 
 // lambda:
@@ -94,8 +113,7 @@ resource "aws_lambda_function" "manifester" {
   package_type = "Image"
   image_uri    = "${aws_ecr_repository.repo.repository_url}:${var.manifester_image_tag}"
 
-  # FIXME: rename to styx-manifester
-  function_name = "nix-sandwich-manifester"
+  function_name = "styx-manifester"
   role          = aws_iam_role.iam_for_lambda.arn
 
   architectures = ["x86_64"] # TODO: can we make it run on arm?
@@ -110,8 +128,7 @@ resource "aws_lambda_function" "manifester" {
       "manifester",
       // must be in the same region:
       "--chunkbucket=${aws_s3_bucket.styx.id}",
-      # TODO: use ssm parameter store or secrets manager or kms
-      "--styx_signkey=/signkey",
+      "--styx_ssm_signkey=${aws_ssm_parameter.manifester_signkey.name}",
     ]
   }
 }

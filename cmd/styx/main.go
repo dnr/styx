@@ -117,8 +117,15 @@ func withManifesterConfig(c *cobra.Command) runE {
 
 func withSignKeys(c *cobra.Command) runE {
 	signkeys := c.Flags().StringArray("styx_signkey", nil, "sign manifest with key from this file")
+	ssmsignkey := c.Flags().StringArray("styx_ssm_signkey", nil, "sign manifest with key from SSM")
 	return func(c *cobra.Command, args []string) error {
-		keys, err := common.LoadSecretKeys(*signkeys)
+		var keys []signature.SecretKey
+		var err error
+		if len(*ssmsignkey) > 0 {
+			keys, err = loadKeysFromSsm(*ssmsignkey)
+		} else {
+			keys, err = common.LoadSecretKeys(*signkeys)
+		}
 		if err != nil {
 			return err
 		}
