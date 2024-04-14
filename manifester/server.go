@@ -2,7 +2,6 @@ package manifester
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -279,9 +278,13 @@ func (s *server) handleManifest(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	go s.writeSignedManifest(&r, sb)
+	// write to cache
+	err = s.mb.cs.PutIfNotExists(req.Context(), ManifestCachePath, r.CacheKey(), sb)
+	if err != nil {
+		log.Println("error writing signed manifest cache:", err)
+	}
 
-	// compress output
+	// compress output (this is going to redo compression. TODO: consolidate)
 	w.Header().Set("Content-Encoding", "zstd")
 	zw, err := zstd.NewWriter(w)
 	if err != nil {
@@ -300,16 +303,6 @@ func (s *server) handleManifest(w http.ResponseWriter, req *http.Request) {
 		log.Println("zstd close:", err)
 		w.WriteHeader(http.StatusInternalServerError)
 		return
-	}
-}
-
-func (s *server) writeSignedManifest(r *ManifestReq, data []byte) {
-	// this is in the background
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	err := s.mb.cs.PutIfNotExists(ctx, ManifestCachePath, r.CacheKey(), data)
-	if err != nil {
-		log.Println("error writing signed manifest cache:", err)
 	}
 }
 

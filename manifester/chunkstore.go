@@ -109,7 +109,7 @@ func (s *s3ChunkStoreWrite) PutIfNotExists(ctx context.Context, path, key string
 	if err == nil || !errors.As(err, &notFound) {
 		return err
 	}
-	_, err = s.s3client.PutObject(context.Background(), &s3.PutObjectInput{
+	_, err = s.s3client.PutObject(ctx, &s3.PutObjectInput{
 		Bucket:          &s.bucket,
 		Key:             &key,
 		Body:            bytes.NewReader(s.enc.EncodeAll(data, nil)),
