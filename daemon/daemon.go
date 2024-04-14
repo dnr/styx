@@ -43,6 +43,8 @@ const (
 	typeSlab
 )
 
+const presentMask = 1 << 31
+
 type (
 	server struct {
 		cfg         *Config
@@ -113,6 +115,8 @@ func (s *server) openDb() (err error) {
 	if err != nil {
 		return err
 	}
+	s.db.MaxBatchDelay = 100 * time.Millisecond
+
 	return s.db.Update(func(tx *bbolt.Tx) error {
 		var gp pb.GlobalParams
 		if mb, err := tx.CreateBucketIfNotExists(metaBucket); err != nil {
@@ -838,6 +842,15 @@ func (s *server) handleReadSlab(state *openFileState, ln, off uint64) error {
 			err = fmt.Errorf("short write %d != %d (requested %d)", n, len(toWrite), ln)
 		}
 		return nil, err
+	})
+
+	// record async
+	go s.db.Batch(func(tx *bbolt.Tx) error {
+		sb := tx.Bucket(slabBucket).Bucket(slabKey(state.slabId))
+		if sb == nil {
+			return errors.New("missing slab bucket")
+		}
+		return sb.Put(addrKey(presentMask|uint32(off>>s.blockShift)), []byte{})
 	})
 
 	return err
