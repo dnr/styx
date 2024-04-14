@@ -829,26 +829,14 @@ func (s *server) handleRead(msgId, objectId uint32, ln, off uint64) error {
 }
 
 func (s *server) handleReadImage(state *openFileState, _, _ uint64) error {
-	// always write whole thing
-	off := int64(0)
-	buf := state.imageData
-	if buf == nil {
+	if state.imageData == nil {
 		return errors.New("already written image")
 	}
-	// FIXME: write in one single call.. doing small writes ends up with this fragmented in cachefiles
-	for len(buf) > 0 {
-		toWrite := buf[:min(16<<10, len(buf))]
-		n, err := unix.Pwrite(int(state.fd), toWrite, off)
-		if err != nil {
-			return err
-		} else if n < len(toWrite) {
-			return io.ErrShortWrite
-		}
-		buf = buf[n:]
-		off += int64(n)
+	// always write whole thing
+	_, err := unix.Pwrite(int(state.fd), state.imageData, 0)
+	if err != nil {
+		return err
 	}
-
-	// we don't need this anymore
 	state.imageData = nil
 	return nil
 }
