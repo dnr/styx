@@ -412,18 +412,33 @@ func (s *server) handleDebugReq(r *DebugReq) (*DebugResp, error) {
 		slabroot := tx.Bucket(slabBucket)
 		cur = slabroot.Cursor()
 		for k, _ := cur.First(); k != nil; k, _ = cur.Next() {
-			var si DebugSlabInfo
-			si.Index = binary.BigEndian.Uint16(k)
+			blockSizes := make(map[uint32]uint32)
 			sb := slabroot.Bucket(k)
-			si.NextBlock = sb.Sequence()
+			si := DebugSlabInfo{
+				Index:         binary.BigEndian.Uint16(k),
+				ChunkSizeDist: make(map[uint32]int),
+			}
 			scur := sb.Cursor()
-			for sk, _ := scur.First(); sk != nil; sk, _ = scur.Next() {
+			for sk, _ := scur.First(); sk != nil; {
+				nextSk, _ := scur.Next()
 				addr := addrFromKey(sk)
 				if addr&presentMask == 0 {
+					var nextAddr uint32
+					if nextSk != nil && nextSk[0]&0x80 == 0 {
+						nextAddr = addrFromKey(nextSk)
+					} else {
+						nextAddr = truncU32(sb.Sequence())
+					}
+					blockSize := uint32(nextAddr - addr)
+					blockSizes[addr] = blockSize
 					si.TotalChunks++
+					si.TotalBlocks += int(blockSize)
+					si.ChunkSizeDist[blockSize]++
 				} else {
-					si.HaveChunks++
+					si.PresentChunks++
+					si.PresentBlocks += int(blockSizes[addr&^presentMask])
 				}
+				sk = nextSk
 			}
 			res.Slabs = append(res.Slabs, &si)
 		}
@@ -994,6 +1009,20 @@ func loadLoc(b []byte) (id uint16, addr uint32) {
 	return binary.LittleEndian.Uint16(b), binary.LittleEndian.Uint32(b[2:])
 }
 
+func appendSph(loc []byte, sph [storepath.PathHashSize]byte) []byte {
+	sphs := loc[6:]
+	for len(sphs) >= storepath.PathHashSize {
+		if bytes.Equal(sphs[:storepath.PathHashSize], sph[:]) {
+			return nil
+		}
+		sphs = sphs[storepath.PathHashSize:]
+	}
+	newLoc := make([]byte, len(loc)+len(sph))
+	copy(newLoc, loc)
+	copy(newLoc[len(loc):], sph[:])
+	return newLoc
+}
+
 func (s *server) VerifyParams(hashBytes, blockSize, chunkSize int) error {
 	if hashBytes != s.digestBytes || blockSize != int(s.blockShift.size()) || chunkSize != (1<<s.cfg.Params.Params.ChunkShift) {
 		return errors.New("mismatched params")
@@ -1052,17 +1081,4 @@ func (s *server) AllocateBatch(ctx context.Context, blocks []uint16, digests []b
 
 func (s *server) SlabInfo(slabId uint16) (tag string, totalBlocks uint32) {
 	return fmt.Sprintf("_slab_%d", slabId), slabBlocks
-}
-
-func appendSph(loc []byte, sph [storepath.PathHashSize]byte) []byte {
-	sphs := loc[6:]
-	for len(sphs) >= storepath.PathHashSize {
-		if bytes.Equal(sphs[:storepath.PathHashSize], sph[:]) {
-			return nil
-		}
-	}
-	newLoc := make([]byte, len(loc)+len(sph))
-	copy(newLoc, loc)
-	copy(newLoc[len(loc):], sph[:])
-	return newLoc
 }

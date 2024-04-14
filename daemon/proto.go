@@ -36,10 +36,12 @@ type (
 		Chunks map[string]*DebugChunkInfo
 	}
 	DebugSlabInfo struct {
-		Index       uint16
-		NextBlock   uint64
-		TotalChunks int
-		HaveChunks  int
+		Index         uint16
+		TotalChunks   int
+		TotalBlocks   int
+		PresentChunks int
+		PresentBlocks int
+		ChunkSizeDist map[uint32]int
 	}
 	DebugChunkInfo struct {
 		Slab       uint16
