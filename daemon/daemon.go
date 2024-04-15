@@ -28,7 +28,6 @@ import (
 	"github.com/nix-community/go-nix/pkg/storepath"
 	"go.etcd.io/bbolt"
 	"golang.org/x/sync/errgroup"
-	"golang.org/x/sync/singleflight"
 	"golang.org/x/sys/unix"
 	"google.golang.org/protobuf/proto"
 
@@ -52,15 +51,15 @@ type (
 		blockShift  blkshift
 		csread      manifester.ChunkStoreRead
 		mcread      manifester.ChunkStoreRead
+		fetcher     *fetchScheduler
 		db          *bbolt.DB
 		msgPool     *sync.Pool
-		chunkPool   *sync.Pool
-		sf          singleflight.Group
 		builder     *erofs.Builder
 		devnode     int
 
-		lock       sync.Mutex
-		cacheState map[uint32]*openFileState // object id -> state
+		lock        sync.Mutex
+		cacheState  map[uint32]*openFileState // object id -> state
+		stateBySlab map[uint16]*openFileState // slab id -> state
 	}
 
 	openFileState struct {
@@ -93,17 +92,19 @@ var _ erofs.SlabManager = (*server)(nil)
 // init stuff
 
 func CachefilesServer(cfg Config) *server {
-	return &server{
+	s := &server{
 		cfg:         &cfg,
 		digestBytes: int(cfg.Params.Params.DigestBits >> 3),
 		blockShift:  blkshift(cfg.ErofsBlockShift),
 		csread:      manifester.NewChunkStoreReadUrl(cfg.Params.ChunkReadUrl, manifester.ChunkReadPath),
 		mcread:      manifester.NewChunkStoreReadUrl(cfg.Params.ManifestCacheUrl, manifester.ManifestCachePath),
 		msgPool:     &sync.Pool{New: func() any { return make([]byte, CACHEFILES_MSG_MAX_SIZE) }},
-		chunkPool:   &sync.Pool{New: func() any { return make([]byte, 1<<cfg.Params.Params.ChunkShift) }},
 		builder:     erofs.NewBuilder(erofs.BuilderConfig{BlockShift: cfg.ErofsBlockShift}),
 		cacheState:  make(map[uint32]*openFileState),
+		stateBySlab: make(map[uint16]*openFileState),
 	}
+	s.fetcher = newFetchScheduler(&cfg, s, s.csread)
+	return s
 }
 
 func (s *server) openDb() (err error) {
@@ -653,11 +654,13 @@ func (s *server) handleOpenSlab(msgId, objectId, fd, flags uint32, id uint16) (i
 	// record open state
 	s.lock.Lock()
 	defer s.lock.Unlock()
-	s.cacheState[objectId] = &openFileState{
+	state := &openFileState{
 		fd:     fd,
 		tp:     typeSlab,
 		slabId: id,
 	}
+	s.cacheState[objectId] = state
+	s.stateBySlab[id] = state
 	return slabBytes, nil
 }
 
@@ -795,6 +798,9 @@ func (s *server) handleClose(msgId, objectId uint32) error {
 	defer s.lock.Unlock()
 	if state := s.cacheState[objectId]; state != nil {
 		unix.Close(int(state.fd))
+		if state.tp == typeSlab {
+			delete(s.stateBySlab, state.slabId)
+		}
 		delete(s.cacheState, objectId)
 	}
 	return nil
@@ -842,16 +848,16 @@ func (s *server) handleReadImage(state *openFileState, _, _ uint64) error {
 }
 
 func (s *server) handleReadSlab(state *openFileState, ln, off uint64) error {
-	ctx := context.TODO()
-
-	digest := make([]byte, s.digestBytes)
-
 	if ln > (1 << s.cfg.Params.Params.ChunkShift) {
 		panic("got too big slab read")
 	}
 
+	slabId := state.slabId
+	var addr uint32
+	digest := make([]byte, s.digestBytes)
+
 	err := s.db.View(func(tx *bbolt.Tx) error {
-		sb := tx.Bucket(slabBucket).Bucket(slabKey(state.slabId))
+		sb := tx.Bucket(slabBucket).Bucket(slabKey(slabId))
 		if sb == nil {
 			return errors.New("missing slab bucket")
 		}
@@ -866,8 +872,8 @@ func (s *server) handleReadSlab(state *openFileState, ln, off uint64) error {
 		if k == nil {
 			return errors.New("ran off start of bucket")
 		}
-		// reset off so we write at the right place
-		off = uint64(addrFromKey(k)) << s.blockShift
+		// take addr from key so we write at the right place even if read was in the middle of a chunk
+		addr = addrFromKey(k)
 		copy(digest, v)
 		return nil
 	})
@@ -875,46 +881,47 @@ func (s *server) handleReadSlab(state *openFileState, ln, off uint64) error {
 		return err
 	}
 
-	digestStr := base64.RawURLEncoding.EncodeToString(digest)
+	// FIXME: sphs
+	ch := s.fetcher.Submit(slabId, addr, digest, nil)
+	return <-ch
+}
 
-	// TODO: consider if this is the right scope for duplicate suppression
-	_, err, _ = s.sf.Do(digestStr, func() (any, error) {
-		buf := s.chunkPool.Get().([]byte)
-		defer s.chunkPool.Put(buf)
+// interface to fetch scheduler
+func (s *server) gotChunk(slabId uint16, addr uint32, b []byte) error {
+	s.lock.Lock()
+	state := s.stateBySlab[slabId]
+	s.lock.Unlock()
+	if state == nil {
+		return errors.New("slab not loaded")
+	}
+	fd := int(state.fd)
+	// don't use state anymore after here
 
-		got, err := s.csread.Get(ctx, digestStr, buf[:0])
-		if err != nil {
-			return nil, err
-		}
+	// round up to block size (slice is guaranteed to have capacity)
+	toWrite := b[:s.blockShift.roundup(int64(len(b)))]
 
-		if len(got) > len(buf) || &buf[0] != &got[0] {
-			return nil, fmt.Errorf("chunk overflowed chunk size: %d > %d", len(got), len(buf))
-		} else if err = s.checkChunkDigest(got, digest); err != nil {
-			return nil, err
-		}
-		// round up to block size
-		toWrite := buf[:s.blockShift.roundup(int64(len(got)))]
-		if len(toWrite) < int(ln) {
-			return nil, fmt.Errorf("chunk underflowed requested len: %d < %d", len(toWrite), ln)
-		}
+	// TODO: pass this all the way through?
+	// if len(toWrite) < ln {
+	// 	return fmt.Errorf("chunk underflowed requested len: %d < %d", len(toWrite), ln)
+	// }
 
-		n, err := unix.Pwrite(int(state.fd), toWrite, int64(off))
-		if err == nil && n != len(toWrite) {
-			err = fmt.Errorf("short write %d != %d (requested %d)", n, len(toWrite), ln)
-		}
-		return nil, err
-	})
+	off := int64(addr) << s.blockShift
+	if n, err := unix.Pwrite(fd, toWrite, off); err != nil {
+		return err
+	} else if n != len(toWrite) {
+		return fmt.Errorf("short write %d != %d", n, len(toWrite))
+	}
 
 	// record async
 	go s.db.Batch(func(tx *bbolt.Tx) error {
-		sb := tx.Bucket(slabBucket).Bucket(slabKey(state.slabId))
+		sb := tx.Bucket(slabBucket).Bucket(slabKey(slabId))
 		if sb == nil {
 			return errors.New("missing slab bucket")
 		}
-		return sb.Put(addrKey(presentMask|uint32(off>>s.blockShift)), []byte{})
+		return sb.Put(addrKey(presentMask|addr), []byte{})
 	})
 
-	return err
+	return nil
 }
 
 func (s *server) readChunkedData(entry *pb.Entry) ([]byte, error) {
@@ -943,7 +950,7 @@ func (s *server) readChunkedData(entry *pb.Entry) ([]byte, error) {
 				return err
 			} else if len(got) != toRead {
 				return fmt.Errorf("chunk was wrong size: %d vs %d", len(got), toRead)
-			} else if err = s.checkChunkDigest(got, digest); err != nil {
+			} else if err = checkChunkDigest(got, digest); err != nil {
 				return err
 			}
 			return nil
@@ -952,11 +959,11 @@ func (s *server) readChunkedData(entry *pb.Entry) ([]byte, error) {
 	return valOrErr(out, eg.Wait())
 }
 
-func (s *server) checkChunkDigest(got, digest []byte) error {
+func checkChunkDigest(got, digest []byte) error {
 	h := sha256.New() // TODO: configurable
 	h.Write(got)
 	var gotDigest [sha256.Size]byte
-	if !bytes.Equal(h.Sum(gotDigest[:0])[:s.digestBytes], digest) {
+	if !bytes.Equal(h.Sum(gotDigest[:0])[:len(digest)], digest) {
 		return fmt.Errorf("chunk digest mismatch %x != %x", gotDigest, digest)
 	}
 	return nil
