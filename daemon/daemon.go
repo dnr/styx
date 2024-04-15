@@ -255,6 +255,13 @@ func mwErrE(status int, e error) error {
 
 func jsonmw[reqT, resT any](f func(*reqT) (*resT, error)) func(w http.ResponseWriter, r *http.Request) {
 	return func(w http.ResponseWriter, r *http.Request) {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Println("http handler panic", r)
+			}
+			w.WriteHeader(http.StatusInternalServerError)
+		}()
+
 		w.Header().Set("Content-Type", "application/json")
 		wEnc := json.NewEncoder(w)
 
