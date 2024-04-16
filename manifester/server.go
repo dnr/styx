@@ -3,7 +3,6 @@ package manifester
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -423,7 +422,7 @@ func (s *server) fetchChunkSeries(ctx context.Context, digests []byte, parallel 
 			ch := make(chan res)
 			chs <- ch
 			go func() {
-				digestStr := base64.RawURLEncoding.EncodeToString(digest)
+				digestStr := common.DigestStr(digest)
 				b, err := cs.Get(ctx, ChunkReadPath, digestStr, nil)
 				ch <- res{b, err}
 			}()

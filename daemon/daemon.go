@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
-	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
@@ -480,7 +479,7 @@ func (s *server) handleDebugReq(r *DebugReq) (*DebugResp, error) {
 				sphs = sphs[storepath.PathHashSize:]
 			}
 			ci.Present = slabroot.Bucket(slabKey(ci.Slab)).Get(addrKey(ci.Addr|presentMask)) != nil
-			res.Chunks[base64.RawURLEncoding.EncodeToString(k)] = &ci
+			res.Chunks[common.DigestStr(k)] = &ci
 		}
 		return nil
 	})
@@ -959,6 +958,27 @@ func (s *server) gotChunk(slabId uint16, addr uint32, b []byte) error {
 	return nil
 }
 
+func (s *server) findBase(sph Sph) (catalogResult, error) {
+	return s.catalog.findBase(sph)
+}
+
+func (s *server) getChunkDiff(ctx context.Context, bases, reqs []byte) (io.ReadCloser, error) {
+	reqBytes, err := json.Marshal(manifester.ChunkDiffReq{Bases: bases, Reqs: reqs})
+	if err != nil {
+		return nil, err
+	}
+	u := strings.TrimSuffix(s.cfg.Params.ChunkDiffUrl, "/") + manifester.ChunkDiffPath
+	// TODO: use context here
+	res, err := http.Post(u, "application/json", bytes.NewReader(reqBytes))
+	if err != nil {
+		return nil, err
+	} else if res.StatusCode != http.StatusOK {
+		res.Body.Close()
+		return nil, fmt.Errorf("chunk diff http status: %s", res.Status)
+	}
+	return res.Body, nil
+}
+
 func (s *server) readChunkedData(entry *pb.Entry) ([]byte, error) {
 	ctx := context.TODO()
 
@@ -979,7 +999,7 @@ func (s *server) readChunkedData(entry *pb.Entry) ([]byte, error) {
 		// TODO: see if we can diff these chunks against some other chunks we have
 
 		eg.Go(func() error {
-			digestStr := base64.RawURLEncoding.EncodeToString(digest)
+			digestStr := common.DigestStr(digest)
 			got, err := s.csread.Get(ctx, digestStr, buf)
 			if err != nil {
 				return err

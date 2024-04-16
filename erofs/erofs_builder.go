@@ -15,6 +15,7 @@ import (
 	"path"
 	"sort"
 
+	"github.com/dnr/styx/common"
 	"github.com/dnr/styx/manifester"
 	"github.com/dnr/styx/pb"
 	"github.com/klauspost/compress/zstd"
@@ -417,7 +418,7 @@ func (b *Builder) BuildFromManifestEmbed(
 					for start := int64(0); start < e.Size; start += chunkShift.size() {
 						idx := start >> chunkShift
 						digest := e.Digests[idx*hashBytes : (idx+1)*hashBytes]
-						digestStr := base64.RawURLEncoding.EncodeToString(digest)
+						digestStr := common.DigestStr(digest)
 						// TODO: check that output len is as espected
 						_, err := cs.Get(ctx, digestStr, data[start:start])
 						if err != nil {

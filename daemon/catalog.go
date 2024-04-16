@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
-	"log"
 	"strings"
 	"sync"
 
@@ -31,7 +30,10 @@ type (
 	}
 
 	catalogResult struct {
-		hash Sph
+		reqName  string
+		baseName string
+		matchLen int
+		baseHash Sph
 	}
 )
 
@@ -130,8 +132,12 @@ func (c *catalog) findBase(reqHash Sph) (catalogResult, error) {
 		return catalogResult{}, errors.New("no base found for " + reqName)
 	}
 
-	log.Printf("catalog found base for %s -> %s", reqName, best.rest)
-	return catalogResult{hash: best.hash}, nil
+	return catalogResult{
+		reqName:  reqName,
+		baseName: best.rest,
+		matchLen: bestmatch,
+		baseHash: best.hash,
+	}, nil
 }
 
 func findDashes(s string) []int {

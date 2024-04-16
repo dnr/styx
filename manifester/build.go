@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
-	"encoding/base64"
 	"errors"
 	"io"
 
@@ -13,6 +12,7 @@ import (
 	"golang.org/x/sync/semaphore"
 	"google.golang.org/protobuf/proto"
 
+	"github.com/dnr/styx/common"
 	"github.com/dnr/styx/pb"
 )
 
@@ -167,7 +167,7 @@ func (b *ManifestBuilder) chunkData(ctx context.Context, size int64, r io.Reader
 			h.Write(data)
 			var out [sha256.Size]byte
 			copy(digest, h.Sum(out[0:0]))
-			digeststr := base64.RawURLEncoding.EncodeToString(digest)
+			digeststr := common.DigestStr(digest)
 			return b.cs.PutIfNotExists(ctx, ChunkReadPath, digeststr, data)
 		})
 	}

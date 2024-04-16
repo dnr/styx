@@ -35,9 +35,8 @@ type (
 	// response is SignedManifest
 
 	ChunkDiffReq struct {
-		Bases       []byte
-		Reqs        []byte
-		AcceptAlgos []string
+		Bases []byte
+		Reqs  []byte
 	}
 	// Response is compressed concatenation of reqs, using bases as compression base,
 	// with ChunkDiffStats (json) appended after that.

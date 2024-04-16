@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"math"
+	"os"
 	"regexp"
 
 	"github.com/nix-community/go-nix/pkg/storepath"
@@ -56,4 +57,16 @@ func splitSphs(sphs []byte) []Sph {
 		out[i] = sph
 	}
 	return out
+}
+
+func writeToTempFile(b []byte) (string, error) {
+	f, err := os.CreateTemp("", "styx-diff")
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	if _, err = f.Write(b); err != nil {
+		return "", err
+	}
+	return f.Name(), nil
 }
