@@ -52,6 +52,7 @@ type (
 		csread      manifester.ChunkStoreRead
 		mcread      manifester.ChunkStoreRead
 		fetcher     *fetchScheduler
+		catalog     *catalog
 		db          *bbolt.DB
 		msgPool     *sync.Pool
 		builder     *erofs.Builder
@@ -83,7 +84,8 @@ type (
 		ErofsBlockShift int
 		SmallFileCutoff int
 
-		Workers int
+		Workers         int
+		ReadaheadChunks int
 	}
 )
 
@@ -98,6 +100,7 @@ func CachefilesServer(cfg Config) *server {
 		blockShift:  blkshift(cfg.ErofsBlockShift),
 		csread:      manifester.NewChunkStoreReadUrl(cfg.Params.ChunkReadUrl, manifester.ChunkReadPath),
 		mcread:      manifester.NewChunkStoreReadUrl(cfg.Params.ManifestCacheUrl, manifester.ManifestCachePath),
+		catalog:     newCatalog(),
 		msgPool:     &sync.Pool{New: func() any { return make([]byte, CACHEFILES_MSG_MAX_SIZE) }},
 		builder:     erofs.NewBuilder(erofs.BuilderConfig{BlockShift: cfg.ErofsBlockShift}),
 		cacheState:  make(map[uint32]*openFileState),
@@ -140,6 +143,21 @@ func (s *server) openDb() (err error) {
 			gp.DigestAlgo != mp.DigestAlgo ||
 			gp.DigestBits != mp.DigestBits {
 			return fmt.Errorf("mismatched global params; wipe cache and start over")
+		}
+		return nil
+	})
+}
+
+func (s *server) initCatalog() (err error) {
+	return s.db.View(func(tx *bbolt.Tx) error {
+		cur := tx.Bucket(imageBucket).Cursor()
+		for k, v := cur.First(); k != nil; k, v = cur.Next() {
+			var img pb.DbImage
+			if err := proto.Unmarshal(v, &img); err != nil {
+				log.Print("unmarshal error iterating images", err)
+				continue
+			}
+			s.catalog.add(img.StorePath)
 		}
 		return nil
 	})
@@ -334,6 +352,7 @@ func (s *server) handleMountReq(r *MountReq) (*genericResp, error) {
 	if err != nil {
 		return nil, err
 	}
+	s.catalog.add(r.StorePath)
 
 	return nil, s.tryMount(r.StorePath, r.MountPoint)
 }
@@ -506,6 +525,9 @@ func (s *server) Run() error {
 		return err
 	}
 	if err := s.openDb(); err != nil {
+		return err
+	}
+	if err := s.initCatalog(); err != nil {
 		return err
 	}
 	if err := s.openDevNode(); err != nil {

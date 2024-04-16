@@ -74,6 +74,7 @@ func withDaemonConfig(c *cobra.Command) runE {
 	c.Flags().IntVar(&cfg.ErofsBlockShift, "block_shift", 12, "block size bits for local fs images")
 	c.Flags().IntVar(&cfg.SmallFileCutoff, "small_file_cutoff", 224, "cutoff for embedding small files in images")
 	c.Flags().IntVar(&cfg.Workers, "workers", 16, "worker goroutines for cachefilesd serving")
+	c.Flags().IntVar(&cfg.ReadaheadChunks, "readahead_chunks", 100, "target chunks for readahead (max 256)")
 
 	return chainRunE(
 		withStyxPubKeys(c),
@@ -84,7 +85,6 @@ func withDaemonConfig(c *cobra.Command) runE {
 			} else if err = common.VerifyInlineMessage(cfg.StyxPubKeys, common.DaemonParamsContext, paramsBytes, &cfg.Params); err != nil {
 				return err
 			}
-			// FIXME: &cfg?
 			c.SetContext(context.WithValue(c.Context(), ctxDaemonConfig, cfg))
 			return nil
 		},
