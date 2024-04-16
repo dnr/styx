@@ -862,6 +862,7 @@ func (s *server) handleReadSlab(state *openFileState, ln, off uint64) error {
 	slabId := state.slabId
 	var addr uint32
 	digest := make([]byte, s.digestBytes)
+	var sphs []byte
 
 	err := s.db.View(func(tx *bbolt.Tx) error {
 		sb := tx.Bucket(slabBucket).Bucket(slabKey(slabId))
@@ -882,14 +883,19 @@ func (s *server) handleReadSlab(state *openFileState, ln, off uint64) error {
 		// take addr from key so we write at the right place even if read was in the middle of a chunk
 		addr = addrFromKey(k)
 		copy(digest, v)
+		// look up digest to get store paths
+		loc := tx.Bucket(chunkBucket).Get(digest)
+		if loc == nil {
+			return errors.New("missing digest->loc reference")
+		}
+		sphs = bytes.Clone(loc[6:])
 		return nil
 	})
 	if err != nil {
 		return err
 	}
 
-	// FIXME: sphs
-	ch := s.fetcher.Submit(slabId, addr, digest, nil)
+	ch := s.fetcher.Submit(slabId, addr, digest, splitSphs(sphs))
 	return <-ch
 }
 

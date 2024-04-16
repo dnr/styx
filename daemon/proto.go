@@ -34,6 +34,7 @@ type (
 		Images map[string]*pb.DbImage
 		Slabs  []*DebugSlabInfo
 		Chunks map[string]*DebugChunkInfo
+		// TODO: add boltdb stats
 	}
 	DebugSlabInfo struct {
 		Index         uint16

@@ -3,11 +3,15 @@ package daemon
 import (
 	"math"
 	"regexp"
+
+	"github.com/nix-community/go-nix/pkg/storepath"
 )
 
 type (
 	blkshift int
 )
+
+var reStorePath = regexp.MustCompile(`^[0123456789abcdfghijklmnpqrsvwxyz]{32}-.*$`)
 
 func (b blkshift) size() int64 {
 	return 1 << b
@@ -44,4 +48,10 @@ func valOrErr[T any](v T, err error) (T, error) {
 	return v, nil
 }
 
-var reStorePath = regexp.MustCompile(`^[0123456789abcdfghijklmnpqrsvwxyz]{32}-.*$`)
+func splitSphs(sphs []byte) [][]byte {
+	out := make([][]byte, len(sphs)/storepath.PathHashSize)
+	for i := range out {
+		out[i] = sphs[i*storepath.PathHashSize : (i+1)*storepath.PathHashSize]
+	}
+	return out
+}
