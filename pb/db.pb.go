@@ -81,7 +81,8 @@ func (MountState) EnumDescriptor() ([]byte, []int) {
 	return file_db_proto_rawDescGZIP(), []int{0}
 }
 
-// key: "image" / "<store path hash>"
+// key: "image" / <store path hash (nix base32)>
+// value:
 type DbImage struct {
 	state         protoimpl.MessageState
 	sizeCache     protoimpl.SizeCache

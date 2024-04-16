@@ -15,21 +15,20 @@ enum MountState {
   Deleted          = 6;  // deleted (not used now)
 }
 
-// not proto:
-// key: "slab" / "<u16 BE slabid>" / "<u32 BE block address>"
-// value: "<hash bits of digest>"
+// key: "slab" / <u16 BE slabid> / <u32 BE block address>
+// value: <hash bits of digest>
 // bucket sequence holds next chunk
 
-// key: "slab" / "<u16 BE slabid>" / "<u32 BE 0x80000000 | block address>" (high bit set)
+// key: "slab" / <u16 BE slabid> / <u32 BE 0x80000000 | block address> (high bit set)
 // value: empty
 // present if data has been fetched
 
-// not proto:
-// key: "chunk" / "<hash_bits of digest>"
-// value: "<u16 BE slab id> <u32 BE block address> [<sph bits> ...]"
+// key: "chunk" / <hash_bits of digest>
+// value: <u16 BE slab id> <u32 BE block address> ( <sph bits> )*
 // TODO: sph is 20 bytes/160 bits each, maybe we should shrink it?
 
-// key: "image" / "<store path hash (nix base32)>"
+// key: "image" / <store path hash (nix base32)>
+// value:
 message DbImage {
   // full store path including name
   string store_path = 2;
