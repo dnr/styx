@@ -716,7 +716,7 @@ func (s *server) handleOpenImage(msgId, objectId, fd, flags uint32, cookie strin
 	}
 
 	// convert to binary
-	var sph [storepath.PathHashSize]byte
+	var sph Sph
 	if n, err := nixbase32.Decode(sph[:], []byte(cookie)); err != nil || n != len(sph) {
 		return 0, fmt.Errorf("cookie is not a valid nix store path hash")
 	}
@@ -1027,8 +1027,8 @@ func addrFromKey(b []byte) uint32 {
 	return binary.BigEndian.Uint32(b)
 }
 
-func locValue(id uint16, addr uint32, sph [storepath.PathHashSize]byte) []byte {
-	loc := make([]byte, 6+storepath.PathHashSize)
+func locValue(id uint16, addr uint32, sph Sph) []byte {
+	loc := make([]byte, 6+len(sph))
 	binary.LittleEndian.PutUint16(loc, id)
 	binary.LittleEndian.PutUint32(loc[2:], addr)
 	copy(loc[6:], sph[:])
@@ -1039,7 +1039,7 @@ func loadLoc(b []byte) (id uint16, addr uint32) {
 	return binary.LittleEndian.Uint16(b), binary.LittleEndian.Uint32(b[2:])
 }
 
-func appendSph(loc []byte, sph [storepath.PathHashSize]byte) []byte {
+func appendSph(loc []byte, sph Sph) []byte {
 	sphs := loc[6:]
 	for len(sphs) >= storepath.PathHashSize {
 		if bytes.Equal(sphs[:storepath.PathHashSize], sph[:]) {
@@ -1061,7 +1061,7 @@ func (s *server) VerifyParams(hashBytes, blockSize, chunkSize int) error {
 }
 
 func (s *server) AllocateBatch(ctx context.Context, blocks []uint16, digests []byte) ([]erofs.SlabLoc, error) {
-	sph := ctx.Value("sph").([storepath.PathHashSize]byte)
+	sph := ctx.Value("sph").(Sph)
 
 	n := len(blocks)
 	out := make([]erofs.SlabLoc, n)

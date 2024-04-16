@@ -48,10 +48,12 @@ func valOrErr[T any](v T, err error) (T, error) {
 	return v, nil
 }
 
-func splitSphs(sphs []byte) [][]byte {
-	out := make([][]byte, len(sphs)/storepath.PathHashSize)
+func splitSphs(sphs []byte) []Sph {
+	out := make([]Sph, len(sphs)/storepath.PathHashSize)
 	for i := range out {
-		out[i] = sphs[i*storepath.PathHashSize : (i+1)*storepath.PathHashSize]
+		var sph Sph
+		copy(sph[:], sphs[i*storepath.PathHashSize:(i+1)*storepath.PathHashSize])
+		out[i] = sph
 	}
 	return out
 }

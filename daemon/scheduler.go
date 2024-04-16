@@ -36,7 +36,7 @@ func newFetchScheduler(
 	}
 }
 
-func (d *fetchScheduler) Submit(slabId uint16, addr uint32, digest []byte, sphs [][]byte) chan error {
+func (d *fetchScheduler) Submit(slabId uint16, addr uint32, digest []byte, sphs []Sph) chan error {
 	ctx := context.Background()
 	ch := make(chan error)
 	go d.readSingle(ctx, slabId, addr, digest, ch)

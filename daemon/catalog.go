@@ -14,9 +14,11 @@ import (
 )
 
 type (
+	Sph [storepath.PathHashSize]byte
+
 	btItem struct {
 		rest string
-		hash [storepath.PathHashSize]byte
+		hash Sph
 		// TODO: get "system" information in here
 	}
 
@@ -25,11 +27,11 @@ type (
 		// bt is sorted map of btITem (sorted by rest)
 		bt *btree.BTreeG[btItem]
 		// m is map of hash -> rest
-		m map[[storepath.PathHashSize]byte]string
+		m map[Sph]string
 	}
 
 	catalogResult struct {
-		hash [storepath.PathHashSize]byte
+		hash Sph
 	}
 )
 
@@ -65,14 +67,14 @@ func (c *catalog) add(name string) error {
 }
 
 // hash -> rest of name
-func (c *catalog) findName(reqHash [storepath.PathHashSize]byte) string {
+func (c *catalog) findName(reqHash Sph) string {
 	c.lock.Lock()
 	defer c.lock.Unlock()
 	return c.m[reqHash]
 }
 
 // given a hash, find another hash that we think is the most similar candidate
-func (c *catalog) findBase(reqHash [storepath.PathHashSize]byte) (catalogResult, error) {
+func (c *catalog) findBase(reqHash Sph) (catalogResult, error) {
 	c.lock.Lock()
 	defer c.lock.Unlock()
 
