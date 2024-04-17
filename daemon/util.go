@@ -27,6 +27,13 @@ func (b blkshift) leftover(i int64) int64 {
 	return i & (b.size() - 1)
 }
 
+func truncU8[L ~int | ~int16 | ~int32 | ~int64 | ~uint | ~uint8 | ~uint16 | ~uint32 | ~uint64](v L) uint8 {
+	if v < 0 || v > math.MaxUint8 {
+		panic("overflow")
+	}
+	return uint8(v)
+}
+
 func truncU16[L ~int | ~int32 | ~int64 | ~uint | ~uint16 | ~uint32 | ~uint64](v L) uint16 {
 	if v < 0 || v > math.MaxUint16 {
 		panic("overflow")

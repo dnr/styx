@@ -63,8 +63,9 @@ type (
 	}
 
 	openFileState struct {
-		fd uint32
-		tp uint16
+		fd      uint32
+		cacheFd uint32
+		tp      uint16
 
 		// for slabs
 		slabId uint16
@@ -641,9 +642,12 @@ func (s *server) handleOpen(msgId, objectId, fd, flags uint32, volume, cookie []
 	// cookie is "<fsid>"
 
 	var cacheSize int64
+	fsid := string(cookie)
 
 	defer func() {
-		if retErr != nil {
+		if retErr == nil {
+			go s.findBackingCacheFile(objectId, fsid)
+		} else {
 			cacheSize = -int64(unix.ENODEV)
 		}
 		reply := fmt.Sprintf("copen %d,%d", msgId, cacheSize)
@@ -660,21 +664,20 @@ func (s *server) handleOpen(msgId, objectId, fd, flags uint32, volume, cookie []
 	}
 
 	// slab or manifest
-	cstr := string(cookie)
-	if strings.HasPrefix(cstr, slabPrefix) {
-		log.Println("open slab", cstr, "as", objectId)
-		slabId, err := strconv.Atoi(cstr[len(slabPrefix):])
+	if strings.HasPrefix(fsid, slabPrefix) {
+		log.Println("open slab", fsid, "as", objectId)
+		slabId, err := strconv.Atoi(fsid[len(slabPrefix):])
 		if err != nil {
 			return err
 		}
 		cacheSize, retErr = s.handleOpenSlab(msgId, objectId, fd, flags, truncU16(slabId))
 		return
-	} else if len(cstr) == 32 {
-		log.Println("open image", cstr, "as", objectId)
-		cacheSize, retErr = s.handleOpenImage(msgId, objectId, fd, flags, cstr)
+	} else if len(fsid) == 32 {
+		log.Println("open image", fsid, "as", objectId)
+		cacheSize, retErr = s.handleOpenImage(msgId, objectId, fd, flags, fsid)
 		return
 	} else {
-		return fmt.Errorf("bad fsid %q", cstr)
+		return fmt.Errorf("bad fsid %q", fsid)
 	}
 }
 
@@ -825,6 +828,9 @@ func (s *server) handleClose(msgId, objectId uint32) error {
 	s.lock.Lock()
 	defer s.lock.Unlock()
 	if state := s.cacheState[objectId]; state != nil {
+		if state.cacheFd > 0 {
+			unix.Close(int(state.cacheFd))
+		}
 		unix.Close(int(state.fd))
 		if state.tp == typeSlab {
 			delete(s.stateBySlab, state.slabId)
@@ -918,6 +924,28 @@ func (s *server) handleReadSlab(state *openFileState, ln, off uint64) error {
 
 	ch := s.fetcher.Submit(slabId, addr, digest, splitSphs(sphs))
 	return <-ch
+}
+
+func (s *server) findBackingCacheFile(objectId uint32, fsid string) {
+	// This won't appear in the filesystem immediately, but it should appear soon.
+	backingPath := s.cfg.CachePath + "/" + fscachePath(fsid)
+	const maxAttempts = 50 // about 5 seconds
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		time.Sleep(time.Duration(100+10*attempt) * time.Millisecond)
+		fd, err := unix.Open(backingPath, 0, unix.O_RDWR)
+		if err != nil {
+			continue
+		}
+		s.lock.Lock()
+		if state := s.cacheState[objectId]; state != nil {
+			state.cacheFd = truncU32(fd)
+		} else {
+			unix.Close(fd)
+		}
+		s.lock.Unlock()
+		return
+	}
+	log.Printf("couldn't locate backing file for %d %q after %d attempts", fsid, maxAttempts)
 }
 
 // interface to fetch scheduler

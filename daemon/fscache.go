@@ -1,5 +1,10 @@
 package daemon
 
+import (
+	"math/bits"
+	"strconv"
+)
+
 // References:
 // https://www.kernel.org/doc/html/latest/filesystems/caching/cachefiles.html
 
@@ -96,3 +101,44 @@ const (
 	_IOC_SIZESHIFT = _IOC_TYPESHIFT + _IOC_TYPEBITS
 	_IOC_DIRSHIFT  = _IOC_SIZESHIFT + _IOC_SIZEBITS
 )
+
+// derived from linux kernel:
+// len(data) must be multiple of 4, padded with zeros
+func _fscache_hash(salt uint32, data []byte) uint32 {
+	y := salt
+	var a, x uint32
+	for len(data) > 0 {
+		a = uint32(data[0]) | uint32(data[1])<<8 | uint32(data[2])<<16 | uint32(data[3])<<24
+		data = data[4:]
+		x ^= a
+		y ^= x
+		x = bits.RotateLeft32(x, 7)
+		x += y
+		y = bits.RotateLeft32(y, 20)
+		y *= 9
+	}
+	return __hash_32(y ^ __hash_32(x))
+}
+
+func __hash_32(val uint32) uint32 { return val * 0x61C88647 }
+
+func fscachePath(fsid string) string {
+	// This doesn't implement the more complicated splitting and encoding logic, it only works
+	// on short ascii names, but that's all we use.
+	const volume = "erofs," + domainId
+	var volkey [(len(volume) + 2 + 3) &^ 3]byte
+	volkey[0] = truncU8(len(volume))
+	copy(volkey[1:], volume)
+	seed := _fscache_hash(0, volkey[:])
+
+	var hash uint32
+	if len(fsid)&3 == 0 {
+		hash = _fscache_hash(seed, []byte(fsid))
+	} else {
+		padded := make([]byte, (len(fsid)+3)&^3)
+		copy(padded, []byte(fsid))
+		hash = _fscache_hash(seed, padded)
+	}
+
+	return "cache/I" + volume + "/@" + strconv.FormatUint(uint64(hash&0xff), 16) + "/D" + fsid
+}
