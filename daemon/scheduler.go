@@ -95,6 +95,7 @@ func (d *fetchScheduler) diff(ctx context.Context, slabId uint16, addr uint32, d
 
 	expand, err := d.expandChunkDiff(ctx, baseData, diff)
 	_ = expand
+	// walk through expand and write to appropriate spots on disk
 	return nil
 }
 

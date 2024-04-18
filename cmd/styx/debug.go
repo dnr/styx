@@ -110,7 +110,7 @@ func debugCmd() *cobra.Command {
 			func(c *cobra.Command, args []string) error {
 				in := c.Context().Value(ctxInFile).(*os.File)
 				out := c.Context().Value(ctxOutFile).(*os.File)
-				// FIXME
+				// TODO: restore this functionality
 				// cs := c.Context().Value(ctxChunkStoreRead).(manifester.ChunkStoreRead)
 				b := c.Context().Value(ctxErofsBuilder).(*erofs.Builder)
 				return b.BuildFromManifestEmbed(c.Context(), in, out, nil)

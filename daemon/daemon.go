@@ -60,18 +60,22 @@ type (
 		lock        sync.Mutex
 		cacheState  map[uint32]*openFileState // object id -> state
 		stateBySlab map[uint16]*openFileState // slab id -> state
+		stateByFsid map[string]*openFileState // image id -> state
 	}
 
 	openFileState struct {
-		fd      uint32
-		cacheFd uint32
-		tp      uint16
+		fd uint32
+		tp uint16
 
 		// for slabs
-		slabId uint16
+		slabId  uint16
+		cacheFd uint32
 
 		// for images
-		imageData []byte
+		fsid        string
+		imageSize   int64
+		imageData   []byte // data from manifester to be written
+		mappedImage []byte // mmapped backing file
 	}
 
 	Config struct {
@@ -105,6 +109,7 @@ func CachefilesServer(cfg Config) *server {
 		builder:     erofs.NewBuilder(erofs.BuilderConfig{BlockShift: cfg.ErofsBlockShift}),
 		cacheState:  make(map[uint32]*openFileState),
 		stateBySlab: make(map[uint16]*openFileState),
+		stateByFsid: make(map[string]*openFileState),
 	}
 	s.fetcher = newFetchScheduler(&cfg, s, s.csread)
 	return s
@@ -339,7 +344,7 @@ func (s *server) handleMountReq(r *MountReq) (*genericResp, error) {
 
 	err := s.imageTx(sph, func(img *pb.DbImage) error {
 		if img.MountState == pb.MountState_Mounted {
-			// FIXME: check if actually mounted in fs. if not, repair.
+			// TODO: check if actually mounted in fs. if not, repair.
 			return mwErr(http.StatusConflict, "already mounted")
 		}
 		img.StorePath = r.StorePath
@@ -645,9 +650,7 @@ func (s *server) handleOpen(msgId, objectId, fd, flags uint32, volume, cookie []
 	fsid := string(cookie)
 
 	defer func() {
-		if retErr == nil {
-			go s.findBackingCacheFile(objectId, fsid)
-		} else {
+		if retErr != nil {
 			cacheSize = -int64(unix.ENODEV)
 		}
 		reply := fmt.Sprintf("copen %d,%d", msgId, cacheSize)
@@ -671,10 +674,16 @@ func (s *server) handleOpen(msgId, objectId, fd, flags uint32, volume, cookie []
 			return err
 		}
 		cacheSize, retErr = s.handleOpenSlab(msgId, objectId, fd, flags, truncU16(slabId))
+		if retErr == nil {
+			go s.findBackingCacheFile(objectId, fsid, typeSlab, cacheSize)
+		}
 		return
 	} else if len(fsid) == 32 {
 		log.Println("open image", fsid, "as", objectId)
 		cacheSize, retErr = s.handleOpenImage(msgId, objectId, fd, flags, fsid)
+		if retErr == nil {
+			go s.findBackingCacheFile(objectId, fsid, typeImage, cacheSize)
+		}
 		return
 	} else {
 		return fmt.Errorf("bad fsid %q", fsid)
@@ -710,10 +719,14 @@ func (s *server) handleOpenImage(msgId, objectId, fd, flags uint32, cookie strin
 	if img.ImageSize > 0 {
 		s.lock.Lock()
 		defer s.lock.Unlock()
-		s.cacheState[objectId] = &openFileState{
-			fd: fd,
-			tp: typeImage,
+		state := &openFileState{
+			fd:        fd,
+			tp:        typeImage,
+			fsid:      cookie,
+			imageSize: img.ImageSize,
 		}
+		s.cacheState[objectId] = state
+		s.stateByFsid[cookie] = state
 		return img.ImageSize, nil
 	}
 
@@ -814,11 +827,15 @@ func (s *server) handleOpenImage(msgId, objectId, fd, flags uint32, cookie strin
 	// record open state
 	s.lock.Lock()
 	defer s.lock.Unlock()
-	s.cacheState[objectId] = &openFileState{
+	state := &openFileState{
 		fd:        fd,
 		tp:        typeImage,
+		fsid:      cookie,
+		imageSize: size,
 		imageData: image.Bytes(),
 	}
+	s.cacheState[objectId] = state
+	s.stateByFsid[cookie] = state
 
 	return size, nil
 }
@@ -827,16 +844,24 @@ func (s *server) handleClose(msgId, objectId uint32) error {
 	log.Println("close", objectId)
 	s.lock.Lock()
 	defer s.lock.Unlock()
-	if state := s.cacheState[objectId]; state != nil {
-		if state.cacheFd > 0 {
-			unix.Close(int(state.cacheFd))
-		}
-		unix.Close(int(state.fd))
-		if state.tp == typeSlab {
-			delete(s.stateBySlab, state.slabId)
-		}
-		delete(s.cacheState, objectId)
+	state := s.cacheState[objectId]
+	if state == nil {
+		return nil
 	}
+	if state.cacheFd != 0 {
+		unix.Close(int(state.cacheFd))
+	}
+	if state.mappedImage != nil {
+		unix.Munmap(state.mappedImage)
+		state.mappedImage = nil
+	}
+	unix.Close(int(state.fd))
+	if state.tp == typeSlab {
+		delete(s.stateBySlab, state.slabId)
+	} else if state.tp == typeImage {
+		delete(s.stateByFsid, state.fsid)
+	}
+	delete(s.cacheState, objectId)
 	return nil
 }
 
@@ -870,7 +895,7 @@ func (s *server) handleRead(msgId, objectId uint32, ln, off uint64) error {
 
 func (s *server) handleReadImage(state *openFileState, _, _ uint64) error {
 	if state.imageData == nil {
-		return errors.New("already written image")
+		return errors.New("got read request when already written image")
 	}
 	// always write whole thing
 	_, err := unix.Pwrite(int(state.fd), state.imageData, 0)
@@ -926,26 +951,49 @@ func (s *server) handleReadSlab(state *openFileState, ln, off uint64) error {
 	return <-ch
 }
 
-func (s *server) findBackingCacheFile(objectId uint32, fsid string) {
+func (s *server) findBackingCacheFile(objectId uint32, fsid string, tp uint16, size int64) {
 	// This won't appear in the filesystem immediately, but it should appear soon.
 	backingPath := s.cfg.CachePath + "/" + fscachePath(fsid)
+
 	const maxAttempts = 50 // about 5 seconds
-	for attempt := 0; attempt < maxAttempts; attempt++ {
+	var fd int
+	err := errors.New("start")
+	for attempt := 0; err != nil && attempt < maxAttempts; attempt++ {
 		time.Sleep(time.Duration(100+10*attempt) * time.Millisecond)
-		fd, err := unix.Open(backingPath, 0, unix.O_RDWR)
-		if err != nil {
-			continue
-		}
+		fd, err = unix.Open(backingPath, 0, unix.O_RDWR)
+	}
+	if err != nil {
+		log.Printf("couldn't locate backing file for %d %q after %d attempts", fsid, maxAttempts)
+	}
+
+	if tp == typeSlab {
+		// just keep the fd to do pread on
 		s.lock.Lock()
+		defer s.lock.Unlock()
 		if state := s.cacheState[objectId]; state != nil {
 			state.cacheFd = truncU32(fd)
 		} else {
 			unix.Close(fd)
 		}
-		s.lock.Unlock()
-		return
+	} else if tp == typeImage {
+		// mmap it to read directly
+		defer unix.Close(fd)
+		img, err := unix.Mmap(fd, 0, int(size), unix.PROT_READ, unix.MAP_SHARED)
+		if err != nil {
+			log.Println("mmap error on backing file:", err)
+			return
+		}
+
+		s.lock.Lock()
+		defer s.lock.Unlock()
+		if state := s.cacheState[objectId]; state != nil {
+			state.mappedImage = img
+		} else {
+			unix.Munmap(img)
+		}
+	} else {
+		panic("bad type")
 	}
-	log.Printf("couldn't locate backing file for %d %q after %d attempts", fsid, maxAttempts)
 }
 
 // interface to fetch scheduler
@@ -1007,6 +1055,24 @@ func (s *server) getChunkDiff(ctx context.Context, bases, reqs []byte) (io.ReadC
 	return res.Body, nil
 }
 
+func (s *server) getDigestsFromImage(fsid string) ([]*pb.Entry, error) {
+	var img []byte
+	s.lock.Lock()
+	state := s.stateByFsid[fsid]
+	if state != nil {
+		img = state.mappedImage
+	}
+	s.lock.Unlock()
+
+	if state == nil {
+		return nil, errors.New("image not found")
+	} else if img == nil {
+		return nil, errors.New("backing file not mapped yet")
+	}
+	return erofs.ReadErofs(img)
+}
+
+// TODO: move this above "interface to fetch scheduler"
 func (s *server) readChunkedData(entry *pb.Entry) ([]byte, error) {
 	ctx := context.TODO()
 
