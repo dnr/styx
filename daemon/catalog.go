@@ -37,6 +37,10 @@ type (
 	}
 )
 
+func (s Sph) String() string {
+	return nixbase32.EncodeToString(s[:])
+}
+
 func itemLess(a, b btItem) bool {
 	return a.rest < b.rest || (a.rest == b.rest && bytes.Compare(a.hash[:], b.hash[:]) < 0)
 }
@@ -44,6 +48,7 @@ func itemLess(a, b btItem) bool {
 func newCatalog() *catalog {
 	return &catalog{
 		bt: btree.NewG[btItem](4, itemLess),
+		m:  make(map[Sph]string),
 	}
 }
 
@@ -118,7 +123,7 @@ func (c *catalog) findBase(reqHash Sph) (catalogResult, error) {
 		btItem{rest: start},
 		btItem{rest: start + "\xff"},
 		func(i btItem) bool {
-			if len(findDashes(i.rest)) == len(dashes) {
+			if i.hash != reqHash && len(findDashes(i.rest)) == len(dashes) {
 				// take last best instead of first since it's probably more recent
 				if match := matchLen(reqName, i.rest); match >= bestmatch {
 					bestmatch = match

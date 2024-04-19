@@ -3,7 +3,6 @@ package daemon
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
@@ -50,10 +49,10 @@ type (
 		blockShift  blkshift
 		csread      manifester.ChunkStoreRead
 		mcread      manifester.ChunkStoreRead
-		fetcher     *fetchScheduler
 		catalog     *catalog
 		db          *bbolt.DB
 		msgPool     *sync.Pool
+		chunkPool   *sync.Pool
 		builder     *erofs.Builder
 		devnode     int
 
@@ -96,7 +95,7 @@ var _ erofs.SlabManager = (*server)(nil)
 // init stuff
 
 func CachefilesServer(cfg Config) *server {
-	s := &server{
+	return &server{
 		cfg:         &cfg,
 		digestBytes: int(cfg.Params.Params.DigestBits >> 3),
 		blockShift:  blkshift(cfg.ErofsBlockShift),
@@ -104,12 +103,11 @@ func CachefilesServer(cfg Config) *server {
 		mcread:      manifester.NewChunkStoreReadUrl(cfg.Params.ManifestCacheUrl, manifester.ManifestCachePath),
 		catalog:     newCatalog(),
 		msgPool:     &sync.Pool{New: func() any { return make([]byte, CACHEFILES_MSG_MAX_SIZE) }},
+		chunkPool:   &sync.Pool{New: func() any { return make([]byte, 1<<cfg.Params.Params.ChunkShift) }},
 		builder:     erofs.NewBuilder(erofs.BuilderConfig{BlockShift: cfg.ErofsBlockShift}),
 		cacheState:  make(map[uint32]*openFileState),
 		stateBySlab: make(map[uint16]*openFileState),
 	}
-	s.fetcher = newFetchScheduler(&cfg, s, s.csread)
-	return s
 }
 
 func (s *server) openDb() (err error) {
@@ -280,8 +278,8 @@ func jsonmw[reqT, resT any](f func(*reqT) (*resT, error)) func(w http.ResponseWr
 		defer func() {
 			if r := recover(); r != nil {
 				log.Println("http handler panic", r)
+				w.WriteHeader(http.StatusInternalServerError)
 			}
-			w.WriteHeader(http.StatusInternalServerError)
 		}()
 
 		w.Header().Set("Content-Type", "application/json")
@@ -800,8 +798,8 @@ func (s *server) handleOpenImage(msgId, objectId, fd, flags uint32, cookie strin
 	}
 
 	// insert into db
-	// TODO: these can be large. do we really want them in the db?
-	// or reverse them from the erofs image read from the cache?
+	// TODO: these probably shouldn't be in the db, they should be in a slab.
+	// otherwise we can't diff them.
 	err = s.db.Update(func(tx *bbolt.Tx) error {
 		return tx.Bucket(manifestBucket).Put([]byte(cookie), data)
 	})
@@ -946,11 +944,13 @@ func (s *server) handleReadSlab(state *openFileState, ln, off uint64) error {
 		return err
 	}
 
-	ch := s.fetcher.Submit(slabId, addr, digest, splitSphs(sphs))
+	ch := s.requestDigest(slabId, addr, digest, splitSphs(sphs))
 	return <-ch
 }
 
 func (s *server) findBackingCacheFile(objectId uint32, fsid string) {
+	// FIXME: this doesn't work: it won't appear without a fs sync
+	// can we force that?
 	// This won't appear in the filesystem immediately, but it should appear soon.
 	backingPath := s.cfg.CachePath + "/" + fscachePath(fsid)
 
@@ -962,7 +962,7 @@ func (s *server) findBackingCacheFile(objectId uint32, fsid string) {
 		fd, err = unix.Open(backingPath, 0, unix.O_RDWR)
 	}
 	if err != nil {
-		log.Printf("couldn't locate backing file for %d %q after %d attempts", fsid, maxAttempts)
+		log.Printf("couldn't locate backing file for %d %q after %d attempts", objectId, fsid, maxAttempts)
 		return
 	}
 
@@ -975,78 +975,6 @@ func (s *server) findBackingCacheFile(objectId uint32, fsid string) {
 	}
 }
 
-// interface to fetch scheduler
-func (s *server) gotChunk(slabId uint16, addr uint32, b []byte) error {
-	s.lock.Lock()
-	state := s.stateBySlab[slabId]
-	s.lock.Unlock()
-	if state == nil {
-		return errors.New("slab not loaded")
-	}
-	fd := int(state.fd)
-	// don't use state anymore after here
-
-	// round up to block size (slice is guaranteed to have capacity)
-	toWrite := b[:s.blockShift.roundup(int64(len(b)))]
-
-	// TODO: pass this all the way through?
-	// if len(toWrite) < ln {
-	// 	return fmt.Errorf("chunk underflowed requested len: %d < %d", len(toWrite), ln)
-	// }
-
-	off := int64(addr) << s.blockShift
-	if n, err := unix.Pwrite(fd, toWrite, off); err != nil {
-		return err
-	} else if n != len(toWrite) {
-		return fmt.Errorf("short write %d != %d", n, len(toWrite))
-	}
-
-	// record async
-	go s.db.Batch(func(tx *bbolt.Tx) error {
-		sb := tx.Bucket(slabBucket).Bucket(slabKey(slabId))
-		if sb == nil {
-			return errors.New("missing slab bucket")
-		}
-		return sb.Put(addrKey(presentMask|addr), []byte{})
-	})
-
-	return nil
-}
-
-func (s *server) findBase(sph Sph) (catalogResult, error) {
-	return s.catalog.findBase(sph)
-}
-
-func (s *server) getChunkDiff(ctx context.Context, bases, reqs []byte) (io.ReadCloser, error) {
-	reqBytes, err := json.Marshal(manifester.ChunkDiffReq{Bases: bases, Reqs: reqs})
-	if err != nil {
-		return nil, err
-	}
-	u := strings.TrimSuffix(s.cfg.Params.ChunkDiffUrl, "/") + manifester.ChunkDiffPath
-	// TODO: use context here
-	res, err := http.Post(u, "application/json", bytes.NewReader(reqBytes))
-	if err != nil {
-		return nil, err
-	} else if res.StatusCode != http.StatusOK {
-		res.Body.Close()
-		return nil, fmt.Errorf("chunk diff http status: %s", res.Status)
-	}
-	return res.Body, nil
-}
-
-func (s *server) getDigestsFromImage(fsid string) ([]*pb.Entry, error) {
-	var manifest pb.Manifest
-	err := s.db.View(func(tx *bbolt.Tx) error {
-		v := tx.Bucket(manifestBucket).Get([]byte(fsid))
-		if v == nil {
-			return errors.New("manifest not found")
-		}
-		return proto.Unmarshal(v, &manifest)
-	})
-	return valOrErr(manifest.Entries, err)
-}
-
-// TODO: move this above "interface to fetch scheduler"
 func (s *server) readChunkedData(entry *pb.Entry) ([]byte, error) {
 	ctx := context.TODO()
 
@@ -1080,16 +1008,6 @@ func (s *server) readChunkedData(entry *pb.Entry) ([]byte, error) {
 		})
 	}
 	return valOrErr(out, eg.Wait())
-}
-
-func checkChunkDigest(got, digest []byte) error {
-	h := sha256.New() // TODO: configurable
-	h.Write(got)
-	var gotDigest [sha256.Size]byte
-	if !bytes.Equal(h.Sum(gotDigest[:0])[:len(digest)], digest) {
-		return fmt.Errorf("chunk digest mismatch %x != %x", gotDigest, digest)
-	}
-	return nil
 }
 
 // slab manager

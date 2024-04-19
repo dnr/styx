@@ -1,6 +1,9 @@
 package daemon
 
 import (
+	"bytes"
+	"crypto/sha256"
+	"fmt"
 	"math"
 	"os"
 	"regexp"
@@ -54,6 +57,16 @@ func valOrErr[T any](v T, err error) (T, error) {
 		return zero, err
 	}
 	return v, nil
+}
+
+func checkChunkDigest(got, digest []byte) error {
+	h := sha256.New() // TODO: support other hashes
+	h.Write(got)
+	var gotDigest [sha256.Size]byte
+	if !bytes.Equal(h.Sum(gotDigest[:0])[:len(digest)], digest) {
+		return fmt.Errorf("chunk digest mismatch %x != %x", gotDigest, digest)
+	}
+	return nil
 }
 
 func splitSphs(sphs []byte) []Sph {
