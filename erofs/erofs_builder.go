@@ -73,7 +73,7 @@ func (b *Builder) BuildFromManifestWithSlab(
 	hashBytes := int(m.Params.DigestBits >> 3)
 	chunkShift := common.BlkShift(m.Params.ChunkShift)
 
-	if err := sm.VerifyParams(hashBytes, int(b.blk.Size()), int(chunkShift.Size())); err != nil {
+	if err := sm.VerifyParams(hashBytes, b.blk, chunkShift); err != nil {
 		return err
 	}
 

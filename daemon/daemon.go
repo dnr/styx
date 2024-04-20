@@ -1058,8 +1058,8 @@ func appendSph(loc []byte, sph Sph) []byte {
 	return newLoc
 }
 
-func (s *server) VerifyParams(hashBytes, blockSize, chunkSize int) error {
-	if hashBytes != s.digestBytes || blockSize != int(s.blockShift.Size()) || chunkSize != (1<<s.cfg.Params.Params.ChunkShift) {
+func (s *server) VerifyParams(hashBytes int, blockShift, chunkShift common.BlkShift) error {
+	if hashBytes != s.digestBytes || blockShift != s.blockShift || chunkShift != common.BlkShift(s.cfg.Params.Params.ChunkShift) {
 		return errors.New("mismatched params")
 	}
 	return nil

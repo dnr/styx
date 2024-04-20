@@ -3,6 +3,8 @@ package erofs
 import (
 	"context"
 	"fmt"
+
+	"github.com/dnr/styx/common"
 )
 
 type (
@@ -12,7 +14,7 @@ type (
 	}
 
 	SlabManager interface {
-		VerifyParams(hashBytes, blockSize, chunkSize int) error
+		VerifyParams(hashBytes int, blockShift, chunkShift common.BlkShift) error
 		AllocateBatch(ctx context.Context, blocks []uint16, digests []byte) ([]SlabLoc, error)
 		SlabInfo(slabId uint16) (tag string, totalBlocks uint32)
 	}
@@ -25,7 +27,7 @@ func NewDummySlabManager() *dummySlabManager {
 	return &d
 }
 
-func (d *dummySlabManager) VerifyParams(hashBytes, blockSize, chunkSize int) error {
+func (d *dummySlabManager) VerifyParams(hashBytes, blockShift, chunkShift int) error {
 	return nil
 }
 
