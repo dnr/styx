@@ -15,14 +15,16 @@ import (
 	"path"
 	"sort"
 
-	"github.com/dnr/styx/common"
-	"github.com/dnr/styx/manifester"
-	"github.com/dnr/styx/pb"
 	"github.com/klauspost/compress/zstd"
 	"github.com/lunixbochs/struc"
 	"github.com/nix-community/go-nix/pkg/hash"
 	"github.com/nix-community/go-nix/pkg/nar"
 	"golang.org/x/sys/unix"
+	"google.golang.org/protobuf/proto"
+
+	"github.com/dnr/styx/common"
+	"github.com/dnr/styx/manifester"
+	"github.com/dnr/styx/pb"
 )
 
 type (
@@ -317,12 +319,12 @@ func (b *Builder) BuildFromManifestEmbed(
 ) error {
 	// TODO: move manifest encoding to shared lib
 	// TODO: verify signatures if requested
-	var m *pb.Manifest
+	var m pb.Manifest
 	if zr, err := zstd.NewReader(r); err != nil {
 		return err
 	} else if mbytes, err := io.ReadAll(zr); err != nil {
 		return err
-	} else if m, err = unmarshalAs[pb.Manifest](mbytes); err != nil {
+	} else if err := proto.Unmarshal(mbytes, &m); err != nil {
 		return err
 	}
 
