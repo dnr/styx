@@ -46,7 +46,7 @@ type (
 	server struct {
 		cfg         *Config
 		digestBytes int
-		blockShift  blkshift
+		blockShift  common.BlkShift
 		csread      manifester.ChunkStoreRead
 		mcread      manifester.ChunkStoreRead
 		catalog     *catalog
@@ -99,7 +99,7 @@ func CachefilesServer(cfg Config) *server {
 	return &server{
 		cfg:         &cfg,
 		digestBytes: int(cfg.Params.Params.DigestBits >> 3),
-		blockShift:  blkshift(cfg.ErofsBlockShift),
+		blockShift:  common.BlkShift(cfg.ErofsBlockShift),
 		csread:      manifester.NewChunkStoreReadUrl(cfg.Params.ChunkReadUrl, manifester.ChunkReadPath),
 		mcread:      manifester.NewChunkStoreReadUrl(cfg.Params.ManifestCacheUrl, manifester.ManifestCachePath),
 		catalog:     newCatalog(),
@@ -215,7 +215,7 @@ func (s *server) readImageRecord(sph string) (*pb.DbImage, error) {
 		}
 		return nil
 	})
-	return valOrErr(&img, err)
+	return common.ValOrErr(&img, err)
 }
 
 // Does a transaction on a record in imageBucket. f should mutate its argument and return nil.
@@ -457,7 +457,7 @@ func (s *server) handleDebugReq(r *DebugReq) (*DebugResp, error) {
 					if nextSk != nil && nextSk[0]&0x80 == 0 {
 						nextAddr = addrFromKey(nextSk)
 					} else {
-						nextAddr = truncU32(sb.Sequence())
+						nextAddr = common.TruncU32(sb.Sequence())
 					}
 					blockSize := uint32(nextAddr - addr)
 					blockSizes[addr] = blockSize
@@ -671,7 +671,7 @@ func (s *server) handleOpen(msgId, objectId, fd, flags uint32, volume, cookie []
 		if err != nil {
 			return err
 		}
-		cacheSize, retErr = s.handleOpenSlab(msgId, objectId, fd, flags, truncU16(slabId))
+		cacheSize, retErr = s.handleOpenSlab(msgId, objectId, fd, flags, common.TruncU16(slabId))
 		if retErr == nil {
 			go s.findBackingCacheFile(objectId, fsid)
 		}
@@ -920,7 +920,7 @@ func (s *server) handleReadSlab(state *openFileState, ln, off uint64) error {
 			return errors.New("missing slab bucket")
 		}
 		cur := sb.Cursor()
-		target := addrKey(truncU32(off >> s.blockShift))
+		target := addrKey(common.TruncU32(off >> s.blockShift))
 		k, v := cur.Seek(target)
 		if k == nil {
 			k, v = cur.Last()
@@ -969,7 +969,7 @@ func (s *server) findBackingCacheFile(objectId uint32, fsid string) {
 	s.lock.Lock()
 	defer s.lock.Unlock()
 	if state := s.cacheState[objectId]; state != nil {
-		state.cacheFd = truncU32(fd)
+		state.cacheFd = common.TruncU32(fd)
 	} else {
 		unix.Close(fd)
 	}
@@ -1007,7 +1007,7 @@ func (s *server) readChunkedData(entry *pb.Entry) ([]byte, error) {
 			return nil
 		})
 	}
-	return valOrErr(out, eg.Wait())
+	return common.ValOrErr(out, eg.Wait())
 }
 
 // slab manager
@@ -1060,7 +1060,7 @@ func appendSph(loc []byte, sph Sph) []byte {
 }
 
 func (s *server) VerifyParams(hashBytes, blockSize, chunkSize int) error {
-	if hashBytes != s.digestBytes || blockSize != int(s.blockShift.size()) || chunkSize != (1<<s.cfg.Params.Params.ChunkShift) {
+	if hashBytes != s.digestBytes || blockSize != int(s.blockShift.Size()) || chunkSize != (1<<s.cfg.Params.Params.ChunkShift) {
 		return errors.New("mismatched params")
 	}
 	return nil
@@ -1089,7 +1089,7 @@ func (s *server) AllocateBatch(ctx context.Context, blocks []uint16, digests []b
 			var id uint16
 			var addr uint32
 			if loc := cb.Get(digest); loc == nil { // allocate
-				addr = truncU32(seq)
+				addr = common.TruncU32(seq)
 				seq += uint64(blocks[i])
 				if err := cb.Put(digest, locValue(id, addr, sph)); err != nil {
 					return err
@@ -1112,7 +1112,7 @@ func (s *server) AllocateBatch(ctx context.Context, blocks []uint16, digests []b
 
 		return sb.SetSequence(seq)
 	})
-	return valOrErr(out, err)
+	return common.ValOrErr(out, err)
 }
 
 func (s *server) SlabInfo(slabId uint16) (tag string, totalBlocks uint32) {

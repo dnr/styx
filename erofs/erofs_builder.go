@@ -31,7 +31,7 @@ type (
 	}
 
 	Builder struct {
-		blk blkshift
+		blk common.BlkShift
 	}
 
 	regulardata struct {
@@ -62,7 +62,7 @@ type (
 
 func NewBuilder(cfg BuilderConfig) *Builder {
 	return &Builder{
-		blk: blkshift(cfg.BlockShift),
+		blk: common.BlkShift(cfg.BlockShift),
 	}
 }
 
@@ -73,7 +73,7 @@ func (b *Builder) BuildFromNar(r io.Reader, out io.Writer) error {
 		return err
 	}
 
-	const inodeshift = blkshift(5)
+	const inodeshift = common.BlkShift(5)
 	const inodesize = 1 << inodeshift
 	const layoutCompact = EROFS_INODE_LAYOUT_COMPACT << EROFS_I_VERSION_BIT
 	const formatPlain = (layoutCompact | (EROFS_INODE_FLAT_PLAIN << EROFS_I_DATALAYOUT_BIT))
@@ -87,11 +87,11 @@ func (b *Builder) BuildFromNar(r io.Reader, out io.Writer) error {
 
 	allowedTail := func(tail int64) bool {
 		// tail has to fit in a block with the inode
-		return tail > 0 && tail <= b.blk.size()-inodesize
+		return tail > 0 && tail <= b.blk.Size()-inodesize
 	}
 	setDataOnInode := func(i *inodebuilder, data []byte) {
-		tail := b.blk.leftover(int64(len(data)))
-		i.i.ISize = truncU32(len(data))
+		tail := b.blk.Leftover(int64(len(data)))
+		i.i.ISize = common.TruncU32(len(data))
 		if !allowedTail(tail) {
 			tail = 0
 			i.i.IFormat = formatPlain
@@ -125,7 +125,7 @@ func (b *Builder) BuildFromNar(r io.Reader, out io.Writer) error {
 		i := &inodebuilder{
 			i: erofs_inode_compact{
 				IFormat: formatInline,
-				IIno:    truncU32(len(inodes) + 37),
+				IIno:    common.TruncU32(len(inodes) + 37),
 				INlink:  1,
 			},
 		}
@@ -170,7 +170,7 @@ func (b *Builder) BuildFromNar(r io.Reader, out io.Writer) error {
 		case nar.TypeSymlink:
 			fstype = EROFS_FT_SYMLINK
 			i.i.IMode = unix.S_IFLNK | 0777
-			i.i.ISize = truncU32(len(h.LinkTarget))
+			i.i.ISize = common.TruncU32(len(h.LinkTarget))
 			i.taildata = []byte(h.LinkTarget)
 
 		default:
@@ -197,10 +197,10 @@ func (b *Builder) BuildFromNar(r io.Reader, out io.Writer) error {
 	// pass 2: pack inodes and tails
 
 	// 2.1: directory sizes
-	dummy := make([]byte, b.blk.size())
+	dummy := make([]byte, b.blk.Size())
 	for _, db := range dirs {
 		db.sortAndSize(b.blk)
-		tail := b.blk.leftover(db.size)
+		tail := b.blk.Leftover(db.size)
 		if !allowedTail(tail) {
 			tail = 0
 		}
@@ -212,23 +212,23 @@ func (b *Builder) BuildFromNar(r io.Reader, out io.Writer) error {
 	// all inodes have correct len(taildata)
 	// files have correct taildata but dirs do not
 
-	inodebase := max(4096, b.blk.size())
+	inodebase := max(4096, b.blk.Size())
 
 	// 2.2: lay out inodes and tails
 	// using greedy for now. TODO: use best fit or something
 	p := int64(0) // position relative to metadata area
-	remaining := b.blk.size()
+	remaining := b.blk.Size()
 	for i, inode := range inodes {
-		need := inodesize + inodeshift.roundup(int64(len(inode.taildata)))
+		need := inodesize + inodeshift.Roundup(int64(len(inode.taildata)))
 		if need > remaining {
 			p += remaining
-			remaining = b.blk.size()
+			remaining = b.blk.Size()
 		}
-		inodes[i].nid = truncU64(p >> inodeshift)
+		inodes[i].nid = common.TruncU64(p >> inodeshift)
 		p += need
 		remaining -= need
 	}
-	if remaining < b.blk.size() {
+	if remaining < b.blk.Size() {
 		p += remaining
 	}
 
@@ -253,8 +253,8 @@ func (b *Builder) BuildFromNar(r io.Reader, out io.Writer) error {
 
 	// 2.4: lay out full blocks
 	for _, data := range datablocks {
-		data.i.i.IU = truncU32(p >> b.blk)
-		p += b.blk.roundup(int64(len(data.data)))
+		data.i.i.IU = common.TruncU32(p >> b.blk)
+		p += b.blk.Roundup(int64(len(data.data)))
 	}
 	// log.Printf("final calculated size %d", p)
 
@@ -266,11 +266,11 @@ func (b *Builder) BuildFromNar(r io.Reader, out io.Writer) error {
 	// 3.1: fill in super
 	super := erofs_super_block{
 		Magic:       EROFS_MAGIC,
-		BlkSzBits:   truncU8(b.blk),
-		RootNid:     truncU16(root.nid),
-		Inos:        truncU64(len(inodes)),
-		Blocks:      truncU32(p >> b.blk),
-		MetaBlkAddr: truncU32(inodebase >> b.blk),
+		BlkSzBits:   common.TruncU8(b.blk),
+		RootNid:     common.TruncU16(root.nid),
+		Inos:        common.TruncU64(len(inodes)),
+		Blocks:      common.TruncU32(p >> b.blk),
+		MetaBlkAddr: common.TruncU32(inodebase >> b.blk),
 	}
 	narhash := narHasher.Sum(nil)
 	copy(super.Uuid[:], narhash)
@@ -285,18 +285,18 @@ func (b *Builder) BuildFromNar(r io.Reader, out io.Writer) error {
 	pad(out, inodebase-EROFS_SUPER_OFFSET-128)
 
 	// 3.2: inodes and tails
-	remaining = b.blk.size()
+	remaining = b.blk.Size()
 	for _, i := range inodes {
-		need := inodesize + inodeshift.roundup(int64(len(i.taildata)))
+		need := inodesize + inodeshift.Roundup(int64(len(i.taildata)))
 		if need > remaining {
 			pad(out, remaining)
-			remaining = b.blk.size()
+			remaining = b.blk.Size()
 		}
 		pack(out, i.i)
 		writeAndPad(out, i.taildata, inodeshift)
 		remaining -= need
 	}
-	if remaining < b.blk.size() {
+	if remaining < b.blk.Size() {
 		pad(out, remaining)
 	}
 
@@ -327,9 +327,9 @@ func (b *Builder) BuildFromManifestEmbed(
 	}
 
 	hashBytes := int64(m.Params.DigestBits >> 3)
-	chunkShift := blkshift(m.Params.ChunkShift)
+	chunkShift := common.BlkShift(m.Params.ChunkShift)
 
-	const inodeshift = blkshift(5)
+	const inodeshift = common.BlkShift(5)
 	const inodesize = 1 << inodeshift
 	const layoutCompact = EROFS_INODE_LAYOUT_COMPACT << EROFS_I_VERSION_BIT
 	const formatPlain = (layoutCompact | (EROFS_INODE_FLAT_PLAIN << EROFS_I_DATALAYOUT_BIT))
@@ -343,11 +343,11 @@ func (b *Builder) BuildFromManifestEmbed(
 
 	allowedTail := func(tail int64) bool {
 		// tail has to fit in a block with the inode
-		return tail > 0 && tail <= b.blk.size()-inodesize
+		return tail > 0 && tail <= b.blk.Size()-inodesize
 	}
 	setDataOnInode := func(i *inodebuilder, data []byte) {
-		tail := b.blk.leftover(int64(len(data)))
-		i.i.ISize = truncU32(len(data))
+		tail := b.blk.Leftover(int64(len(data)))
+		i.i.ISize = common.TruncU32(len(data))
 		if !allowedTail(tail) {
 			tail = 0
 			i.i.IFormat = formatPlain
@@ -370,7 +370,7 @@ func (b *Builder) BuildFromManifestEmbed(
 		i := &inodebuilder{
 			i: erofs_inode_compact{
 				IFormat: formatInline,
-				IIno:    truncU32(len(inodes) + 37),
+				IIno:    common.TruncU32(len(inodes) + 37),
 				INlink:  1,
 			},
 		}
@@ -415,7 +415,7 @@ func (b *Builder) BuildFromManifestEmbed(
 						return fmt.Errorf("TODO: support larger files with extended inode")
 					}
 					data = make([]byte, e.Size)
-					for start := int64(0); start < e.Size; start += chunkShift.size() {
+					for start := int64(0); start < e.Size; start += chunkShift.Size() {
 						idx := start >> chunkShift
 						digest := e.Digests[idx*hashBytes : (idx+1)*hashBytes]
 						digestStr := common.DigestStr(digest)
@@ -434,7 +434,7 @@ func (b *Builder) BuildFromManifestEmbed(
 		case pb.EntryType_SYMLINK:
 			fstype = EROFS_FT_SYMLINK
 			i.i.IMode = unix.S_IFLNK | 0777
-			i.i.ISize = truncU32(len(e.InlineData))
+			i.i.ISize = common.TruncU32(len(e.InlineData))
 			i.taildata = e.InlineData
 
 		default:
@@ -461,10 +461,10 @@ func (b *Builder) BuildFromManifestEmbed(
 	// pass 2: pack inodes and tails
 
 	// 2.1: directory sizes
-	dummy := make([]byte, b.blk.size())
+	dummy := make([]byte, b.blk.Size())
 	for _, db := range dirs {
 		db.sortAndSize(b.blk)
-		tail := b.blk.leftover(db.size)
+		tail := b.blk.Leftover(db.size)
 		if !allowedTail(tail) {
 			tail = 0
 		}
@@ -476,23 +476,23 @@ func (b *Builder) BuildFromManifestEmbed(
 	// all inodes have correct len(taildata)
 	// files have correct taildata but dirs do not
 
-	inodebase := max(4096, b.blk.size())
+	inodebase := max(4096, b.blk.Size())
 
 	// 2.2: lay out inodes and tails
 	// using greedy for now. TODO: use best fit or something
 	p := int64(0) // position relative to metadata area
-	remaining := b.blk.size()
+	remaining := b.blk.Size()
 	for i, inode := range inodes {
-		need := inodesize + inodeshift.roundup(int64(len(inode.taildata)))
+		need := inodesize + inodeshift.Roundup(int64(len(inode.taildata)))
 		if need > remaining {
 			p += remaining
-			remaining = b.blk.size()
+			remaining = b.blk.Size()
 		}
-		inodes[i].nid = truncU64(p >> inodeshift)
+		inodes[i].nid = common.TruncU64(p >> inodeshift)
 		p += need
 		remaining -= need
 	}
-	if remaining < b.blk.size() {
+	if remaining < b.blk.Size() {
 		p += remaining
 	}
 
@@ -517,8 +517,8 @@ func (b *Builder) BuildFromManifestEmbed(
 
 	// 2.4: lay out full blocks
 	for _, data := range datablocks {
-		data.i.i.IU = truncU32(p >> b.blk)
-		p += b.blk.roundup(int64(len(data.data)))
+		data.i.i.IU = common.TruncU32(p >> b.blk)
+		p += b.blk.Roundup(int64(len(data.data)))
 	}
 	// log.Printf("final calculated size %d", p)
 
@@ -530,11 +530,11 @@ func (b *Builder) BuildFromManifestEmbed(
 	// 3.1: fill in super
 	super := erofs_super_block{
 		Magic:       EROFS_MAGIC,
-		BlkSzBits:   truncU8(b.blk),
-		RootNid:     truncU16(root.nid),
-		Inos:        truncU64(len(inodes)),
-		Blocks:      truncU32(p >> b.blk),
-		MetaBlkAddr: truncU32(inodebase >> b.blk),
+		BlkSzBits:   common.TruncU8(b.blk),
+		RootNid:     common.TruncU16(root.nid),
+		Inos:        common.TruncU64(len(inodes)),
+		Blocks:      common.TruncU32(p >> b.blk),
+		MetaBlkAddr: common.TruncU32(inodebase >> b.blk),
 	}
 
 	var narhash []byte
@@ -557,18 +557,18 @@ func (b *Builder) BuildFromManifestEmbed(
 	pad(out, inodebase-EROFS_SUPER_OFFSET-128)
 
 	// 3.2: inodes and tails
-	remaining = b.blk.size()
+	remaining = b.blk.Size()
 	for _, i := range inodes {
-		need := inodesize + inodeshift.roundup(int64(len(i.taildata)))
+		need := inodesize + inodeshift.Roundup(int64(len(i.taildata)))
 		if need > remaining {
 			pad(out, remaining)
-			remaining = b.blk.size()
+			remaining = b.blk.Size()
 		}
 		pack(out, i.i)
 		writeAndPad(out, i.taildata, inodeshift)
 		remaining -= need
 	}
-	if remaining < b.blk.size() {
+	if remaining < b.blk.Size() {
 		pad(out, remaining)
 	}
 
@@ -589,13 +589,13 @@ func (b *Builder) BuildFromManifestWithSlab(
 ) error {
 
 	hashBytes := int64(m.Params.DigestBits >> 3)
-	chunkShift := blkshift(m.Params.ChunkShift)
+	chunkShift := common.BlkShift(m.Params.ChunkShift)
 
-	if err := sm.VerifyParams(int(hashBytes), int(b.blk.size()), int(chunkShift.size())); err != nil {
+	if err := sm.VerifyParams(int(hashBytes), int(b.blk.Size()), int(chunkShift.Size())); err != nil {
 		return err
 	}
 
-	const inodeshift = blkshift(5)
+	const inodeshift = common.BlkShift(5)
 	const inodesize = 1 << inodeshift
 	const layoutCompact = EROFS_INODE_LAYOUT_COMPACT << EROFS_I_VERSION_BIT
 	const formatPlain = (layoutCompact | (EROFS_INODE_FLAT_PLAIN << EROFS_I_DATALAYOUT_BIT))
@@ -616,11 +616,11 @@ func (b *Builder) BuildFromManifestWithSlab(
 
 	allowedTail := func(tail int64) bool {
 		// tail has to fit in a block with the inode
-		return tail > 0 && tail <= b.blk.size()-inodesize
+		return tail > 0 && tail <= b.blk.Size()-inodesize
 	}
 	setDataOnInode := func(i *inodebuilder, data []byte) {
-		tail := b.blk.leftover(int64(len(data)))
-		i.i.ISize = truncU32(len(data))
+		tail := b.blk.Leftover(int64(len(data)))
+		i.i.ISize = common.TruncU32(len(data))
 		if !allowedTail(tail) {
 			tail = 0
 			i.i.IFormat = formatPlain
@@ -643,7 +643,7 @@ func (b *Builder) BuildFromManifestWithSlab(
 		i := &inodebuilder{
 			i: erofs_inode_compact{
 				IFormat: formatInline,
-				IIno:    truncU32(len(inodes) + 37),
+				IIno:    common.TruncU32(len(inodes) + 37),
 				INlink:  1,
 			},
 		}
@@ -685,19 +685,19 @@ func (b *Builder) BuildFromManifestWithSlab(
 				if e.Size > math.MaxUint32 {
 					return fmt.Errorf("TODO: support larger files with extended inode")
 				}
-				i.i.ISize = truncU32(e.Size)
-				nChunks := chunkShift.roundup(e.Size) >> chunkShift
+				i.i.ISize = common.TruncU32(e.Size)
+				nChunks := chunkShift.Roundup(e.Size) >> chunkShift
 				if int64(len(e.Digests)) != nChunks*hashBytes {
 					return fmt.Errorf("digest list wrong size")
 				}
 				blocks := make([]uint16, nChunks)
-				allButLast := truncU16(chunkShift.size() >> b.blk)
+				allButLast := common.TruncU16(chunkShift.Size() >> b.blk)
 				for j := range blocks {
 					blocks[j] = allButLast
 				}
 				// TODO: write this better
-				lastChunkLen := chunkShift.leftover(e.Size)
-				blocks[len(blocks)-1] = truncU16(b.blk.roundup(lastChunkLen) >> b.blk)
+				lastChunkLen := chunkShift.Leftover(e.Size)
+				blocks[len(blocks)-1] = common.TruncU16(b.blk.Roundup(lastChunkLen) >> b.blk)
 				// TODO: do in larger batches
 				locs, err := sm.AllocateBatch(ctx, blocks, e.Digests)
 				if err != nil {
@@ -709,7 +709,7 @@ func (b *Builder) BuildFromManifestWithSlab(
 				for i, loc := range locs {
 					devId, ok := slabmap[loc.SlabId]
 					if !ok {
-						devId = truncU16(len(slabmap))
+						devId = common.TruncU16(len(slabmap))
 						slabmap[loc.SlabId] = devId
 					}
 					idxs[i].DeviceId = devId + 1
@@ -726,7 +726,7 @@ func (b *Builder) BuildFromManifestWithSlab(
 		case pb.EntryType_SYMLINK:
 			fstype = EROFS_FT_SYMLINK
 			i.i.IMode = unix.S_IFLNK | 0777
-			i.i.ISize = truncU32(len(e.InlineData))
+			i.i.ISize = common.TruncU32(len(e.InlineData))
 			i.taildata = e.InlineData
 
 		default:
@@ -762,10 +762,10 @@ func (b *Builder) BuildFromManifestWithSlab(
 	devTableSize := int64(len(devs) * 128)
 
 	// 2.1: directory sizes
-	dummy := make([]byte, b.blk.size())
+	dummy := make([]byte, b.blk.Size())
 	for _, db := range dirs {
 		db.sortAndSize(b.blk)
-		tail := b.blk.leftover(db.size)
+		tail := b.blk.Leftover(db.size)
 		if !allowedTail(tail) {
 			tail = 0
 		}
@@ -778,33 +778,33 @@ func (b *Builder) BuildFromManifestWithSlab(
 	// files have correct taildata but dirs do not
 
 	// TODO: test this math with > 23 devs
-	inodebase := b.blk.roundup(EROFS_SUPER_OFFSET + 128 + devTableSize)
+	inodebase := b.blk.Roundup(EROFS_SUPER_OFFSET + 128 + devTableSize)
 
 	// 2.2: lay out inodes and tails
 	// using greedy for now. TODO: use best fit or something
 	p := int64(0) // position relative to inode base ("metadata area")
 	blkoff := int64(0)
 	for i, inode := range inodes {
-		need := inodesize + inodeshift.roundup(int64(len(inode.taildata)))
+		need := inodesize + inodeshift.Roundup(int64(len(inode.taildata)))
 
 		if inode.taildataIsChunkIndex {
 			// chunk index does not need to fit in a block, it just gets laid out directly
-			inodes[i].nid = truncU64(p >> inodeshift)
+			inodes[i].nid = common.TruncU64(p >> inodeshift)
 			p += need
-			blkoff = b.blk.leftover(blkoff + need)
+			blkoff = b.blk.Leftover(blkoff + need)
 			continue
 		}
 
-		if blkoff+need > b.blk.size() {
-			p += b.blk.size() - blkoff
+		if blkoff+need > b.blk.Size() {
+			p += b.blk.Size() - blkoff
 			blkoff = 0
 		}
-		inodes[i].nid = truncU64(p >> inodeshift)
+		inodes[i].nid = common.TruncU64(p >> inodeshift)
 		p += need
-		blkoff = b.blk.leftover(blkoff + need)
+		blkoff = b.blk.Leftover(blkoff + need)
 	}
 	if blkoff > 0 {
-		p += b.blk.size() - blkoff
+		p += b.blk.Size() - blkoff
 	}
 
 	// at this point:
@@ -828,8 +828,8 @@ func (b *Builder) BuildFromManifestWithSlab(
 
 	// 2.4: lay out full blocks
 	for _, data := range datablocks {
-		data.i.i.IU = truncU32(p >> b.blk)
-		p += b.blk.roundup(int64(len(data.data)))
+		data.i.i.IU = common.TruncU32(p >> b.blk)
+		p += b.blk.Roundup(int64(len(data.data)))
 	}
 	// log.Printf("final calculated size %d", p)
 
@@ -845,12 +845,12 @@ func (b *Builder) BuildFromManifestWithSlab(
 	super := erofs_super_block{
 		Magic:           EROFS_MAGIC,
 		FeatureIncompat: incompat,
-		BlkSzBits:       truncU8(b.blk),
-		RootNid:         truncU16(root.nid),
-		Inos:            truncU64(len(inodes)),
-		Blocks:          truncU32(p >> b.blk),
-		MetaBlkAddr:     truncU32(inodebase >> b.blk),
-		ExtraDevices:    truncU16(len(devs)),
+		BlkSzBits:       common.TruncU8(b.blk),
+		RootNid:         common.TruncU16(root.nid),
+		Inos:            common.TruncU64(len(inodes)),
+		Blocks:          common.TruncU32(p >> b.blk),
+		MetaBlkAddr:     common.TruncU32(inodebase >> b.blk),
+		ExtraDevices:    common.TruncU16(len(devs)),
 		DevtSlotOff:     (EROFS_SUPER_OFFSET + 128) / 128, // TODO: use constants
 	}
 
@@ -877,26 +877,26 @@ func (b *Builder) BuildFromManifestWithSlab(
 	// 3.2: inodes and tails
 	blkoff = 0
 	for _, i := range inodes {
-		need := inodesize + inodeshift.roundup(int64(len(i.taildata)))
+		need := inodesize + inodeshift.Roundup(int64(len(i.taildata)))
 
 		if i.taildataIsChunkIndex {
 			// chunk index does not need to fit in a block, it just gets laid out directly
 			pack(out, i.i)
 			writeAndPad(out, i.taildata, inodeshift)
-			blkoff = b.blk.leftover(blkoff + need)
+			blkoff = b.blk.Leftover(blkoff + need)
 			continue
 		}
 
-		if blkoff+need > b.blk.size() {
-			pad(out, b.blk.size()-blkoff)
+		if blkoff+need > b.blk.Size() {
+			pad(out, b.blk.Size()-blkoff)
 			blkoff = 0
 		}
 		pack(out, i.i)
 		writeAndPad(out, i.taildata, inodeshift)
-		blkoff = b.blk.leftover(blkoff + need)
+		blkoff = b.blk.Leftover(blkoff + need)
 	}
 	if blkoff > 0 {
-		pad(out, b.blk.size()-blkoff)
+		pad(out, b.blk.Size()-blkoff)
 	}
 
 	// 3.4: full blocks
@@ -907,35 +907,35 @@ func (b *Builder) BuildFromManifestWithSlab(
 	return nil
 }
 
-func (db *dirbuilder) sortAndSize(shift blkshift) {
+func (db *dirbuilder) sortAndSize(shift common.BlkShift) {
 	const direntsize = 12
 
 	sort.Slice(db.ents, func(i, j int) bool { return db.ents[i].name < db.ents[j].name })
 
 	blocks := int64(0)
-	remaining := shift.size()
+	remaining := shift.Size()
 
 	for _, ent := range db.ents {
 		need := int64(direntsize + len(ent.name))
 		if need > remaining {
 			blocks++
-			remaining = shift.size()
+			remaining = shift.Size()
 		}
 		remaining -= need
 	}
 
-	db.size = blocks<<shift + (shift.size() - remaining)
+	db.size = blocks<<shift + (shift.Size() - remaining)
 }
 
-func (db *dirbuilder) write(out io.Writer, shift blkshift) {
+func (db *dirbuilder) write(out io.Writer, shift common.BlkShift) {
 	const direntsize = 12
 
-	remaining := shift.size()
-	ents := make([]erofs_dirent, 0, shift.size()/16)
+	remaining := shift.Size()
+	ents := make([]erofs_dirent, 0, shift.Size()/16)
 	var names bytes.Buffer
 
 	flush := func(isTail bool) {
-		nameoff0 := truncU16(len(ents) * direntsize)
+		nameoff0 := common.TruncU16(len(ents) * direntsize)
 		for i := range ents {
 			ents[i].NameOff += nameoff0
 		}
@@ -947,7 +947,7 @@ func (db *dirbuilder) write(out io.Writer, shift blkshift) {
 
 		ents = ents[:0]
 		names.Reset()
-		remaining = shift.size()
+		remaining = shift.Size()
 	}
 
 	for _, ent := range db.ents {
@@ -958,8 +958,8 @@ func (db *dirbuilder) write(out io.Writer, shift blkshift) {
 
 		ents = append(ents, erofs_dirent{
 			Nid:      ent.i.nid,
-			NameOff:  truncU16(names.Len()), // offset minus nameoff0
-			FileType: truncU8(ent.tp),
+			NameOff:  common.TruncU16(names.Len()), // offset minus nameoff0
+			FileType: common.TruncU8(ent.tp),
 		})
 		names.Write([]byte(ent.name))
 		remaining -= need
@@ -991,17 +991,17 @@ func pack(out io.Writer, v any) error {
 func packToBytes(v any) ([]byte, error) {
 	var b bytes.Buffer
 	err := struc.PackWithOptions(&b, v, &_popts)
-	return valOrErr(b.Bytes(), err)
+	return common.ValOrErr(b.Bytes(), err)
 }
 
-func writeAndPad(out io.Writer, data []byte, shift blkshift) error {
+func writeAndPad(out io.Writer, data []byte, shift common.BlkShift) error {
 	n, err := out.Write(data)
-	r := shift.roundup(int64(n)) - int64(n)
+	r := shift.Roundup(int64(n)) - int64(n)
 	pad(out, r)
 	return err
 }
 
-func inodeChunkInfo(blkbits, chunkbits blkshift) (uint32, error) {
+func inodeChunkInfo(blkbits, chunkbits common.BlkShift) (uint32, error) {
 	if chunkbits-blkbits > EROFS_CHUNK_FORMAT_BLKBITS_MASK {
 		return 0, fmt.Errorf("chunk size too big")
 	}

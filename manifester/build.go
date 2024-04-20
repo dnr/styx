@@ -25,7 +25,7 @@ type (
 		cs          ChunkStoreWrite
 		chunksem    *semaphore.Weighted
 		params      *pb.GlobalParams
-		chunk       blkshift
+		chunk       common.BlkShift
 		digestBytes int
 	}
 
@@ -42,13 +42,13 @@ type (
 func NewManifestBuilder(cfg ManifestBuilderConfig, cs ChunkStoreWrite) (*ManifestBuilder, error) {
 	return &ManifestBuilder{
 		cs:       cs,
-		chunksem: semaphore.NewWeighted(int64(Or(cfg.ConcurrentChunkOps, 200))),
+		chunksem: semaphore.NewWeighted(int64(common.Or(cfg.ConcurrentChunkOps, 200))),
 		params: &pb.GlobalParams{
 			ChunkShift: int32(cfg.ChunkShift),
 			DigestAlgo: cfg.DigestAlgo,
 			DigestBits: int32(cfg.DigestBits),
 		},
-		chunk:       blkshift(cfg.ChunkShift),
+		chunk:       common.BlkShift(cfg.ChunkShift),
 		digestBytes: cfg.DigestBits >> 3,
 	}, nil
 }
@@ -72,7 +72,7 @@ func (b *ManifestBuilder) Build(ctx context.Context, args BuildArgs, r io.Reader
 		err = nil
 	}
 
-	return valOrErr(m, Or(err, eg.Wait()))
+	return common.ValOrErr(m, common.Or(err, eg.Wait()))
 }
 
 func (b *ManifestBuilder) ManifestAsEntry(ctx context.Context, args BuildArgs, path string, manifest *pb.Manifest) (*pb.Entry, error) {
@@ -95,7 +95,7 @@ func (b *ManifestBuilder) ManifestAsEntry(ctx context.Context, args BuildArgs, p
 	eg, gCtx := errgroup.WithContext(ctx)
 	entry.Digests, err = b.chunkData(gCtx, int64(len(mb)), bytes.NewReader(mb), eg)
 
-	return valOrErr(entry, Or(err, eg.Wait()))
+	return common.ValOrErr(entry, common.Or(err, eg.Wait()))
 }
 
 func (b *ManifestBuilder) entry(ctx context.Context, args BuildArgs, m *pb.Manifest, nr *nar.Reader, eg *errgroup.Group) error {
@@ -147,13 +147,13 @@ func (b *ManifestBuilder) entry(ctx context.Context, args BuildArgs, m *pb.Manif
 }
 
 func (b *ManifestBuilder) chunkData(ctx context.Context, size int64, r io.Reader, eg *errgroup.Group) ([]byte, error) {
-	nChunks := int((size + b.chunk.size() - 1) >> b.chunk)
+	nChunks := int((size + b.chunk.Size() - 1) >> b.chunk)
 	fullDigests := make([]byte, nChunks*b.digestBytes)
 	digests := fullDigests
 	remaining := size
 	for remaining > 0 {
 		b.chunksem.Acquire(ctx, 1)
-		data := make([]byte, min(remaining, b.chunk.size()))
+		data := make([]byte, min(remaining, b.chunk.Size()))
 		remaining -= int64(len(data))
 		if _, err := io.ReadFull(r, data); err != nil {
 			b.chunksem.Release(1)

@@ -3,6 +3,8 @@ package daemon
 import (
 	"math/bits"
 	"strconv"
+
+	"github.com/dnr/styx/common"
 )
 
 // References:
@@ -127,7 +129,7 @@ func fscachePath(fsid string) string {
 	// on short ascii names, but that's all we use.
 	const volume = "erofs," + domainId
 	var volkey [(len(volume) + 2 + 3) &^ 3]byte
-	volkey[0] = truncU8(len(volume))
+	volkey[0] = common.TruncU8(len(volume))
 	copy(volkey[1:], volume)
 	seed := _fscache_hash(0, volkey[:])
 

@@ -26,7 +26,7 @@ type (
 	digestIterator struct {
 		ents       []*pb.Entry
 		digestLen  int
-		chunkShift blkshift
+		chunkShift common.BlkShift
 		e          int
 		d          int
 	}
@@ -86,7 +86,7 @@ func (s *server) tryDiff(ctx context.Context, slabId uint16, addr uint32, target
 	}
 
 	dlen := int(s.cfg.Params.Params.DigestBits >> 3)
-	cshift := blkshift(s.cfg.Params.Params.ChunkShift)
+	cshift := common.BlkShift(s.cfg.Params.Params.ChunkShift)
 	baseIter := digestIterator{ents: baseEntries, digestLen: dlen, chunkShift: cshift}
 	reqIter := digestIterator{ents: reqEntries, digestLen: dlen, chunkShift: cshift}
 
@@ -258,7 +258,7 @@ func (s *server) gotNewChunk(slabId uint16, addr uint32, digest []byte, b []byte
 
 	// we can only write full blocks
 	prevLen := len(b)
-	rounded := int(s.blockShift.roundup(int64(prevLen)))
+	rounded := int(s.blockShift.Roundup(int64(prevLen)))
 	if rounded > cap(b) {
 		// need to copy
 		buf := s.chunkPool.Get().([]byte)
@@ -324,7 +324,7 @@ func (s *server) getDigestsFromImage(sph Sph) ([]*pb.Entry, error) {
 		}
 		return proto.Unmarshal(v, &manifest)
 	})
-	return valOrErr(manifest.Entries, err)
+	return common.ValOrErr(manifest.Entries, err)
 }
 
 func (s *server) getKnownChunk(slabId uint16, addr uint32, buf []byte) error {
@@ -354,9 +354,9 @@ func (i *digestIterator) next() (string, []byte, int64, bool) {
 			continue
 		}
 		i.d += i.digestLen
-		size := i.chunkShift.size()
+		size := i.chunkShift.Size()
 		if i.d >= len(ent.Digests) { // last chunk
-			size = i.chunkShift.leftover(ent.Size)
+			size = i.chunkShift.Leftover(ent.Size)
 		}
 		return ent.Path, ent.Digests[i.d-i.digestLen : i.d], size, true
 	}
