@@ -57,7 +57,7 @@ func VerifyInlineMessage(
 
 func VerifyMessageAsEntry(keys []signature.PublicKey, expectedContext string, b []byte) (*pb.Entry, *pb.GlobalParams, error) {
 	if len(keys) == 0 {
-		return nil, nil,fmt.Errorf("no public keys provided")
+		return nil, nil, fmt.Errorf("no public keys provided")
 	}
 
 	var sm pb.SignedMessage
@@ -66,7 +66,7 @@ func VerifyMessageAsEntry(keys []signature.PublicKey, expectedContext string, b 
 		return nil, nil, fmt.Errorf("error unmarshaling SignedMessage: %w", err)
 	} else if sm.Msg == nil {
 		return nil, nil, fmt.Errorf("SignedMessage missing entry")
-	} else if sm.Msg.Path != expectedContext {
+	} else if sm.Msg.Path != expectedContext && !strings.HasPrefix(sm.Msg.Path, expectedContext+"/") {
 		return nil, nil, fmt.Errorf("SignedMessage context mismatch: %q != %q", sm.Msg.Path, expectedContext)
 	} else if len(sm.Msg.Digests) > 0 && sm.Params == nil {
 		return nil, nil, fmt.Errorf("SignedMessage with chunks must have params")

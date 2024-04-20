@@ -43,3 +43,10 @@ func writeToTempFile(b []byte) (string, error) {
 	}
 	return f.Name(), nil
 }
+
+func makeManifestSph(sph Sph) Sph {
+	// the "manifest sph" for a sph is the same with the second half of bits flipped
+	for i := len(sph) / 2; i < len(sph); i++ {
+		sph[i] ^= 0xff
+	}
+}

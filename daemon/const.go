@@ -9,6 +9,8 @@ const (
 	dbFilename = "styx.bolt"
 
 	slabPrefix = "_slab_"
+
+	isManifestPrefix = "M!"
 )
 
 var (

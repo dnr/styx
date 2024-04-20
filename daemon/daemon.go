@@ -25,7 +25,6 @@ import (
 	"github.com/nix-community/go-nix/pkg/nixbase32"
 	"github.com/nix-community/go-nix/pkg/storepath"
 	"go.etcd.io/bbolt"
-	"golang.org/x/sync/errgroup"
 	"golang.org/x/sys/unix"
 	"google.golang.org/protobuf/proto"
 
@@ -161,6 +160,7 @@ func (s *server) initCatalog() (err error) {
 			}
 			s.catalog.add(img.StorePath)
 		}
+		// FIXME: also add "manifest sphs" to catalog
 		return nil
 	})
 }
@@ -784,27 +784,50 @@ func (s *server) handleOpenImage(msgId, objectId, fd, flags uint32, cookie strin
 		}
 	}
 
+	// record signed manifest message in db
+	err = s.db.Update(func(tx *bbolt.Tx) error {
+		// FIXME: do we want manifestsph instead?
+		return tx.Bucket(manifestBucket).Put([]byte(cookie), sb)
+	})
+	if err != nil {
+		return 0, err
+	}
+
 	// unmarshal into manifest
 	data := entry.InlineData
 	if len(data) == 0 {
 		log.Printf("loading chunked manifest data for %s", cookie)
-		data, err = s.readChunkedData(entry)
+
+		// allocate space for manifest chunks in slab
+		blocks := common.MakeBlocksList(entry.Size, s.cfg.Params.Params.ChunkShift, s.blockShift)
+
+		// don't use the image's store path hash, use a mangled one for the manifest
+		manifestSph := makeManifestSph(sph)
+
+		// add to catalog (FIXME: probably move this above and do it for inline too)
+		if strings.Count(entry.Path, "/") == 1 {
+			if _, storePath, ok := strings.Cut(path.Base(entry.Path), "-"); ok {
+				s.catalog.add(manifestSph.String() + "-" + isManifestPrefix + storePath)
+			}
+		}
+
+		ctxForManifestChunks := context.WithValue(ctx, "sph", manifestSph)
+		locs, err := s.AllocateBatch(ctxForManifestChunks, blocks, entry.Digests)
+		if err != nil {
+			return 0, err
+		}
+
+		// read them out
+		data, err = s.readChunks(entry.Size, locs, entry.Digests, []Sph{manifestSph})
+		if err != nil {
+			return 0, err
+		}
 	}
 
 	var m pb.Manifest
 	err = proto.Unmarshal(data, &m)
 	if err != nil {
 		return 0, fmt.Errorf("manifest unmarshal error: %w", err)
-	}
-
-	// insert into db
-	// TODO: these probably shouldn't be in the db, they should be in a slab.
-	// otherwise we can't diff them.
-	err = s.db.Update(func(tx *bbolt.Tx) error {
-		return tx.Bucket(manifestBucket).Put([]byte(cookie), data)
-	})
-	if err != nil {
-		return 0, err
 	}
 
 	// transform manifest into image (allocate chunks)
@@ -944,7 +967,7 @@ func (s *server) handleReadSlab(state *openFileState, ln, off uint64) error {
 		return err
 	}
 
-	ch := s.requestDigest(slabId, addr, digest, splitSphs(sphs))
+	ch := s.requestChunk(slabId, addr, digest, splitSphs(sphs))
 	return <-ch
 }
 
@@ -972,41 +995,6 @@ func (s *server) findBackingCacheFile(objectId uint32, fsid string) {
 	} else {
 		unix.Close(fd)
 	}
-}
-
-func (s *server) readChunkedData(entry *pb.Entry) ([]byte, error) {
-	ctx := context.TODO()
-
-	out := make([]byte, entry.Size)
-	dest := out
-	digests := entry.Digests
-
-	var eg errgroup.Group
-	eg.SetLimit(s.cfg.Workers)
-
-	for len(digests) > 0 && len(dest) > 0 {
-		digest := digests[:s.digestBytes]
-		digests = digests[s.digestBytes:]
-		toRead := min(len(dest), 1<<s.cfg.Params.Params.ChunkShift)
-		buf := dest[:0]
-		dest = dest[toRead:]
-
-		// TODO: see if we can diff these chunks against some other chunks we have
-
-		eg.Go(func() error {
-			digestStr := common.DigestStr(digest)
-			got, err := s.csread.Get(ctx, digestStr, buf)
-			if err != nil {
-				return err
-			} else if len(got) != toRead {
-				return fmt.Errorf("chunk was wrong size: %d vs %d", len(got), toRead)
-			} else if err = checkChunkDigest(got, digest); err != nil {
-				return err
-			}
-			return nil
-		})
-	}
-	return common.ValOrErr(out, eg.Wait())
 }
 
 // slab manager

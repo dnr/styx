@@ -271,7 +271,8 @@ func (s *server) handleManifest(w http.ResponseWriter, req *http.Request) {
 	// turn into entry (maybe chunk)
 
 	manifestArgs := BuildArgs{SmallFileCutoff: smallManifestCutoff}
-	entry, err := s.mb.ManifestAsEntry(req.Context(), manifestArgs, common.ManifestContext, manifest)
+	path := common.ManifestContext + "/" + path.Base(ni.StorePath)
+	entry, err := s.mb.ManifestAsEntry(req.Context(), manifestArgs, path, manifest)
 	if err != nil {
 		log.Println("make manifest entry error:", err)
 		w.WriteHeader(http.StatusInternalServerError)

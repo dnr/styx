@@ -18,6 +18,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"github.com/dnr/styx/common"
+	"github.com/dnr/styx/erofs"
 	"github.com/dnr/styx/manifester"
 	"github.com/dnr/styx/pb"
 )
@@ -32,7 +33,7 @@ type (
 	}
 )
 
-func (s *server) requestDigest(slabId uint16, addr uint32, digest []byte, sphs []Sph) chan error {
+func (s *server) requestChunk(slabId uint16, addr uint32, digest []byte, sphs []Sph) chan error {
 	ctx := context.Background()
 	ch := make(chan error)
 	go func() {
@@ -44,6 +45,47 @@ func (s *server) requestDigest(slabId uint16, addr uint32, digest []byte, sphs [
 		ch <- err
 	}()
 	return ch
+}
+
+func (s *server) readChunks(size int64, locs []erofs.SlabLoc, digests []byte, sphs []Sph) ([]byte, error) {
+	// TODO: if we can't diff, this will end up reading them all serially. maybe we should
+	// request in parallel and let differ manage what's in flight.
+	for {
+		missing := -1
+		_ = s.db.View(func(tx *bbolt.Tx) error {
+			sb := tx.Bucket(slabBucket)
+			for idx, loc := range locs {
+				if sb.Bucket(slabKey(loc.SlabId)).Get(addrKey(loc.Addr|presentMask)) == nil {
+					missing = idx
+					return nil
+				}
+			}
+			return nil
+		})
+		if missing == -1 {
+			break // we have them all
+		}
+
+		// request first missing one. the differ will do some readahead.
+		digest := digests[missing*s.digestLen : (missing+1)*s.digestLen]
+		err := <-s.requestChunk(locs[missing].SlabId, locs[missing].Addr, digest, sphs)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	// read all from slabs. all but last chunk must be full.
+	out := make([]byte, size)
+	rest := out
+	for _, loc := range locs {
+		toRead := min(1<<s.cfg.Params.Params.ChunkShift, len(rest))
+		err := s.getKnownChunk(loc.SlabId, loc.Addr, rest[:toRead])
+		if err != nil {
+			return nil, err
+		}
+		rest = rest[toRead:]
+	}
+	return out, nil
 }
 
 func (s *server) readSingle(ctx context.Context, slabId uint16, addr uint32, digest []byte) error {
@@ -77,11 +119,12 @@ func (s *server) tryDiff(ctx context.Context, slabId uint16, addr uint32, target
 		res.reqName[res.matchLen:],
 	)
 
-	baseEntries, err := s.getDigestsFromImage(res.baseHash)
+	isManifest := strings.HasPrefix(res.reqName, isManifestPrefix)
+	baseEntries, err := s.getDigestsFromImage(res.baseHash, isManifest)
 	if err != nil {
 		return err
 	}
-	reqEntries, err := s.getDigestsFromImage(reqHash)
+	reqEntries, err := s.getDigestsFromImage(reqHash, isManifest)
 	if err != nil {
 		return err
 	}
@@ -315,16 +358,19 @@ func (s *server) getChunkDiff(ctx context.Context, bases, reqs []byte) (io.ReadC
 	return res.Body, nil
 }
 
-func (s *server) getDigestsFromImage(sph Sph) ([]*pb.Entry, error) {
-	var manifest pb.Manifest
+func (s *server) getDigestsFromImage(sph Sph, isManifest bool) ([]*pb.Entry, error) {
+	var sm pb.SignedMessage
 	err := s.db.View(func(tx *bbolt.Tx) error {
 		v := tx.Bucket(manifestBucket).Get([]byte(sph.String()))
 		if v == nil {
 			return errors.New("manifest not found")
 		}
-		return proto.Unmarshal(v, &manifest)
+		return proto.Unmarshal(v, &sm)
 	})
-	return common.ValOrErr(manifest.Entries, err)
+	if isManifest {
+		return []*pb.Entry{sm.Entry}, nil
+	}
+	// FIXME: load data from that entry, unmarshal, and return that
 }
 
 func (s *server) getKnownChunk(slabId uint16, addr uint32, buf []byte) error {
