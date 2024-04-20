@@ -56,11 +56,9 @@ func (s *server) readSingle(ctx context.Context, slabId uint16, addr uint32, dig
 		return err
 	} else if len(chunk) > len(buf) || &buf[0] != &chunk[0] {
 		return fmt.Errorf("chunk overflowed chunk size: %d > %d", len(chunk), len(buf))
-	} else if err = checkChunkDigest(chunk, digest); err != nil {
-		return err
 	}
 
-	return s.gotNewChunk(slabId, addr, chunk)
+	return s.gotNewChunk(slabId, addr, digest, chunk)
 }
 
 func (s *server) tryDiff(ctx context.Context, slabId uint16, addr uint32, targetDigest []byte, sphs []Sph) error {
@@ -130,18 +128,18 @@ func (s *server) tryDiff(ctx context.Context, slabId uint16, addr uint32, target
 				continue
 			}
 
-			if baseOk {
+			if baseOk && len(baseDigests) < dlen*s.cfg.ReadaheadChunks {
 				baseSlab, baseAddr, baseHas := has(baseDigest)
-				if baseHas && len(baseDigests) < dlen*s.cfg.ReadaheadChunks {
+				if baseHas {
 					baseDigests = append(baseDigests, baseDigest...)
 					baseInfo = append(baseInfo, info{baseSize, baseSlab, baseAddr})
 					baseTotalSize += baseSize
 					// log.Println("appending base", common.DigestStr(baseDigest), baseSlab, baseAddr, baseSize)
 				}
 			}
-			if reqOk {
+			if reqOk && len(reqDigests) < dlen*s.cfg.ReadaheadChunks {
 				reqSlab, reqAddr, reqHas := has(reqDigest)
-				if !reqHas && len(reqDigests) < dlen*s.cfg.ReadaheadChunks {
+				if !reqHas {
 					reqDigests = append(reqDigests, reqDigest...)
 					reqInfo = append(reqInfo, info{reqSize, reqSlab, reqAddr})
 					reqTotalSize += reqSize
@@ -163,19 +161,37 @@ func (s *server) tryDiff(ctx context.Context, slabId uint16, addr uint32, target
 	baseData := make([]byte, baseTotalSize)
 	p := int64(0)
 	for _, i := range baseInfo {
-		err := s.getKnownChunk(i.slabId, i.addr, baseData[p:p+i.size])
-		if err != nil {
+		if err := s.getKnownChunk(i.slabId, i.addr, baseData[p:p+i.size]); err != nil {
 			return err
 		}
+		p += i.size
 	}
 	// log.Println("read baseData", len(baseData))
 
-	expand, err := s.expandChunkDiff(ctx, baseData, diff)
-	log.Println("got expanded data!", err, len(expand), reqTotalSize)
+	// decompress from diff
+	reqData, err := s.expandChunkDiff(ctx, baseData, diff)
 	if err != nil {
 		return err
 	}
-	// FIXME: walk through expand and write to appropriate spots on disk
+
+	// write out to slab
+	p = 0
+	for idx, i := range reqInfo {
+		// slice with cap to force copy if less than block size
+		b := reqData[p : p+i.size : p+i.size]
+		digest := reqDigests[idx*dlen : (idx+1)*dlen]
+		if err := s.gotNewChunk(i.slabId, i.addr, digest, b); err != nil {
+			return err
+		}
+		p += i.size
+	}
+
+	// rest is json stats
+	var diffStats manifester.ChunkDiffStats
+	if err = json.Unmarshal(reqData[p:], &diffStats); err == nil {
+		log.Printf("diff stats: %#v", diffStats)
+	}
+
 	return nil
 }
 
@@ -224,20 +240,39 @@ func (s *server) findBase(sphs []Sph) (catalogResult, Sph, error) {
 	return catalogResult{}, Sph{}, errors.New(strings.Join(errs, "; "))
 }
 
-// b must have capacity up to at least a full block
-func (s *server) gotNewChunk(slabId uint16, addr uint32, b []byte) error {
+// gotNewChunk may reslice b up to block size and zero up to the new size!
+func (s *server) gotNewChunk(slabId uint16, addr uint32, digest []byte, b []byte) error {
+	if err := checkChunkDigest(b, digest); err != nil {
+		return err
+	}
+
 	var fd int
 	s.lock.Lock()
-	if state := s.stateBySlab[slabId]; state == nil {
-		s.lock.Unlock()
-		return errors.New("slab not loaded")
-	} else {
+	if state := s.stateBySlab[slabId]; state != nil {
 		fd = int(state.fd)
 	}
 	s.lock.Unlock()
+	if fd == 0 {
+		return errors.New("slab not loaded or missing fd")
+	}
 
-	// round up to block size (slice is guaranteed to have capacity)
-	toWrite := b[:s.blockShift.roundup(int64(len(b)))]
+	// we can only write full blocks
+	prevLen := len(b)
+	rounded := int(s.blockShift.roundup(int64(prevLen)))
+	if rounded > cap(b) {
+		// need to copy
+		buf := s.chunkPool.Get().([]byte)
+		defer s.chunkPool.Put(buf)
+		copy(buf, b)
+		b = buf[:rounded]
+	} else if rounded > prevLen {
+		// can just reslice
+		b = b[:rounded]
+	}
+	// zero padding in case our buffer was dirty
+	for i := prevLen; i < rounded; i++ {
+		b[i] = 0
+	}
 
 	// TODO: pass this all the way through?
 	// if len(toWrite) < ln {
@@ -245,10 +280,10 @@ func (s *server) gotNewChunk(slabId uint16, addr uint32, b []byte) error {
 	// }
 
 	off := int64(addr) << s.blockShift
-	if n, err := unix.Pwrite(fd, toWrite, off); err != nil {
+	if n, err := unix.Pwrite(fd, b, off); err != nil {
 		return err
-	} else if n != len(toWrite) {
-		return fmt.Errorf("short write %d != %d", n, len(toWrite))
+	} else if n != len(b) {
+		return fmt.Errorf("short write %d != %d", n, len(b))
 	}
 
 	// record async
@@ -295,13 +330,13 @@ func (s *server) getDigestsFromImage(sph Sph) ([]*pb.Entry, error) {
 func (s *server) getKnownChunk(slabId uint16, addr uint32, buf []byte) error {
 	var fd int
 	s.lock.Lock()
-	if state := s.stateBySlab[slabId]; state == nil {
-		s.lock.Unlock()
-		return errors.New("slab not loaded")
-	} else {
+	if state := s.stateBySlab[slabId]; state != nil {
 		fd = int(state.cacheFd)
 	}
 	s.lock.Unlock()
+	if fd == 0 {
+		return errors.New("slab not loaded or missing cache")
+	}
 
 	_, err := unix.Pread(fd, buf, int64(addr)<<s.blockShift)
 	return err
@@ -320,8 +355,7 @@ func (i *digestIterator) next() (string, []byte, int64, bool) {
 		}
 		i.d += i.digestLen
 		size := i.chunkShift.size()
-		if i.d >= len(ent.Digests) {
-			// last chunk
+		if i.d >= len(ent.Digests) { // last chunk
 			size = i.chunkShift.leftover(ent.Size)
 		}
 		return ent.Path, ent.Digests[i.d-i.digestLen : i.d], size, true

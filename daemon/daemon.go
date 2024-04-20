@@ -52,9 +52,10 @@ type (
 		catalog     *catalog
 		db          *bbolt.DB
 		msgPool     *sync.Pool
-		chunkPool   *sync.Pool
-		builder     *erofs.Builder
-		devnode     int
+		// TODO: separate pools for size classes?
+		chunkPool *sync.Pool
+		builder   *erofs.Builder
+		devnode   int
 
 		lock        sync.Mutex
 		cacheState  map[uint32]*openFileState // object id -> state
@@ -949,8 +950,7 @@ func (s *server) handleReadSlab(state *openFileState, ln, off uint64) error {
 }
 
 func (s *server) findBackingCacheFile(objectId uint32, fsid string) {
-	// FIXME: this doesn't work: it won't appear without a fs sync
-	// can we force that?
+	// FIXME: this doesn't work: it won't appear until we retract the cache
 	// This won't appear in the filesystem immediately, but it should appear soon.
 	backingPath := s.cfg.CachePath + "/" + fscachePath(fsid)
 
