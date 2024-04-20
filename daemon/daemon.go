@@ -52,10 +52,9 @@ type (
 		catalog     *catalog
 		db          *bbolt.DB
 		msgPool     *sync.Pool
-		// TODO: separate pools for size classes?
-		chunkPool *sync.Pool
-		builder   *erofs.Builder
-		devnode   int
+		chunkPool   *chunkPool
+		builder     *erofs.Builder
+		devnode     int
 
 		lock        sync.Mutex
 		cacheState  map[uint32]*openFileState // object id -> state
@@ -104,7 +103,7 @@ func CachefilesServer(cfg Config) *server {
 		mcread:      manifester.NewChunkStoreReadUrl(cfg.Params.ManifestCacheUrl, manifester.ManifestCachePath),
 		catalog:     newCatalog(),
 		msgPool:     &sync.Pool{New: func() any { return make([]byte, CACHEFILES_MSG_MAX_SIZE) }},
-		chunkPool:   &sync.Pool{New: func() any { return make([]byte, 1<<cfg.Params.Params.ChunkShift) }},
+		chunkPool:   newChunkPool(int(cfg.Params.Params.ChunkShift)),
 		builder:     erofs.NewBuilder(erofs.BuilderConfig{BlockShift: cfg.ErofsBlockShift}),
 		cacheState:  make(map[uint32]*openFileState),
 		stateBySlab: make(map[uint16]*openFileState),

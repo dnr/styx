@@ -47,8 +47,9 @@ func (s *server) requestDigest(slabId uint16, addr uint32, digest []byte, sphs [
 }
 
 func (s *server) readSingle(ctx context.Context, slabId uint16, addr uint32, digest []byte) error {
-	buf := s.chunkPool.Get().([]byte)
-	defer s.chunkPool.Put(buf)
+	// we have no size info here
+	buf := s.chunkPool.Get(1 << s.cfg.Params.Params.ChunkShift)
+	defer s.chunkPool.Put(1<<s.cfg.Params.Params.ChunkShift, buf)
 
 	digestStr := common.DigestStr(digest)
 	chunk, err := s.csread.Get(ctx, digestStr, buf[:0])
@@ -144,6 +145,7 @@ func (s *server) tryDiff(ctx context.Context, slabId uint16, addr uint32, target
 					reqInfo = append(reqInfo, info{reqSize, reqSlab, reqAddr})
 					reqTotalSize += reqSize
 					// log.Println("appending req", common.DigestStr(reqDigest), reqSlab, reqAddr, reqSize)
+					// TODO: mark these as in-flight so another goroutine doesn't request them
 				}
 			}
 		}
@@ -172,6 +174,9 @@ func (s *server) tryDiff(ctx context.Context, slabId uint16, addr uint32, target
 	reqData, err := s.expandChunkDiff(ctx, baseData, diff)
 	if err != nil {
 		return err
+	}
+	if len(reqData) != int(reqTotalSize) {
+		return fmt.Errorf("decompressed data is wrong length: %d != %d", len(reqData), reqTotalSize)
 	}
 
 	// write out to slab
@@ -261,8 +266,8 @@ func (s *server) gotNewChunk(slabId uint16, addr uint32, digest []byte, b []byte
 	rounded := int(s.blockShift.Roundup(int64(prevLen)))
 	if rounded > cap(b) {
 		// need to copy
-		buf := s.chunkPool.Get().([]byte)
-		defer s.chunkPool.Put(buf)
+		buf := s.chunkPool.Get(rounded)
+		defer s.chunkPool.Put(rounded, buf)
 		copy(buf, b)
 		b = buf[:rounded]
 	} else if rounded > prevLen {
@@ -273,11 +278,6 @@ func (s *server) gotNewChunk(slabId uint16, addr uint32, digest []byte, b []byte
 	for i := prevLen; i < rounded; i++ {
 		b[i] = 0
 	}
-
-	// TODO: pass this all the way through?
-	// if len(toWrite) < ln {
-	// 	return fmt.Errorf("chunk underflowed requested len: %d < %d", len(toWrite), ln)
-	// }
 
 	off := int64(addr) << s.blockShift
 	if n, err := unix.Pwrite(fd, b, off); err != nil {
