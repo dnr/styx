@@ -5,14 +5,11 @@ import (
 	"io"
 	"os"
 
-	"github.com/klauspost/compress/zstd"
 	"github.com/nix-community/go-nix/pkg/narinfo/signature"
 	"github.com/spf13/cobra"
 	"google.golang.org/protobuf/encoding/protojson"
 
 	"github.com/dnr/styx/common"
-	"github.com/dnr/styx/erofs"
-	"github.com/dnr/styx/manifester"
 	"github.com/dnr/styx/pb"
 )
 
@@ -40,112 +37,9 @@ func withOutFile(c *cobra.Command, args []string) error {
 	return nil
 }
 
-func withErofsBuiler(c *cobra.Command) runE {
-	var cfg erofs.BuilderConfig
-	c.Flags().IntVar(&cfg.BlockShift, "block_shift", 12, "block size bits for local fs images")
-	return func(c *cobra.Command, args []string) error {
-		b := erofs.NewBuilder(cfg)
-		c.SetContext(context.WithValue(c.Context(), ctxErofsBuilder, b))
-		return nil
-	}
-}
-
 func debugCmd() *cobra.Command {
 	return cmd(
 		&cobra.Command{Use: "debug", Aliases: []string{"d"}, Short: "debug commands"},
-		cmd(
-			&cobra.Command{
-				Use:   "nartoerofs <nar file> <erofs image>",
-				Short: "create an erofs image from a nar file",
-				Args:  cobra.ExactArgs(2),
-			},
-			withInFile,
-			withOutFile,
-			withErofsBuiler,
-			func(c *cobra.Command, args []string) error {
-				in := c.Context().Value(ctxInFile).(*os.File)
-				out := c.Context().Value(ctxOutFile).(*os.File)
-				b := c.Context().Value(ctxErofsBuilder).(*erofs.Builder)
-				return b.BuildFromNar(in, out)
-			},
-		),
-		cmd(
-			&cobra.Command{
-				Use:   "nartomanifest <nar file> <manifest>",
-				Short: "create a manifest from a nar file",
-				Args:  cobra.ExactArgs(2),
-			},
-			withManifestBuilder,
-			withInFile,
-			withOutFile,
-			withSignKeys,
-			func(c *cobra.Command, args []string) error {
-				in := c.Context().Value(ctxInFile).(*os.File)
-				out := c.Context().Value(ctxOutFile).(*os.File)
-				mb := c.Context().Value(ctxManifestBuilder).(*manifester.ManifestBuilder)
-				keys := c.Context().Value(ctxSignKeys).([]signature.SecretKey)
-				var buildArgs manifester.BuildArgs
-				if manifest, err := mb.Build(context.Background(), buildArgs, in); err != nil {
-					return err
-				} else if b, err := common.SignInlineMessage(keys, common.ManifestContext, manifest); err != nil {
-					return err
-				} else if enc, err := zstd.NewWriter(out); err != nil {
-					return err
-				} else if n, err := enc.Write(b); err != nil || n < len(b) {
-					return err
-				} else {
-					return enc.Close()
-				}
-			},
-		),
-		cmd(
-			&cobra.Command{
-				Use:   "manifesttoerofs <manifest> <erofs image>",
-				Short: "create an erofs image from a manifest",
-				Args:  cobra.ExactArgs(2),
-			},
-			withInFile,
-			withOutFile,
-			withErofsBuiler,
-			func(c *cobra.Command, args []string) error {
-				in := c.Context().Value(ctxInFile).(*os.File)
-				out := c.Context().Value(ctxOutFile).(*os.File)
-				// TODO: restore this functionality
-				// cs := c.Context().Value(ctxChunkStoreRead).(manifester.ChunkStoreRead)
-				b := c.Context().Value(ctxErofsBuilder).(*erofs.Builder)
-				return b.BuildFromManifestEmbed(c.Context(), in, out, nil)
-			},
-		),
-		cmd(
-			&cobra.Command{
-				Use:   "manifesttoerofsslab <manifest> <erofs image>",
-				Short: "create an erofs image from a manifest",
-				Args:  cobra.ExactArgs(2),
-			},
-			withInFile,
-			withOutFile,
-			withErofsBuiler,
-			withStyxPubKeys,
-			func(c *cobra.Command, args []string) error {
-				in := c.Context().Value(ctxInFile).(*os.File)
-				out := c.Context().Value(ctxOutFile).(*os.File)
-				b := c.Context().Value(ctxErofsBuilder).(*erofs.Builder)
-				keys := c.Context().Value(ctxStyxPubKeys).([]signature.PublicKey)
-				sm := erofs.NewDummySlabManager()
-
-				// TODO: move to common place?
-				var m pb.Manifest
-				if zr, err := zstd.NewReader(in); err != nil {
-					return err
-				} else if sBytes, err := io.ReadAll(zr); err != nil {
-					return err
-				} else if err := common.VerifyInlineMessage(keys, common.ManifestContext, sBytes, &m); err != nil {
-					return err
-				}
-
-				return b.BuildFromManifestWithSlab(c.Context(), &m, out, sm)
-			},
-		),
 		cmd(
 			&cobra.Command{
 				Use:  "signdaemonparams <daemon params json> <out file image>",

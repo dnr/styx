@@ -22,7 +22,6 @@ const (
 	ctxOutFile
 	ctxSignKeys
 	ctxStyxPubKeys
-	ctxErofsBuilder
 	ctxStyxClient
 )
 
