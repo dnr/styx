@@ -70,7 +70,6 @@ type (
 
 		// for images
 		fsid      string
-		imageSize int64
 		imageData []byte // data from manifester to be written
 	}
 
@@ -151,16 +150,27 @@ func (s *server) openDb() (err error) {
 
 func (s *server) initCatalog() (err error) {
 	return s.db.View(func(tx *bbolt.Tx) error {
-		cur := tx.Bucket(imageBucket).Cursor()
+		cur := tx.Bucket(manifestBucket).Cursor()
 		for k, v := cur.First(); k != nil; k, v = cur.Next() {
-			var img pb.DbImage
-			if err := proto.Unmarshal(v, &img); err != nil {
-				log.Print("unmarshal error iterating images", err)
+			var sm pb.SignedMessage
+			if err := proto.Unmarshal(v, &sm); err != nil {
+				log.Print("unmarshal error iterating manifests", err)
 				continue
 			}
-			s.catalog.add(img.StorePath)
+
+			storePath := strings.TrimPrefix(sm.Msg.Path, common.ManifestContext+"/")
+			spHash, spName, _ := strings.Cut(storePath, "-")
+
+			s.catalog.add(storePath)
+
+			if len(sm.Msg.InlineData) == 0 {
+				var sph Sph
+				if n, err := nixbase32.Decode(sph[:], []byte(spHash)); err != nil || n != len(sph) {
+					continue
+				}
+				s.catalog.add(makeManifestSph(sph).String() + "-" + isManifestPrefix + spName)
+			}
 		}
-		// FIXME: also add "manifest sphs" to catalog
 		return nil
 	})
 }
@@ -354,7 +364,6 @@ func (s *server) handleMountReq(r *MountReq) (*genericResp, error) {
 	if err != nil {
 		return nil, err
 	}
-	s.catalog.add(r.StorePath)
 
 	return nil, s.tryMount(r.StorePath, r.MountPoint)
 }
@@ -665,7 +674,7 @@ func (s *server) handleOpen(msgId, objectId, fd, flags uint32, volume, cookie []
 
 	// slab or manifest
 	if strings.HasPrefix(fsid, slabPrefix) {
-		log.Println("open slab", fsid, "as", objectId)
+		log.Println("open slab", fsid[len(slabPrefix):], "as", objectId)
 		slabId, err := strconv.Atoi(fsid[len(slabPrefix):])
 		if err != nil {
 			return err
@@ -714,10 +723,9 @@ func (s *server) handleOpenImage(msgId, objectId, fd, flags uint32, cookie strin
 		s.lock.Lock()
 		defer s.lock.Unlock()
 		state := &openFileState{
-			fd:        fd,
-			tp:        typeImage,
-			fsid:      cookie,
-			imageSize: img.ImageSize,
+			fd:   fd,
+			tp:   typeImage,
+			fsid: cookie,
 		}
 		s.cacheState[objectId] = state
 		return img.ImageSize, nil
@@ -728,6 +736,8 @@ func (s *server) handleOpenImage(msgId, objectId, fd, flags uint32, cookie strin
 	if n, err := nixbase32.Decode(sph[:], []byte(cookie)); err != nil || n != len(sph) {
 		return 0, fmt.Errorf("cookie is not a valid nix store path hash")
 	}
+	// use a separate "sph" for the manifest itself (a single entry). only used if manifest is chunked.
+	manifestSph := makeManifestSph(sph)
 
 	ctx := context.Background()
 	ctx = context.WithValue(ctx, "sph", sph)
@@ -744,7 +754,7 @@ func (s *server) handleOpenImage(msgId, objectId, fd, flags uint32, cookie strin
 		DigestBits:      int(gParams.DigestBits),
 		SmallFileCutoff: s.cfg.SmallFileCutoff,
 	}
-	sb, err := s.mcread.Get(ctx, mReq.CacheKey(), nil)
+	envelopeBytes, err := s.mcread.Get(ctx, mReq.CacheKey(), nil)
 	if err == nil {
 		log.Printf("got manifest for %s from cache", cookie)
 	} else {
@@ -764,14 +774,14 @@ func (s *server) handleOpenImage(msgId, objectId, fd, flags uint32, cookie strin
 			return 0, fmt.Errorf("manifester http status: %s", res.Status)
 		} else if zr, err := zstd.NewReader(res.Body); err != nil {
 			return 0, err
-		} else if sb, err = io.ReadAll(zr); err != nil {
+		} else if envelopeBytes, err = io.ReadAll(zr); err != nil {
 			return 0, err
 		}
 		log.Printf("got manifest for %s", cookie)
 	}
 
 	// verify signature and params
-	entry, smParams, err := common.VerifyMessageAsEntry(s.cfg.StyxPubKeys, common.ManifestContext, sb)
+	entry, smParams, err := common.VerifyMessageAsEntry(s.cfg.StyxPubKeys, common.ManifestContext, envelopeBytes)
 	if err != nil {
 		return 0, err
 	}
@@ -784,32 +794,31 @@ func (s *server) handleOpenImage(msgId, objectId, fd, flags uint32, cookie strin
 		}
 	}
 
-	// record signed manifest message in db
-	err = s.db.Update(func(tx *bbolt.Tx) error {
-		// FIXME: do we want manifestsph instead?
-		return tx.Bucket(manifestBucket).Put([]byte(cookie), sb)
-	})
-	if err != nil {
-		return 0, err
+	// check entry path to get storepath
+	storePath := strings.TrimPrefix(entry.Path, common.ManifestContext+"/")
+	spHash, spName, _ := strings.Cut(storePath, "-")
+	if spHash != cookie || len(spName) == 0 {
+		return 0, fmt.Errorf("invalid or mismatched name in manifest %q", storePath)
 	}
 
-	// unmarshal into manifest
+	// record signed manifest message in db
+	if err = s.db.Update(func(tx *bbolt.Tx) error {
+		return tx.Bucket(manifestBucket).Put([]byte(cookie), envelopeBytes)
+	}); err != nil {
+		return 0, err
+	}
+	// update catalog with this envelope (and manifest entry). should match code in initCatalog.
+	s.catalog.add(storePath)
+
+	// get payload or load from chunks
 	data := entry.InlineData
 	if len(data) == 0 {
-		log.Printf("loading chunked manifest data for %s", cookie)
+		s.catalog.add(manifestSph.String() + "-" + isManifestPrefix + spName)
+
+		log.Printf("loading chunked manifest for %s", storePath)
 
 		// allocate space for manifest chunks in slab
-		blocks := common.MakeBlocksList(entry.Size, s.cfg.Params.Params.ChunkShift, s.blockShift)
-
-		// don't use the image's store path hash, use a mangled one for the manifest
-		manifestSph := makeManifestSph(sph)
-
-		// add to catalog (FIXME: probably move this above and do it for inline too)
-		if strings.Count(entry.Path, "/") == 1 {
-			if _, storePath, ok := strings.Cut(path.Base(entry.Path), "-"); ok {
-				s.catalog.add(manifestSph.String() + "-" + isManifestPrefix + storePath)
-			}
-		}
+		blocks := common.MakeBlocksList(entry.Size, common.BlkShift(s.cfg.Params.Params.ChunkShift), s.blockShift)
 
 		ctxForManifestChunks := context.WithValue(ctx, "sph", manifestSph)
 		locs, err := s.AllocateBatch(ctxForManifestChunks, blocks, entry.Digests)
@@ -818,16 +827,22 @@ func (s *server) handleOpenImage(msgId, objectId, fd, flags uint32, cookie strin
 		}
 
 		// read them out
-		data, err = s.readChunks(entry.Size, locs, entry.Digests, []Sph{manifestSph})
+		data, err = s.readChunks(entry.Size, locs, entry.Digests, []Sph{manifestSph}, true)
 		if err != nil {
 			return 0, err
 		}
 	}
 
+	// unmarshal into manifest
 	var m pb.Manifest
 	err = proto.Unmarshal(data, &m)
 	if err != nil {
 		return 0, fmt.Errorf("manifest unmarshal error: %w", err)
+	}
+
+	// make sure this matches the name in the envelope
+	if niStorePath := path.Base(m.Meta.GetNarinfo().GetStorePath()); niStorePath != storePath {
+		return 0, fmt.Errorf("narinfo storepath != envelope storepath: %q != %q", niStorePath != storePath)
 	}
 
 	// transform manifest into image (allocate chunks)
@@ -838,7 +853,7 @@ func (s *server) handleOpenImage(msgId, objectId, fd, flags uint32, cookie strin
 	}
 	size := int64(image.Len())
 
-	log.Printf("new image %s, %d bytes in manifest, %d bytes in erofs", cookie, entry.Size, size)
+	log.Printf("new image %s: %d envelope, %d manifest, %d erofs", storePath, len(envelopeBytes), entry.Size, size)
 
 	// record in db
 	err = s.imageTx(cookie, func(img *pb.DbImage) error {
@@ -858,7 +873,6 @@ func (s *server) handleOpenImage(msgId, objectId, fd, flags uint32, cookie strin
 		fd:        fd,
 		tp:        typeImage,
 		fsid:      cookie,
-		imageSize: size,
 		imageData: image.Bytes(),
 	}
 	s.cacheState[objectId] = state
@@ -1104,4 +1118,22 @@ func (s *server) AllocateBatch(ctx context.Context, blocks []uint16, digests []b
 
 func (s *server) SlabInfo(slabId uint16) (tag string, totalBlocks uint32) {
 	return fmt.Sprintf("_slab_%d", slabId), slabBlocks
+}
+
+// like AllocateBatch but only lookup
+func (s *server) lookupLocs(digests []byte) ([]erofs.SlabLoc, error) {
+	out := make([]erofs.SlabLoc, len(digests)/s.digestBytes)
+	err := s.db.View(func(tx *bbolt.Tx) error {
+		cb := tx.Bucket(chunkBucket)
+		for i := range out {
+			digest := digests[i*s.digestBytes : (i+1)*s.digestBytes]
+			loc := cb.Get(digest)
+			if loc == nil {
+				return errors.New("missing")
+			}
+			out[i].SlabId, out[i].Addr = loadLoc(loc)
+		}
+		return nil
+	})
+	return common.ValOrErr(out, err)
 }

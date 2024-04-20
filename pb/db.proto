@@ -48,3 +48,6 @@ message DbImage {
   // manifest metadata
   ManifestMeta meta = 9;
 }
+
+// key: "manifest" / <store path hash (nix base32)>
+// value: SignedMessage (manifest envelope)

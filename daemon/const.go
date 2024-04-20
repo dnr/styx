@@ -10,7 +10,7 @@ const (
 
 	slabPrefix = "_slab_"
 
-	isManifestPrefix = "M!"
+	isManifestPrefix = "M/"
 )
 
 var (

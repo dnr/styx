@@ -49,4 +49,5 @@ func makeManifestSph(sph Sph) Sph {
 	for i := len(sph) / 2; i < len(sph); i++ {
 		sph[i] ^= 0xff
 	}
+	return sph
 }
