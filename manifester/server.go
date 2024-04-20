@@ -285,32 +285,19 @@ func (s *server) handleManifest(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	// write to cache
-	err = s.mb.cs.PutIfNotExists(req.Context(), ManifestCachePath, r.CacheKey(), sb)
+	// write to cache (it'd be nice to return and do this in the background, but that doesn't
+	// work on lambda)
+	cmpSb, err := s.mb.cs.PutIfNotExists(req.Context(), ManifestCachePath, r.CacheKey(), sb)
 	if err != nil {
 		log.Println("error writing signed manifest cache:", err)
 	}
+	if cmpSb == nil {
+		// already exists in cache, need to compress ourselves
+		cmpSb = s.enc.EncodeAll(sb, nil)
+	}
 
-	// compress output (this is going to redo compression. TODO: consolidate)
 	w.Header().Set("Content-Encoding", "zstd")
-	zw, err := zstd.NewWriter(w)
-	if err != nil {
-		log.Println("zstd create:", err)
-		w.WriteHeader(http.StatusInternalServerError)
-		return
-	}
-	_, err = zw.Write(sb)
-	if err != nil {
-		log.Println("zstd write:", err)
-		w.WriteHeader(http.StatusInternalServerError)
-		return
-	}
-	err = zw.Close()
-	if err != nil {
-		log.Println("zstd close:", err)
-		w.WriteHeader(http.StatusInternalServerError)
-		return
-	}
+	w.Write(cmpSb)
 }
 
 func (s *server) handleChunkDiff(w http.ResponseWriter, req *http.Request) {

@@ -34,6 +34,7 @@ type (
 	}
 	// response is SignedManifest
 
+	// TODO: move this to pb so we don't have to use base64?
 	ChunkDiffReq struct {
 		Bases []byte
 		Reqs  []byte

@@ -168,7 +168,8 @@ func (b *ManifestBuilder) chunkData(ctx context.Context, size int64, r io.Reader
 			var out [sha256.Size]byte
 			copy(digest, h.Sum(out[0:0]))
 			digeststr := common.DigestStr(digest)
-			return b.cs.PutIfNotExists(ctx, ChunkReadPath, digeststr, data)
+			_, err := b.cs.PutIfNotExists(ctx, ChunkReadPath, digeststr, data)
+			return err
 		})
 	}
 

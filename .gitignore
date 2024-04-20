@@ -2,6 +2,7 @@
 /.envrc.private
 /styx
 /notes
+/notes-*
 /crap
 /keys/*.secret
 !/keys/styx-dev-1.secret

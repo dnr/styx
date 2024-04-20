@@ -20,7 +20,7 @@ import (
 
 type (
 	ChunkStoreWrite interface {
-		PutIfNotExists(ctx context.Context, path, key string, data []byte) error
+		PutIfNotExists(ctx context.Context, path, key string, data []byte) ([]byte, error)
 		Get(ctx context.Context, path, key string, dst []byte) ([]byte, error)
 	}
 
@@ -62,27 +62,27 @@ func newLocalChunkStoreWrite(dir string, enc *zstd.Encoder, dec *zstd.Decoder) (
 	return &localChunkStoreWrite{dir: dir, enc: enc, dec: dec}, nil
 }
 
-func (l *localChunkStoreWrite) PutIfNotExists(ctx context.Context, path_, key string, data []byte) error {
+func (l *localChunkStoreWrite) PutIfNotExists(ctx context.Context, path_, key string, data []byte) ([]byte, error) {
 	// ignore path! mix chunks and manifests in same directory
 	fn := path.Join(l.dir, key)
 	if _, err := os.Stat(fn); err == nil {
-		return nil
+		return nil, nil
 	}
 	d := l.enc.EncodeAll(data, nil)
 	if out, err := os.CreateTemp(l.dir, key+".tmp*"); err != nil {
-		return err
+		return nil, err
 	} else if n, err := out.Write(d); err != nil || n != len(d) {
 		_ = out.Close()
 		_ = os.Remove(out.Name())
-		return err
+		return nil, err
 	} else if err := out.Close(); err != nil {
 		_ = os.Remove(out.Name())
-		return err
+		return nil, err
 	} else if err := os.Rename(out.Name(), fn); err != nil {
 		_ = os.Remove(out.Name())
-		return err
+		return nil, err
 	}
-	return nil
+	return d, nil
 }
 
 func (l *localChunkStoreWrite) Get(ctx context.Context, path_, key string, data []byte) ([]byte, error) {
@@ -110,7 +110,7 @@ func newS3ChunkStoreWrite(bucket string, enc *zstd.Encoder, dec *zstd.Decoder) (
 	}, nil
 }
 
-func (s *s3ChunkStoreWrite) PutIfNotExists(ctx context.Context, path, key string, data []byte) error {
+func (s *s3ChunkStoreWrite) PutIfNotExists(ctx context.Context, path, key string, data []byte) ([]byte, error) {
 	if path != ChunkReadPath && path != ManifestCachePath {
 		panic("path must be ChunkReadPath or ManifestCachePath")
 	}
@@ -121,17 +121,19 @@ func (s *s3ChunkStoreWrite) PutIfNotExists(ctx context.Context, path, key string
 	})
 	var notFound *s3types.NotFound
 	if err == nil || !errors.As(err, &notFound) {
-		return err
+		return nil, err
 	}
+	// TODO: use buffer pool here (requires caller to return it?)
+	d := s.enc.EncodeAll(data, nil)
 	_, err = s.s3client.PutObject(ctx, &s3.PutObjectInput{
 		Bucket:          &s.bucket,
 		Key:             &key,
-		Body:            bytes.NewReader(s.enc.EncodeAll(data, nil)),
+		Body:            bytes.NewReader(d),
 		CacheControl:    aws.String("public, max-age=31536000"),
 		ContentType:     aws.String("application/octet-stream"),
 		ContentEncoding: aws.String("zstd"),
 	})
-	return err
+	return d, err
 }
 
 func (s *s3ChunkStoreWrite) Get(ctx context.Context, path, key string, data []byte) ([]byte, error) {
