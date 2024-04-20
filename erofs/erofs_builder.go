@@ -70,10 +70,10 @@ func (b *Builder) BuildFromManifestWithSlab(
 	out io.Writer,
 	sm SlabManager,
 ) error {
-	hashBytes := int64(m.Params.DigestBits >> 3)
+	hashBytes := int(m.Params.DigestBits >> 3)
 	chunkShift := common.BlkShift(m.Params.ChunkShift)
 
-	if err := sm.VerifyParams(int(hashBytes), int(b.blk.Size()), int(chunkShift.Size())); err != nil {
+	if err := sm.VerifyParams(hashBytes, int(b.blk.Size()), int(chunkShift.Size())); err != nil {
 		return err
 	}
 
@@ -168,18 +168,10 @@ func (b *Builder) BuildFromManifestWithSlab(
 					return fmt.Errorf("TODO: support larger files with extended inode")
 				}
 				i.i.ISize = common.TruncU32(e.Size)
-				nChunks := chunkShift.Roundup(e.Size) >> chunkShift
-				if int64(len(e.Digests)) != nChunks*hashBytes {
+				blocks := common.MakeBlocksList(e.Size, chunkShift, b.blk)
+				if len(e.Digests) != len(blocks)*hashBytes {
 					return fmt.Errorf("digest list wrong size")
 				}
-				blocks := make([]uint16, nChunks)
-				allButLast := common.TruncU16(chunkShift.Size() >> b.blk)
-				for j := range blocks {
-					blocks[j] = allButLast
-				}
-				// TODO: write this better
-				lastChunkLen := chunkShift.Leftover(e.Size)
-				blocks[len(blocks)-1] = common.TruncU16(b.blk.Roundup(lastChunkLen) >> b.blk)
 				// TODO: do in larger batches
 				locs, err := sm.AllocateBatch(ctx, blocks, e.Digests)
 				if err != nil {
@@ -187,7 +179,7 @@ func (b *Builder) BuildFromManifestWithSlab(
 				}
 				i.i.IFormat = formatChunked
 				i.i.IU = chunkedIU
-				idxs := make([]erofs_inode_chunk_index, nChunks)
+				idxs := make([]erofs_inode_chunk_index, len(blocks))
 				for i, loc := range locs {
 					devId, ok := slabmap[loc.SlabId]
 					if !ok {
