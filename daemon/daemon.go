@@ -30,6 +30,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"github.com/dnr/styx/common"
+	"github.com/dnr/styx/common/systemd"
 	"github.com/dnr/styx/erofs"
 	"github.com/dnr/styx/manifester"
 	"github.com/dnr/styx/pb"
@@ -75,8 +76,10 @@ type (
 	}
 
 	Config struct {
-		DevPath   string
-		CachePath string
+		DevPath     string
+		CachePath   string
+		CacheTag    string
+		CacheDomain string
 
 		StyxPubKeys []signature.PublicKey
 		Params      pb.DaemonParams
@@ -186,7 +189,7 @@ func (s *server) setupEnv() error {
 
 func (s *server) openDevNode() (err error) {
 	const savedFdName = "devnode"
-	s.devnode, err = systemdGetFd(savedFdName)
+	s.devnode, err = systemd.GetFd(savedFdName)
 	if err == nil {
 		if _, err = unix.Write(s.devnode, []byte("restore")); err != nil {
 			return
@@ -206,12 +209,12 @@ func (s *server) openDevNode() (err error) {
 	}
 	if _, err = unix.Write(s.devnode, []byte("dir "+s.cfg.CachePath)); err != nil {
 		return
-	} else if _, err = unix.Write(s.devnode, []byte("tag "+cacheTag)); err != nil {
+	} else if _, err = unix.Write(s.devnode, []byte("tag "+s.cfg.CacheTag)); err != nil {
 		return
 	} else if _, err = unix.Write(s.devnode, []byte("bind ondemand")); err != nil {
 		return
 	}
-	systemdSaveFd(savedFdName, s.devnode)
+	systemd.SaveFd(savedFdName, s.devnode)
 	log.Println("set up cachefiles socket")
 	return
 }
@@ -225,7 +228,7 @@ func (s *server) preCreateSlabs() error {
 	const preCreatedSlabs = 8 // should be more than anyone ever needs
 	for i := uint16(0); i < preCreatedSlabs; i++ {
 		tag, _ := s.SlabInfo(i)
-		backingPath := filepath.Join(s.cfg.CachePath, fscachePath(tag))
+		backingPath := filepath.Join(s.cfg.CachePath, fscachePath(s.cfg.CacheDomain, tag))
 		if unix.Access(backingPath, unix.O_RDONLY) != nil {
 			if err := os.MkdirAll(filepath.Dir(backingPath), 0700); err != nil {
 				return err
@@ -346,7 +349,7 @@ func jsonmw[reqT, resT any](f func(*reqT) (*resT, error)) func(w http.ResponseWr
 			if res != nil {
 				wEnc.Encode(res)
 			} else {
-				wEnc.Encode(&genericResp{Status: Status{Success: true}})
+				wEnc.Encode(&Status{Success: true})
 			}
 			parts = append(parts, " -> ", "OK")
 			log.Print(parts...)
@@ -362,16 +365,16 @@ func jsonmw[reqT, resT any](f func(*reqT) (*resT, error)) func(w http.ResponseWr
 		if res != nil {
 			wEnc.Encode(res)
 		} else {
-			wEnc.Encode(&genericResp{Status: Status{Success: false, Error: err.Error()}})
+			wEnc.Encode(&Status{Success: false, Error: err.Error()})
 		}
 		parts = append(parts, " -> ", err.Error())
 		log.Print(parts...)
 	}
 }
 
-func (s *server) handleMountReq(r *MountReq) (*genericResp, error) {
+func (s *server) handleMountReq(r *MountReq) (*Status, error) {
 	if !reStorePath.MatchString(r.StorePath) {
-		return nil, mwErr(http.StatusBadRequest, "invalid store path")
+		return nil, mwErr(http.StatusBadRequest, "invalid store path or missing name")
 	} else if r.Upstream == "" {
 		return nil, mwErr(http.StatusBadRequest, "invalid upstream")
 	} else if !strings.HasPrefix(r.MountPoint, "/") {
@@ -402,7 +405,7 @@ func (s *server) tryMount(storePath, mountPoint string) error {
 	sph, _, _ := strings.Cut(storePath, "-")
 
 	_ = os.MkdirAll(mountPoint, 0o755)
-	opts := fmt.Sprintf("domain_id=%s,fsid=%s", domainId, sph)
+	opts := fmt.Sprintf("domain_id=%s,fsid=%s", s.cfg.CacheDomain, sph)
 	mountErr := unix.Mount("none", mountPoint, "erofs", 0, opts)
 
 	_ = s.imageTx(sph, func(img *pb.DbImage) error {
@@ -419,7 +422,7 @@ func (s *server) tryMount(storePath, mountPoint string) error {
 	return mountErr
 }
 
-func (s *server) handleUmountReq(r *UmountReq) (*genericResp, error) {
+func (s *server) handleUmountReq(r *UmountReq) (*Status, error) {
 	// allowed to leave out the name part here
 	sph, _, _ := strings.Cut(r.StorePath, "-")
 
@@ -450,7 +453,7 @@ func (s *server) handleUmountReq(r *UmountReq) (*genericResp, error) {
 	return nil, umountErr
 }
 
-func (s *server) handleGcReq(r *GcReq) (*genericResp, error) {
+func (s *server) handleGcReq(r *GcReq) (*Status, error) {
 	// TODO
 	return nil, errors.New("unimplemented")
 }
@@ -561,7 +564,7 @@ func (s *server) restoreMounts() {
 
 // cachefiles server
 
-func (s *server) Run() error {
+func (s *server) Start() error {
 	if err := s.setupEnv(); err != nil {
 		return err
 	}
@@ -578,15 +581,19 @@ func (s *server) Run() error {
 		return err
 	}
 
-	systemdReady()
+	systemd.Ready()
 
 	go s.cachefilesServer()
 
 	s.restoreMounts()
 
-	// TODO: shutdown
-	<-make(chan struct{})
 	return nil
+}
+
+// this is only used in testing. the real daemon only exits by getting killed.
+func (s *server) Stop() {
+	unix.Close(s.devnode)
+	s.db.Close()
 }
 
 func (s *server) cachefilesServer() {
@@ -615,6 +622,11 @@ func (s *server) cachefilesServer() {
 		}
 		if n != 1 {
 			continue
+		}
+		// TODO: does this actually work for shutdown?
+		if fds[0].Revents&unix.POLLNVAL != 0 {
+			log.Printf("shut down")
+			return
 		}
 		// read until we get zero
 		readAfterPoll := false
@@ -698,7 +710,7 @@ func (s *server) handleOpen(msgId, objectId, fd, flags uint32, volume, cookie []
 		}
 	}()
 
-	if string(volume) != "erofs,"+domainId+"\x00" {
+	if string(volume) != "erofs,"+s.cfg.CacheDomain+"\x00" {
 		return fmt.Errorf("wrong domain %q", volume)
 	}
 
@@ -723,7 +735,7 @@ func (s *server) handleOpen(msgId, objectId, fd, flags uint32, volume, cookie []
 func (s *server) handleOpenSlab(msgId, objectId, fd, flags uint32, id uint16) (int64, error) {
 	// find backing file
 	tag, _ := s.SlabInfo(id)
-	backingPath := filepath.Join(s.cfg.CachePath, fscachePath(tag))
+	backingPath := filepath.Join(s.cfg.CachePath, fscachePath(s.cfg.CacheDomain, tag))
 	// we mostly just need read access, but open for write also so we can punch holes for gc
 	cacheFd, err := unix.Open(backingPath, unix.O_RDWR, 0600)
 	if err != nil {
@@ -757,6 +769,7 @@ func (s *server) handleOpenImage(msgId, objectId, fd, flags uint32, cookie strin
 		// try to proceed anyway
 	}
 	if img.ImageSize > 0 {
+		// we have it already
 		s.lock.Lock()
 		defer s.lock.Unlock()
 		state := &openFileState{
@@ -833,6 +846,9 @@ func (s *server) handleOpenImage(msgId, objectId, fd, flags uint32, cookie strin
 
 	// check entry path to get storepath
 	storePath := strings.TrimPrefix(entry.Path, common.ManifestContext+"/")
+	if storePath != img.StorePath {
+		return 0, fmt.Errorf("envelope storepath != requested storepath: %q != %q", storePath != img.StorePath)
+	}
 	spHash, spName, _ := strings.Cut(storePath, "-")
 	if spHash != cookie || len(spName) == 0 {
 		return 0, fmt.Errorf("invalid or mismatched name in manifest %q", storePath)
@@ -877,7 +893,7 @@ func (s *server) handleOpenImage(msgId, objectId, fd, flags uint32, cookie strin
 		return 0, fmt.Errorf("manifest unmarshal error: %w", err)
 	}
 
-	// make sure this matches the name in the envelope
+	// make sure this matches the name in the envelope and original request
 	if niStorePath := path.Base(m.Meta.GetNarinfo().GetStorePath()); niStorePath != storePath {
 		return 0, fmt.Errorf("narinfo storepath != envelope storepath: %q != %q", niStorePath != storePath)
 	}

@@ -19,13 +19,16 @@ type (
 		StorePath  string
 		MountPoint string
 	}
+	// returns Status
 
 	UmountReq struct {
 		StorePath string
 	}
+	// returns Status
 
 	GcReq struct {
 	}
+	// returns Status
 
 	DebugReq struct {
 	}
@@ -55,8 +58,5 @@ type (
 	Status struct {
 		Success bool
 		Error   string
-	}
-	genericResp struct {
-		Status
 	}
 )

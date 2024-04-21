@@ -1,4 +1,4 @@
-package daemon
+package systemd
 
 import (
 	"errors"
@@ -13,7 +13,7 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-func systemdGetFd(name string) (int, error) {
+func GetFd(name string) (int, error) {
 	pid, err := strconv.Atoi(os.Getenv("LISTEN_PID"))
 	if err != nil || pid != os.Getpid() {
 		return 0, errors.New("no fds passed")
@@ -33,8 +33,8 @@ func systemdGetFd(name string) (int, error) {
 	return 0, errors.New("name not found")
 }
 
-func systemdSaveFd(name string, fd int) {
-	addr := systemdNotifyAddr()
+func SaveFd(name string, fd int) {
+	addr := notifyAddr()
 	if addr == nil {
 		return
 	}
@@ -54,8 +54,8 @@ func systemdSaveFd(name string, fd int) {
 	}
 }
 
-func systemdReady() {
-	addr := systemdNotifyAddr()
+func Ready() {
+	addr := notifyAddr()
 	if addr == nil {
 		return
 	}
@@ -69,7 +69,7 @@ func systemdReady() {
 	}
 }
 
-func systemdNotifyAddr() *net.UnixAddr {
+func notifyAddr() *net.UnixAddr {
 	if name := os.Getenv("NOTIFY_SOCKET"); name != "" {
 		return &net.UnixAddr{Name: name, Net: "unixgram"}
 	}

@@ -9,6 +9,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/dnr/styx/common"
+	"github.com/dnr/styx/common/client"
 	"github.com/dnr/styx/daemon"
 	"github.com/dnr/styx/manifester"
 )
@@ -70,6 +71,8 @@ func withDaemonConfig(c *cobra.Command) runE {
 	c.MarkFlagRequired("params")
 	c.Flags().StringVar(&cfg.DevPath, "devpath", "/dev/cachefiles", "path to cachefiles device node")
 	c.Flags().StringVar(&cfg.CachePath, "cache", "/var/cache/styx", "path to local cache (also socket and db)")
+	c.Flags().StringVar(&cfg.CacheTag, "cachetag", "styx0", "cachefiles tag")
+	c.Flags().StringVar(&cfg.CacheDomain, "cachedomain", "styx", "cachefiles domain")
 	c.Flags().IntVar(&cfg.ErofsBlockShift, "block_shift", 12, "block size bits for local fs images")
 	c.Flags().IntVar(&cfg.SmallFileCutoff, "small_file_cutoff", 224, "cutoff for embedding small files in images")
 	c.Flags().IntVar(&cfg.Workers, "workers", 16, "worker goroutines for cachefilesd serving")
@@ -152,7 +155,7 @@ func withStyxPubKeys(c *cobra.Command) runE {
 func withStyxClient(c *cobra.Command) runE {
 	socket := c.Flags().String("addr", "/var/cache/styx/styx.sock", "path to local styx socket")
 	return func(c *cobra.Command, args []string) error {
-		c.SetContext(context.WithValue(c.Context(), ctxStyxClient, newClient(*socket)))
+		c.SetContext(context.WithValue(c.Context(), ctxStyxClient, client.NewClient(*socket)))
 		return nil
 	}
 }
@@ -175,7 +178,11 @@ func main() {
 			withDaemonConfig,
 			func(c *cobra.Command, args []string) error {
 				cfg := c.Context().Value(ctxDaemonConfig).(daemon.Config)
-				return daemon.CachefilesServer(cfg).Run()
+				err := daemon.CachefilesServer(cfg).Start()
+				if err != nil {
+					return err
+				}
+				return <-make(chan error) // block forever
 			},
 		),
 		cmd(
@@ -207,7 +214,7 @@ func main() {
 				},
 				withStyxClient,
 				func(c *cobra.Command, args []string) error {
-					return c.Context().Value(ctxStyxClient).(*styxClient).CallAndPrint(
+					return c.Context().Value(ctxStyxClient).(*client.StyxClient).CallAndPrint(
 						daemon.MountPath, &daemon.MountReq{
 							Upstream:   args[0],
 							StorePath:  args[1],
@@ -224,7 +231,7 @@ func main() {
 				},
 				withStyxClient,
 				func(c *cobra.Command, args []string) error {
-					return c.Context().Value(ctxStyxClient).(*styxClient).CallAndPrint(
+					return c.Context().Value(ctxStyxClient).(*client.StyxClient).CallAndPrint(
 						daemon.UmountPath, &daemon.UmountReq{
 							StorePath: args[0],
 						},
@@ -238,7 +245,7 @@ func main() {
 				},
 				withStyxClient,
 				func(c *cobra.Command, args []string) error {
-					return c.Context().Value(ctxStyxClient).(*styxClient).CallAndPrint(
+					return c.Context().Value(ctxStyxClient).(*client.StyxClient).CallAndPrint(
 						daemon.DebugPath, &daemon.DebugReq{},
 					)
 				},

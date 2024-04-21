@@ -1,4 +1,4 @@
-package main
+package client
 
 import (
 	"bytes"
@@ -12,11 +12,11 @@ import (
 )
 
 // simple client for json requests/responses over http over unix socket
-type styxClient struct {
+type StyxClient struct {
 	cli *http.Client
 }
 
-func newClient(addr string) *styxClient {
+func NewClient(addr string) *StyxClient {
 	cli := &http.Client{
 		Transport: &http.Transport{
 			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
@@ -25,10 +25,10 @@ func newClient(addr string) *styxClient {
 			},
 		},
 	}
-	return &styxClient{cli: cli}
+	return &StyxClient{cli: cli}
 }
 
-func (c *styxClient) Call(path string, req, res any) (int, error) {
+func (c *StyxClient) Call(path string, req, res any) (int, error) {
 	u := &url.URL{
 		Scheme: "http",
 		Host:   "_",
@@ -46,7 +46,7 @@ func (c *styxClient) Call(path string, req, res any) (int, error) {
 	return httpRes.StatusCode, json.NewDecoder(httpRes.Body).Decode(res)
 }
 
-func (c *styxClient) CallAndPrint(path string, req any) error {
+func (c *StyxClient) CallAndPrint(path string, req any) error {
 	var res any
 	status, err := c.Call(path, req, &res)
 	if err != nil {

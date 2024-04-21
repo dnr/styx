@@ -124,14 +124,14 @@ func _fscache_hash(salt uint32, data []byte) uint32 {
 
 func __hash_32(val uint32) uint32 { return val * 0x61C88647 }
 
-func fscachePath(fsid string) string {
+func fscachePath(domainid, fsid string) string {
 	// This doesn't implement the more complicated splitting and encoding logic, it only works
 	// on short ascii names, but that's all we use.
-	const volume = "erofs," + domainId
-	var volkey [(len(volume) + 2 + 3) &^ 3]byte
+	volume := "erofs," + domainid
+	volkey := make([]byte, (len(volume)+2+3)&^3)
 	volkey[0] = common.TruncU8(len(volume))
 	copy(volkey[1:], volume)
-	seed := _fscache_hash(0, volkey[:])
+	seed := _fscache_hash(0, volkey)
 
 	var hash uint32
 	if len(fsid)&3 == 0 {

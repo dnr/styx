@@ -38,6 +38,8 @@ type (
 		cfg *Config
 		mb  *ManifestBuilder
 		enc *zstd.Encoder
+
+		httpServer *http.Server
 	}
 
 	Config struct {
@@ -472,9 +474,13 @@ func (s *server) Run() error {
 		return nil
 	}
 
-	srv := &http.Server{
+	s.httpServer = &http.Server{
 		Addr:    s.cfg.Bind,
 		Handler: mux,
 	}
-	return srv.ListenAndServe()
+	return s.httpServer.ListenAndServe()
+}
+
+func (s *server) Stop() {
+	_ = s.httpServer.Close()
 }
