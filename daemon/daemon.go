@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -113,7 +114,7 @@ func (s *server) openDb() (err error) {
 		NoFreelistSync: true,
 		FreelistType:   bbolt.FreelistMapType,
 	}
-	s.db, err = bbolt.Open(path.Join(s.cfg.CachePath, dbFilename), 0644, &opts)
+	s.db, err = bbolt.Open(filepath.Join(s.cfg.CachePath, dbFilename), 0644, &opts)
 	if err != nil {
 		return err
 	}
@@ -184,14 +185,18 @@ func (s *server) setupEnv() error {
 }
 
 func (s *server) openDevNode() (err error) {
-	const name = "devnode"
-	s.devnode, err = systemdGetFd(name)
+	const savedFdName = "devnode"
+	s.devnode, err = systemdGetFd(savedFdName)
 	if err == nil {
 		if _, err = unix.Write(s.devnode, []byte("restore")); err != nil {
 			return
 		}
 		log.Println("restored cachefiles socket")
 		return
+	}
+
+	if err := s.preCreateSlabs(); err != nil {
+		return err
 	}
 
 	s.devnode, err = unix.Open(s.cfg.DevPath, unix.O_RDWR, 0600)
@@ -206,9 +211,34 @@ func (s *server) openDevNode() (err error) {
 	} else if _, err = unix.Write(s.devnode, []byte("bind ondemand")); err != nil {
 		return
 	}
-	systemdSaveFd(name, s.devnode)
+	systemdSaveFd(savedFdName, s.devnode)
 	log.Println("set up cachefiles socket")
 	return
+}
+
+func (s *server) preCreateSlabs() error {
+	// this is weird: when new files are opened by cachefiles, it keeps them as unlinked files
+	// first, and doesn't link them into the fs until the cache is closed properly. we want
+	// direct (backdoor) access to the backing file for the slab files, which we can only get
+	// by opening them by name. to fix this, pre-create some of the slab files so it'll use
+	// those instead.
+	const preCreatedSlabs = 8 // should be more than anyone ever needs
+	for i := uint16(0); i < preCreatedSlabs; i++ {
+		tag, _ := s.SlabInfo(i)
+		backingPath := filepath.Join(s.cfg.CachePath, fscachePath(tag))
+		if unix.Access(backingPath, unix.O_RDONLY) != nil {
+			if err := os.MkdirAll(filepath.Dir(backingPath), 0700); err != nil {
+				return err
+			}
+			if fd, err := unix.Open(backingPath, unix.O_RDWR|unix.O_CREAT, 0600); err != nil {
+				return err
+			} else {
+				_ = unix.Close(fd)
+			}
+		}
+	}
+	// also create this one
+	return os.MkdirAll(filepath.Join(s.cfg.CachePath, "graveyard"), 0700)
 }
 
 // socket server + mount management
@@ -249,7 +279,7 @@ func (s *server) imageTx(sph string, f func(*pb.DbImage) error) error {
 }
 
 func (s *server) startSocketServer() (err error) {
-	socketPath := path.Join(s.cfg.CachePath, Socket)
+	socketPath := filepath.Join(s.cfg.CachePath, Socket)
 	os.Remove(socketPath)
 	l, err := net.ListenUnix("unix", &net.UnixAddr{Net: "unix", Name: socketPath})
 	if err != nil {
@@ -680,9 +710,6 @@ func (s *server) handleOpen(msgId, objectId, fd, flags uint32, volume, cookie []
 			return err
 		}
 		cacheSize, retErr = s.handleOpenSlab(msgId, objectId, fd, flags, common.TruncU16(slabId))
-		if retErr == nil {
-			go s.findBackingCacheFile(objectId, fsid)
-		}
 		return
 	} else if len(fsid) == 32 {
 		log.Println("open image", fsid, "as", objectId)
@@ -694,13 +721,23 @@ func (s *server) handleOpen(msgId, objectId, fd, flags uint32, volume, cookie []
 }
 
 func (s *server) handleOpenSlab(msgId, objectId, fd, flags uint32, id uint16) (int64, error) {
+	// find backing file
+	tag, _ := s.SlabInfo(id)
+	backingPath := filepath.Join(s.cfg.CachePath, fscachePath(tag))
+	// we mostly just need read access, but open for write also so we can punch holes for gc
+	cacheFd, err := unix.Open(backingPath, unix.O_RDWR, 0600)
+	if err != nil {
+		return 0, err
+	}
+
 	// record open state
 	s.lock.Lock()
 	defer s.lock.Unlock()
 	state := &openFileState{
-		fd:     fd,
-		tp:     typeSlab,
-		slabId: id,
+		fd:      fd,
+		tp:      typeSlab,
+		slabId:  id,
+		cacheFd: common.TruncU32(cacheFd),
 	}
 	s.cacheState[objectId] = state
 	s.stateBySlab[id] = state
@@ -983,32 +1020,6 @@ func (s *server) handleReadSlab(state *openFileState, ln, off uint64) error {
 
 	ch := s.requestChunk(slabId, addr, digest, splitSphs(sphs))
 	return <-ch
-}
-
-func (s *server) findBackingCacheFile(objectId uint32, fsid string) {
-	// FIXME: this doesn't work: it won't appear until we retract the cache
-	// This won't appear in the filesystem immediately, but it should appear soon.
-	backingPath := s.cfg.CachePath + "/" + fscachePath(fsid)
-
-	const maxAttempts = 50 // about 5 seconds
-	var fd int
-	err := errors.New("start")
-	for attempt := 0; err != nil && attempt < maxAttempts; attempt++ {
-		time.Sleep(time.Duration(100+10*attempt) * time.Millisecond)
-		fd, err = unix.Open(backingPath, 0, unix.O_RDWR)
-	}
-	if err != nil {
-		log.Printf("couldn't locate backing file for %d %q after %d attempts", objectId, fsid, maxAttempts)
-		return
-	}
-
-	s.lock.Lock()
-	defer s.lock.Unlock()
-	if state := s.cacheState[objectId]; state != nil {
-		state.cacheFd = common.TruncU32(fd)
-	} else {
-		unix.Close(fd)
-	}
 }
 
 // slab manager
