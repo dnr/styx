@@ -260,8 +260,7 @@ func (s *server) haveSlabFiles() bool {
 }
 
 func (s *server) tryOpenSlabFiles() error {
-	// create slabs by trying to mount them as images
-	// this is expected to fail! we will fill the first page with zeros
+	// create slabs by mounting them as images
 	tmp, err := os.MkdirTemp("", "dummy")
 	if err != nil {
 		return err
@@ -270,9 +269,13 @@ func (s *server) tryOpenSlabFiles() error {
 	for i := uint16(0); i < preCreatedSlabs; i++ {
 		tag, _ := s.SlabInfo(i)
 		opts := fmt.Sprintf("domain_id=%s,fsid=%s", s.cfg.CacheDomain, tag)
-		log.Print("doing dummy mount to create slab (errors expected)")
-		err := unix.Mount("none", tmp, "erofs", 0, opts)
-		log.Println("mount slab error (expected):", err)
+		log.Print("doing dummy mount to create slab")
+		if err := unix.Mount("none", tmp, "erofs", 0, opts); err != nil {
+			return err
+		}
+		if err := unix.Unmount(tmp, 0); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -698,6 +701,7 @@ func (s *server) cachefilesServer() {
 		fds[0] = unix.PollFd{Fd: fd, Events: unix.POLLIN}
 		timeout := 3600 * 1000
 		if s.cfg.IsTesting {
+			// use smaller timeout since we can't interrupt this poll (even by closing the fd)
 			timeout = 500
 		}
 		n, err := unix.Poll(fds, timeout)
@@ -709,7 +713,6 @@ func (s *server) cachefilesServer() {
 		if n != 1 {
 			continue
 		}
-		// TODO: does this actually work for shutdown?
 		if fds[0].Revents&unix.POLLNVAL != 0 {
 			break
 		}
@@ -736,8 +739,8 @@ func (s *server) cachefilesServer() {
 			wchan <- buf[:n]
 		}
 	}
-	// shutdown
-	log.Print("stopping workers")
+
+	// log.Print("stopping workers")
 	close(wchan)
 }
 
@@ -1097,8 +1100,10 @@ func (s *server) handleReadSlab(state *openFileState, ln, off uint64) error {
 		panic("got too big slab read")
 	}
 
-	if off+ln <= reservedBlocks<<s.blockShift {
-		_, err := unix.Pwrite(int(state.fd), make([]byte, ln), int64(off))
+	if off == 0 && ln == 4096 {
+		// this is kind of wacky, but make the first block look like an empty erofs filesystem
+		// so we can mount it.
+		_, err := unix.Pwrite(int(state.fd), emptyErofs, 0)
 		return err
 	}
 
@@ -1211,7 +1216,7 @@ func (s *server) AllocateBatch(ctx context.Context, blocks []uint16, digests []b
 
 		seq := sb.Sequence()
 		if seq == 0 {
-			// reserve some blocks for future purposes. first one must be zeros
+			// reserve some blocks for future purposes
 			seq = reservedBlocks
 		}
 
