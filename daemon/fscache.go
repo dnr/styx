@@ -1,8 +1,11 @@
 package daemon
 
 import (
+	"bytes"
 	"math/bits"
 	"strconv"
+
+	"github.com/lunixbochs/struc"
 
 	"github.com/dnr/styx/common"
 )
@@ -143,4 +146,21 @@ func fscachePath(domainid, fsid string) string {
 	}
 
 	return "cache/I" + volume + "/@" + strconv.FormatUint(uint64(hash&0xff), 16) + "/D" + fsid
+}
+
+const fscacheXattrName = "user.CacheFiles.cache"
+
+func fscacheVolumeXattr() []byte {
+	return make([]byte, 4)
+}
+
+func fscacheDataXattr(size uint64) []byte {
+	var buf bytes.Buffer
+	struc.Pack(&buf, struct {
+		Size      uint64 `struc:"little"`
+		ZeroPoint uint64 `struc:"little"`
+		Type      uint8
+		Content   uint8
+	}{size, 0, 1, 0})
+	return buf.Bytes()
 }
