@@ -1,31 +1,47 @@
-{ pkgs ? import <nixpkgs> {} }:
+{ pkgs ? import <nixpkgs> { config = {}; overlays = []; } }:
 rec {
-  src = {
+  base = {
     pname = "styx";
     version = "0.0.6";
-    vendorHash = "sha256-zZ3huiHtPIH2D8vSJduzn3jCkZ7RnNnvrij/RPhDwGU=";
+    vendorHash = "sha256-VFjz+0tsI+4/nLG93SjJzyDlu4mnZJJAoF2mihrGVps=";
     src = pkgs.lib.sourceByRegex ./. [
-      ".*\.go$"
       "^go\.(mod|sum)$"
       "^(cmd|common|daemon|erofs|manifester|pb)($|/.*)"
     ];
     subPackages = [ "cmd/styx" ];
-  };
-
-  styx-local = pkgs.buildGoModule (src // {
-    # buildInputs = with pkgs; [
-    #   brotli.dev
-    # ];
     ldflags = with pkgs; [
       "-X github.com/dnr/styx/common.GzipBin=${gzip}/bin/gzip"
       "-X github.com/dnr/styx/common.NixBin=${nix}/bin/nix"
       "-X github.com/dnr/styx/common.XzBin=${xz}/bin/xz"
       "-X github.com/dnr/styx/common.ZstdBin=${zstd}/bin/zstd"
-      "-X github.com/dnr/styx/common.Version=${src.version}"
+      "-X github.com/dnr/styx/common.Version=${base.version}"
     ];
+  };
+
+  styx-local = pkgs.buildGoModule (base // {
+    # buildInputs = with pkgs; [
+    #   brotli.dev
+    # ];
   });
 
-  styx-lambda = pkgs.buildGoModule (src // {
+  styx-test = pkgs.buildGoModule (base // {
+    pname = "styxtest";
+    src = pkgs.lib.sourceByRegex ./. [
+      "^go\.(mod|sum)$"
+      "^(cmd|common|daemon|erofs|manifester|pb|keys|tests)($|/.*)"
+    ];
+    doCheck = false;
+    buildPhase = ''
+      go test -c -o styxtest ./tests
+    '';
+    installPhase = ''
+      mkdir -p $out/bin $out/keys
+      install styxtest $out/bin/
+      cp keys/testsuite* $out/keys/
+    '';
+  });
+
+  styx-lambda = pkgs.buildGoModule (base // {
     tags = [ "lambda.norpc" ];
     # CGO is only needed for cbrotli, which is only used on the client side.
     # Disabling CGO shrinks the binary a little more.
@@ -35,7 +51,7 @@ rec {
       "-X github.com/dnr/styx/common.GzipBin=${gzStaticBin}/bin/gzip"
       "-X github.com/dnr/styx/common.XzBin=${xzStaticBin}/bin/xz"
       "-X github.com/dnr/styx/common.ZstdBin=${zstdStaticBin}/bin/zstd"
-      "-X github.com/dnr/styx/common.Version=${src.version}"
+      "-X github.com/dnr/styx/common.Version=${base.version}"
     ];
   });
 

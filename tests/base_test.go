@@ -1,4 +1,4 @@
-package main
+package tests
 
 import (
 	"fmt"
@@ -161,6 +161,7 @@ func (tb *testBase) startDaemon() {
 		SmallFileCutoff: 224,
 		Workers:         10,
 		ReadaheadChunks: 100,
+		IsTesting:       true,
 	}
 	pk, err := os.ReadFile("../keys/testsuite.public")
 	require.NoError(tb.t, err)

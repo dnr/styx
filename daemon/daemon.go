@@ -98,6 +98,8 @@ type (
 
 		Workers         int
 		ReadaheadChunks int
+
+		IsTesting bool
 	}
 )
 
@@ -198,6 +200,7 @@ func (s *server) setupEnv() error {
 }
 
 func (s *server) openDevNode() (int, error) {
+	log.Print("opening cachefiles node")
 	fd, err := unix.Open(s.cfg.DevPath, unix.O_RDWR, 0600)
 	if err == unix.ENOENT {
 		_ = unix.Mknod(s.cfg.DevPath, 0600|unix.S_IFCHR, 10<<8+122)
@@ -259,12 +262,17 @@ func (s *server) haveSlabFiles() bool {
 func (s *server) tryOpenSlabFiles() error {
 	// create slabs by trying to mount them as images
 	// this is expected to fail! we will fill the first page with zeros
+	tmp, err := os.MkdirTemp("", "dummy")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(tmp)
 	for i := uint16(0); i < preCreatedSlabs; i++ {
 		tag, _ := s.SlabInfo(i)
 		opts := fmt.Sprintf("domain_id=%s,fsid=%s", s.cfg.CacheDomain, tag)
 		log.Print("doing dummy mount to create slab (errors expected)")
-		err := unix.Mount("none", "/__dummy__", "erofs", 0, opts)
-		log.Println("got error", err)
+		err := unix.Mount("none", tmp, "erofs", 0, opts)
+		log.Println("mount slab error (expected):", err)
 	}
 	return nil
 }
@@ -632,6 +640,7 @@ func (s *server) Start() error {
 		}
 		s.stopCachefilesServer()
 	}
+	log.Print("cachefiles server ready")
 
 	if err := s.startSocketServer(); err != nil {
 		return err
@@ -645,10 +654,12 @@ func (s *server) Start() error {
 }
 
 func (s *server) stopCachefilesServer() {
+	log.Print("stopping cachefiles server...")
 	fd := s.devnode.Load()
 	s.devnode.Store(0)
 	unix.Close(int(fd))
 	s.shutdownWait.Wait()
+	log.Print("stopped cachefiles server")
 }
 
 func (s *server) Stop() {
@@ -685,7 +696,11 @@ func (s *server) cachefilesServer() {
 			break
 		}
 		fds[0] = unix.PollFd{Fd: fd, Events: unix.POLLIN}
-		n, err := unix.Poll(fds, 3600*1000)
+		timeout := 3600 * 1000
+		if s.cfg.IsTesting {
+			timeout = 500
+		}
+		n, err := unix.Poll(fds, timeout)
 		if err != nil {
 			log.Printf("error from poll: %v", err)
 			errors++
