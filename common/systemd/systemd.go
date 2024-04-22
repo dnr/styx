@@ -54,7 +54,15 @@ func SaveFd(name string, fd int) {
 	}
 }
 
+func RemoveFd(name string) {
+	send(fmt.Sprintf("FDSTOREREMOVE=1\nFDNAME=%s", name))
+}
+
 func Ready() {
+	send("READY=1")
+}
+
+func send(msg string) {
 	addr := notifyAddr()
 	if addr == nil {
 		return
@@ -64,7 +72,7 @@ func Ready() {
 		return
 	}
 	defer conn.Close()
-	if _, err := conn.Write([]byte("READY=1")); err != nil {
+	if _, err := conn.Write([]byte(msg)); err != nil {
 		log.Println("error writing to notify socket", err)
 	}
 }

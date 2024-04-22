@@ -18,6 +18,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/klauspost/compress/zstd"
@@ -41,7 +42,12 @@ const (
 	typeSlab
 )
 
-const presentMask = 1 << 31
+const (
+	savedFdName     = "devnode"
+	preCreatedSlabs = 1
+	presentMask     = 1 << 31
+	reservedBlocks  = 4 // reserved at beginning of slab
+)
 
 type (
 	server struct {
@@ -55,7 +61,7 @@ type (
 		msgPool     *sync.Pool
 		chunkPool   *chunkPool
 		builder     *erofs.Builder
-		devnode     int
+		devnode     atomic.Int32
 
 		lock        sync.Mutex
 		cacheState  map[uint32]*openFileState // object id -> state
@@ -191,61 +197,76 @@ func (s *server) setupEnv() error {
 	return os.MkdirAll(s.cfg.CachePath, 0700)
 }
 
-func (s *server) openDevNode() (err error) {
-	const savedFdName = "devnode"
-	s.devnode, err = systemd.GetFd(savedFdName)
-	if err == nil {
-		if _, err = unix.Write(s.devnode, []byte("restore")); err != nil {
-			return
-		}
-		log.Println("restored cachefiles socket")
-		return
-	}
-
-	if err := s.preCreateSlabs(); err != nil {
-		return err
-	}
-
-	s.devnode, err = unix.Open(s.cfg.DevPath, unix.O_RDWR, 0600)
+func (s *server) openDevNode() (int, error) {
+	fd, err := unix.Open(s.cfg.DevPath, unix.O_RDWR, 0600)
 	if err == unix.ENOENT {
 		_ = unix.Mknod(s.cfg.DevPath, 0600|unix.S_IFCHR, 10<<8+122)
-		s.devnode, err = unix.Open(s.cfg.DevPath, unix.O_RDWR, 0600)
+		fd, err = unix.Open(s.cfg.DevPath, unix.O_RDWR, 0600)
 	}
-	if _, err = unix.Write(s.devnode, []byte("dir "+s.cfg.CachePath)); err != nil {
-		return
-	} else if _, err = unix.Write(s.devnode, []byte("tag "+s.cfg.CacheTag)); err != nil {
-		return
-	} else if _, err = unix.Write(s.devnode, []byte("bind ondemand")); err != nil {
-		return
+	if err != nil {
+		return 0, err
+	} else if _, err = unix.Write(fd, []byte("dir "+s.cfg.CachePath)); err != nil {
+		unix.Close(fd)
+		return 0, err
+	} else if _, err = unix.Write(fd, []byte("tag "+s.cfg.CacheTag)); err != nil {
+		unix.Close(fd)
+		return 0, err
+	} else if _, err = unix.Write(fd, []byte("bind ondemand")); err != nil {
+		unix.Close(fd)
+		return 0, err
 	}
-	systemd.SaveFd(savedFdName, s.devnode)
-	log.Println("set up cachefiles socket")
-	return
+	return fd, nil
 }
 
-func (s *server) preCreateSlabs() error {
-	// this is weird: when new files are opened by cachefiles, it keeps them as unlinked files
-	// first, and doesn't link them into the fs until the cache is closed properly. we want
-	// direct (backdoor) access to the backing file for the slab files, which we can only get
-	// by opening them by name. to fix this, pre-create some of the slab files so it'll use
-	// those instead.
-	const preCreatedSlabs = 8 // should be more than anyone ever needs
+func (s *server) setupDevNode() error {
+	fd, err := systemd.GetFd(savedFdName)
+	if err == nil {
+		if _, err = unix.Write(fd, []byte("restore")); err != nil {
+			systemd.RemoveFd(savedFdName)
+			unix.Close(fd)
+			return err
+		}
+		s.devnode.Store(int32(fd))
+		log.Println("restored cachefiles device")
+		return nil
+	}
+
+	fd, err = s.openDevNode()
+	if err != nil {
+		return err
+	}
+	s.devnode.Store(int32(fd))
+
+	// if this is false, we'll create them and re-open and save that time
+	if s.haveSlabFiles() {
+		systemd.SaveFd(savedFdName, fd)
+	}
+	log.Println("set up cachefiles device")
+	return nil
+}
+
+func (s *server) haveSlabFiles() bool {
 	for i := uint16(0); i < preCreatedSlabs; i++ {
 		tag, _ := s.SlabInfo(i)
 		backingPath := filepath.Join(s.cfg.CachePath, fscachePath(s.cfg.CacheDomain, tag))
-		if unix.Access(backingPath, unix.O_RDONLY) != nil {
-			if err := os.MkdirAll(filepath.Dir(backingPath), 0700); err != nil {
-				return err
-			}
-			if fd, err := unix.Open(backingPath, unix.O_RDWR|unix.O_CREAT, 0600); err != nil {
-				return err
-			} else {
-				_ = unix.Close(fd)
-			}
+		if unix.Access(backingPath, unix.O_RDWR) != nil {
+			return false
 		}
 	}
-	// also create this one
-	return os.MkdirAll(filepath.Join(s.cfg.CachePath, "graveyard"), 0700)
+	return true
+}
+
+func (s *server) tryOpenSlabFiles() error {
+	// create slabs by trying to mount them as images
+	// this is expected to fail! we will fill the first page with zeros
+	for i := uint16(0); i < preCreatedSlabs; i++ {
+		tag, _ := s.SlabInfo(i)
+		opts := fmt.Sprintf("domain_id=%s,fsid=%s", s.cfg.CacheDomain, tag)
+		log.Print("doing dummy mount to create slab (errors expected)")
+		err := unix.Mount("none", "/__dummy__", "erofs", 0, opts)
+		log.Println("got error", err)
+	}
+	return nil
 }
 
 // socket server + mount management
@@ -586,30 +607,55 @@ func (s *server) Start() error {
 	if err := s.initCatalog(); err != nil {
 		return err
 	}
-	if err := s.openDevNode(); err != nil {
-		return err
+
+	for i := 0; i < 2; i++ {
+		if err := s.setupDevNode(); err != nil {
+			return err
+		}
+
+		go s.cachefilesServer()
+
+		if s.haveSlabFiles() {
+			if i == 0 {
+				break
+			}
+			return errors.New("could not create slab files")
+		}
+
+		// this is weird: when new files are opened by cachefiles, it keeps them as unlinked files
+		// first, and doesn't link them into the fs until the cache is closed properly. we want
+		// direct (backdoor) access to the backing file for the slab files, which we can only get
+		// by opening them by name. to fix this, we need to force cachefiles to create them, then
+		// close the cache and reopen it.
+		if err := s.tryOpenSlabFiles(); err != nil {
+			return err
+		}
+		s.stopCachefilesServer()
 	}
+
 	if err := s.startSocketServer(); err != nil {
 		return err
 	}
 
 	systemd.Ready()
 
-	go s.cachefilesServer()
-
 	s.restoreMounts()
 
 	return nil
 }
 
-// this is only used in testing. the real daemon only exits by getting killed.
-func (s *server) Stop() {
-	close(s.shutdownChan)
-	log.Print("closing cachefiles device")
-	unix.Close(s.devnode)
+func (s *server) stopCachefilesServer() {
+	fd := s.devnode.Load()
+	s.devnode.Store(0)
+	unix.Close(int(fd))
 	s.shutdownWait.Wait()
-	log.Print("daemon shutdown done, closing db")
+}
+
+func (s *server) Stop() {
+	close(s.shutdownChan)    // stops the socket server
+	s.stopCachefilesServer() // stop cachefiles server. also waits for socket server
 	s.db.Close()
+	log.Print("daemon shutdown done")
 }
 
 func (s *server) cachefilesServer() {
@@ -630,17 +676,15 @@ func (s *server) cachefilesServer() {
 	fds := make([]unix.PollFd, 1)
 	errors := 0
 	for {
-		select {
-		case <-s.shutdownChan:
-			break
-		default:
-		}
-
 		if errors > 10 {
 			// we might be spinning somehow, slow down
 			time.Sleep(time.Duration(errors) * time.Millisecond)
 		}
-		fds[0] = unix.PollFd{Fd: int32(s.devnode), Events: unix.POLLIN}
+		fd := s.devnode.Load()
+		if fd == 0 {
+			break
+		}
+		fds[0] = unix.PollFd{Fd: fd, Events: unix.POLLIN}
 		n, err := unix.Poll(fds, 3600*1000)
 		if err != nil {
 			log.Printf("error from poll: %v", err)
@@ -658,7 +702,7 @@ func (s *server) cachefilesServer() {
 		readAfterPoll := false
 		for {
 			buf := s.msgPool.Get().([]byte)
-			n, err = unix.Read(s.devnode, buf)
+			n, err = unix.Read(int(fd), buf)
 			if err != nil {
 				errors++
 				log.Printf("error from read: %v", err)
@@ -685,7 +729,7 @@ func (s *server) cachefilesServer() {
 func (s *server) handleMessage(buf []byte) (retErr error) {
 	defer func() {
 		if r := recover(); r != nil {
-			retErr = fmt.Errorf("panic: %v", r)
+			retErr = fmt.Errorf("panic in handle: %v", r)
 		}
 		if retErr != nil {
 			log.Printf("error handling message: %v", retErr)
@@ -727,11 +771,19 @@ func (s *server) handleOpen(msgId, objectId, fd, flags uint32, volume, cookie []
 	fsid := string(cookie)
 
 	defer func() {
+		if r := recover(); r != nil {
+			retErr = fmt.Errorf("panic in open: %v", r)
+		}
 		if retErr != nil {
 			cacheSize = -int64(unix.ENODEV)
 		}
 		reply := fmt.Sprintf("copen %d,%d", msgId, cacheSize)
-		if _, err := unix.Write(s.devnode, []byte(reply)); err != nil {
+		devfd := int(s.devnode.Load())
+		if devfd == 0 {
+			log.Println("closed cachefiles fd in middle of open")
+			return
+		}
+		if _, err := unix.Write(devfd, []byte(reply)); err != nil {
 			log.Println("failed write to devnode", err)
 		}
 		if cacheSize < 0 {
@@ -768,7 +820,10 @@ func (s *server) handleOpenSlab(msgId, objectId, fd, flags uint32, id uint16) (i
 	// we mostly just need read access, but open for write also so we can punch holes for gc
 	cacheFd, err := unix.Open(backingPath, unix.O_RDWR, 0600)
 	if err != nil {
-		return 0, err
+		log.Println("failed to open backing file for slab", id)
+		// TODO: if we _should_ be able to open it, return error
+		// return 0, err
+		cacheFd = 0
 	}
 
 	// record open state
@@ -981,7 +1036,7 @@ func (s *server) handleClose(msgId, objectId uint32) error {
 	return nil
 }
 
-func (s *server) handleRead(msgId, objectId uint32, ln, off uint64) error {
+func (s *server) handleRead(msgId, objectId uint32, ln, off uint64) (retErr error) {
 	s.lock.Lock()
 	state := s.cacheState[objectId]
 	s.lock.Unlock()
@@ -992,8 +1047,8 @@ func (s *server) handleRead(msgId, objectId uint32, ln, off uint64) error {
 
 	defer func() {
 		_, _, e1 := unix.Syscall(unix.SYS_IOCTL, uintptr(state.fd), CACHEFILES_IOC_READ_COMPLETE, uintptr(msgId))
-		if e1 != 0 {
-			fmt.Errorf("ioctl error %d", e1)
+		if e1 != 0 && retErr == nil {
+			retErr = fmt.Errorf("ioctl error %d", e1)
 		}
 	}()
 
@@ -1025,6 +1080,11 @@ func (s *server) handleReadImage(state *openFileState, _, _ uint64) error {
 func (s *server) handleReadSlab(state *openFileState, ln, off uint64) error {
 	if ln > (1 << s.cfg.Params.Params.ChunkShift) {
 		panic("got too big slab read")
+	}
+
+	if off+ln <= reservedBlocks<<s.blockShift {
+		_, err := unix.Pwrite(int(state.fd), make([]byte, ln), int64(off))
+		return err
 	}
 
 	slabId := state.slabId
@@ -1136,8 +1196,8 @@ func (s *server) AllocateBatch(ctx context.Context, blocks []uint16, digests []b
 
 		seq := sb.Sequence()
 		if seq == 0 {
-			// reserve first block for metadata or whatever
-			seq = 1
+			// reserve some blocks for future purposes. first one must be zeros
+			seq = reservedBlocks
 		}
 
 		for i := range out {
@@ -1172,7 +1232,7 @@ func (s *server) AllocateBatch(ctx context.Context, blocks []uint16, digests []b
 }
 
 func (s *server) SlabInfo(slabId uint16) (tag string, totalBlocks uint32) {
-	return fmt.Sprintf("_slab_%d", slabId), slabBytes >> s.blockShift
+	return fmt.Sprintf("_slab_%d", slabId), common.TruncU32(uint64(slabBytes) >> s.blockShift)
 }
 
 // like AllocateBatch but only lookup
