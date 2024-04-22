@@ -60,6 +60,9 @@ type (
 		lock        sync.Mutex
 		cacheState  map[uint32]*openFileState // object id -> state
 		stateBySlab map[uint16]*openFileState // slab id -> state
+
+		shutdownChan chan struct{}
+		shutdownWait sync.WaitGroup
 	}
 
 	openFileState struct {
@@ -98,17 +101,18 @@ var _ erofs.SlabManager = (*server)(nil)
 
 func CachefilesServer(cfg Config) *server {
 	return &server{
-		cfg:         &cfg,
-		digestBytes: int(cfg.Params.Params.DigestBits >> 3),
-		blockShift:  common.BlkShift(cfg.ErofsBlockShift),
-		csread:      manifester.NewChunkStoreReadUrl(cfg.Params.ChunkReadUrl, manifester.ChunkReadPath),
-		mcread:      manifester.NewChunkStoreReadUrl(cfg.Params.ManifestCacheUrl, manifester.ManifestCachePath),
-		catalog:     newCatalog(),
-		msgPool:     &sync.Pool{New: func() any { return make([]byte, CACHEFILES_MSG_MAX_SIZE) }},
-		chunkPool:   newChunkPool(int(cfg.Params.Params.ChunkShift)),
-		builder:     erofs.NewBuilder(erofs.BuilderConfig{BlockShift: cfg.ErofsBlockShift}),
-		cacheState:  make(map[uint32]*openFileState),
-		stateBySlab: make(map[uint16]*openFileState),
+		cfg:          &cfg,
+		digestBytes:  int(cfg.Params.Params.DigestBits >> 3),
+		blockShift:   common.BlkShift(cfg.ErofsBlockShift),
+		csread:       manifester.NewChunkStoreReadUrl(cfg.Params.ChunkReadUrl, manifester.ChunkReadPath),
+		mcread:       manifester.NewChunkStoreReadUrl(cfg.Params.ManifestCacheUrl, manifester.ManifestCachePath),
+		catalog:      newCatalog(),
+		msgPool:      &sync.Pool{New: func() any { return make([]byte, CACHEFILES_MSG_MAX_SIZE) }},
+		chunkPool:    newChunkPool(int(cfg.Params.Params.ChunkShift)),
+		builder:      erofs.NewBuilder(erofs.BuilderConfig{BlockShift: cfg.ErofsBlockShift}),
+		cacheState:   make(map[uint32]*openFileState),
+		stateBySlab:  make(map[uint16]*openFileState),
+		shutdownChan: make(chan struct{}),
 	}
 }
 
@@ -293,7 +297,15 @@ func (s *server) startSocketServer() (err error) {
 	mux.HandleFunc(UmountPath, jsonmw(s.handleUmountReq))
 	mux.HandleFunc(GcPath, jsonmw(s.handleGcReq))
 	mux.HandleFunc(DebugPath, jsonmw(s.handleDebugReq))
-	go http.Serve(l, mux)
+	s.shutdownWait.Add(1)
+	go func() {
+		defer s.shutdownWait.Done()
+		srv := &http.Server{Handler: mux}
+		go srv.Serve(l)
+		<-s.shutdownChan
+		log.Printf("stopping http server")
+		srv.Close()
+	}()
 	return nil
 }
 
@@ -592,16 +604,25 @@ func (s *server) Start() error {
 
 // this is only used in testing. the real daemon only exits by getting killed.
 func (s *server) Stop() {
+	close(s.shutdownChan)
+	log.Print("closing cachefiles device")
 	unix.Close(s.devnode)
+	s.shutdownWait.Wait()
+	log.Print("daemon shutdown done, closing db")
 	s.db.Close()
 }
 
 func (s *server) cachefilesServer() {
+	s.shutdownWait.Add(1)
+	defer s.shutdownWait.Done()
+
 	wchan := make(chan []byte)
 	for i := 0; i < s.cfg.Workers; i++ {
+		s.shutdownWait.Add(1)
 		go func() {
-			for {
-				s.handleMessage(<-wchan)
+			defer s.shutdownWait.Done()
+			for msg := range wchan {
+				s.handleMessage(msg)
 			}
 		}()
 	}
@@ -609,6 +630,12 @@ func (s *server) cachefilesServer() {
 	fds := make([]unix.PollFd, 1)
 	errors := 0
 	for {
+		select {
+		case <-s.shutdownChan:
+			break
+		default:
+		}
+
 		if errors > 10 {
 			// we might be spinning somehow, slow down
 			time.Sleep(time.Duration(errors) * time.Millisecond)
@@ -625,8 +652,7 @@ func (s *server) cachefilesServer() {
 		}
 		// TODO: does this actually work for shutdown?
 		if fds[0].Revents&unix.POLLNVAL != 0 {
-			log.Printf("shut down")
-			return
+			break
 		}
 		// read until we get zero
 		readAfterPoll := false
@@ -651,6 +677,9 @@ func (s *server) cachefilesServer() {
 			wchan <- buf[:n]
 		}
 	}
+	// shutdown
+	log.Print("stopping workers")
+	close(wchan)
 }
 
 func (s *server) handleMessage(buf []byte) (retErr error) {
@@ -1041,8 +1070,7 @@ func (s *server) handleReadSlab(state *openFileState, ln, off uint64) error {
 // slab manager
 
 const (
-	slabBytes  = 1 << 40
-	slabBlocks = slabBytes >> 12
+	slabBytes = 1 << 40
 )
 
 func slabKey(id uint16) []byte {
@@ -1144,7 +1172,7 @@ func (s *server) AllocateBatch(ctx context.Context, blocks []uint16, digests []b
 }
 
 func (s *server) SlabInfo(slabId uint16) (tag string, totalBlocks uint32) {
-	return fmt.Sprintf("_slab_%d", slabId), slabBlocks
+	return fmt.Sprintf("_slab_%d", slabId), slabBytes >> s.blockShift
 }
 
 // like AllocateBatch but only lookup
