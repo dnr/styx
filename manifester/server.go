@@ -100,12 +100,12 @@ func (s *server) handleManifest(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	u, err := url.Parse(r.Upstream)
+	upstreamUrl, err := url.Parse(r.Upstream)
 	if err != nil {
 		log.Println("bad upstream url:", r.Upstream)
 		w.WriteHeader(http.StatusBadRequest)
 		return
-	} else if err := s.validateManifestReq(&r, u.Host); err != nil {
+	} else if err := s.validateManifestReq(&r, upstreamUrl.Host); err != nil {
 		log.Println("validation error:", err, "for", r)
 		w.WriteHeader(http.StatusBadRequest)
 		return
@@ -115,8 +115,7 @@ func (s *server) handleManifest(w http.ResponseWriter, req *http.Request) {
 
 	// get narinfo
 
-	u.Path += "/" + r.StorePathHash + ".narinfo"
-	narinfoUrl := u.String()
+	narinfoUrl := upstreamUrl.JoinPath(r.StorePathHash + ".narinfo").String()
 	res, err := http.Get(narinfoUrl)
 	if err != nil {
 		log.Println("upstream http error:", err, "for", narinfoUrl)
@@ -156,8 +155,7 @@ func (s *server) handleManifest(w http.ResponseWriter, req *http.Request) {
 	// download nar
 
 	// start := time.Now()
-	u.Path = "/" + ni.URL
-	narUrl := u.String()
+	narUrl := upstreamUrl.JoinPath(ni.URL).String()
 	res, err = http.Get(narUrl)
 	if err != nil {
 		log.Println("nar http error:", err, "for", narUrl)

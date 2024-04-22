@@ -22,7 +22,8 @@ import (
 )
 
 const (
-	upstream     = "cache.nixos.org"
+	upstreamHost = "cache.nixos.org"
+	upstreamUrl  = "https://cache.nixos.org/"
 	upstreamKeys = "cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY="
 
 	devnode = "/dev/cachefiles"
@@ -31,7 +32,7 @@ const (
 	digestAlgo = "sha256"
 	digestBits = 192
 
-	blockShift = 14
+	blockShift = 12
 )
 
 type (
@@ -88,9 +89,11 @@ func newTestBase(t *testing.T) *testBase {
 
 func (tb *testBase) cleanup() {
 	if tb.manifester != nil {
+		tb.t.Log("stopping manifester")
 		tb.manifester.Stop()
 	}
 	if tb.daemon != nil {
+		tb.t.Log("stopping daemon")
 		tb.daemon.Stop()
 	}
 }
@@ -117,7 +120,7 @@ func (tb *testBase) startManifester() {
 	tb.manifesterAddr = fmt.Sprintf("http://%s/", hostport)
 	cfg := manifester.Config{
 		Bind:             hostport,
-		AllowedUpstreams: []string{upstream},
+		AllowedUpstreams: []string{upstreamHost},
 		ManifestBuilder:  mb,
 	}
 	cfg.PublicKeys, err = common.LoadPubKeys([]string{upstreamKeys})
@@ -179,7 +182,7 @@ func (tb *testBase) mount(storePath string) string {
 	c := client.NewClient(sock)
 	var res daemon.Status
 	code, err := c.Call(daemon.MountPath, daemon.MountReq{
-		Upstream:   upstream,
+		Upstream:   upstreamUrl,
 		StorePath:  storePath,
 		MountPoint: mp,
 	}, &res)
@@ -190,7 +193,7 @@ func (tb *testBase) mount(storePath string) string {
 }
 
 func (tb *testBase) nixHash(path string) string {
-	b, err := exec.Command("nix-hash", "--type=sha256", "--base32", path).Output()
-	require.NoError(tb.t, err)
+	b, err := exec.Command("nix-hash", "--type", "sha256", "--base32", path).Output()
+	require.NoErrorf(tb.t, err, "output: %q %v", b, err)
 	return strings.TrimSpace(string(b))
 }
