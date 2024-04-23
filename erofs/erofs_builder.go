@@ -173,7 +173,7 @@ func (b *Builder) BuildFromManifestWithSlab(
 					return fmt.Errorf("digest list wrong size")
 				}
 				// TODO: do in larger batches
-				locs, err := sm.AllocateBatch(ctx, blocks, e.Digests)
+				locs, err := sm.AllocateBatch(ctx, blocks, e.Digests, false)
 				if err != nil {
 					return err
 				}

@@ -120,12 +120,11 @@ func (s *server) tryDiff(ctx context.Context, slabId uint16, addr uint32, target
 		return err
 	}
 
-	log.Printf("diffing %s { %s-%s -> %s-%s }",
-		res.reqName[:res.matchLen],
+	log.Printf("diffing %s…-%s -> %s…-%s",
 		res.baseHash.String()[:5],
-		res.baseName[res.matchLen:],
+		res.baseName,
 		reqHash.String()[:5],
-		res.reqName[res.matchLen:],
+		res.reqName,
 	)
 
 	isManifest := strings.HasPrefix(res.reqName, isManifestPrefix)
@@ -230,8 +229,8 @@ func (s *server) tryDiff(ctx context.Context, slabId uint16, addr uint32, target
 	if err != nil {
 		return err
 	}
-	if len(reqData) != int(reqTotalSize) {
-		return fmt.Errorf("decompressed data is wrong length: %d != %d", len(reqData), reqTotalSize)
+	if len(reqData) < int(reqTotalSize) {
+		return fmt.Errorf("decompressed data is too short: %d < %d", len(reqData), reqTotalSize)
 	}
 
 	// write out to slab
@@ -342,6 +341,7 @@ func (s *server) gotNewChunk(slabId uint16, addr uint32, digest []byte, b []byte
 	}
 
 	// record async
+	// FIXME: but keep in-mem cache of recent ones
 	go s.db.Batch(func(tx *bbolt.Tx) error {
 		sb := tx.Bucket(slabBucket).Bucket(slabKey(slabId))
 		if sb == nil {
@@ -371,6 +371,10 @@ func (s *server) getChunkDiff(ctx context.Context, bases, reqs []byte) (io.ReadC
 }
 
 func (s *server) getDigestsFromImage(sph Sph, isManifest bool) ([]*pb.Entry, error) {
+	if isManifest {
+		// get the image sph back. makeManifestSph is its own inverse.
+		sph = makeManifestSph(sph)
+	}
 	var sm pb.SignedMessage
 	if err := s.db.View(func(tx *bbolt.Tx) error {
 		v := tx.Bucket(manifestBucket).Get([]byte(sph.String()))
@@ -407,11 +411,14 @@ func (s *server) getDigestsFromImage(sph Sph, isManifest bool) ([]*pb.Entry, err
 }
 
 func (s *server) getKnownChunk(slabId uint16, addr uint32, buf []byte) error {
-	// TODO: consider a small in-process cache here?
+	if slabId < manifestSlabOffset {
+		return errors.New("not yet") // TODO: use special image
+	}
+
 	var fd int
 	s.lock.Lock()
 	if state := s.stateBySlab[slabId]; state != nil {
-		fd = int(state.cacheFd)
+		fd = int(state.fd)
 	}
 	s.lock.Unlock()
 	if fd == 0 {

@@ -45,9 +45,8 @@ func writeToTempFile(b []byte) (string, error) {
 }
 
 func makeManifestSph(sph Sph) Sph {
-	// the "manifest sph" for a sph is the same with the second half of bits flipped
-	for i := len(sph) / 2; i < len(sph); i++ {
-		sph[i] ^= 0xff
-	}
+	// the "manifest sph" for a sph is the same with one bit flipped (will affect _end_ of base32
+	// string form)
+	sph[0] ^= 1
 	return sph
 }

@@ -40,13 +40,15 @@ import (
 const (
 	typeImage uint16 = iota
 	typeSlab
+	typeManifestSlab
 )
 
 const (
-	savedFdName     = "devnode"
-	preCreatedSlabs = 1
-	presentMask     = 1 << 31
-	reservedBlocks  = 4 // reserved at beginning of slab
+	savedFdName = "devnode"
+	// preCreatedSlabs    = 1
+	presentMask        = 1 << 31
+	reservedBlocks     = 4 // reserved at beginning of slab
+	manifestSlabOffset = 10000
 )
 
 type (
@@ -75,9 +77,9 @@ type (
 		fd uint32
 		tp uint16
 
-		// for slabs
-		slabId  uint16
-		cacheFd uint32
+		// for slabs and manifest slabs
+		slabId uint16
+		// cacheFd uint32
 
 		// for images
 		fsid      string
@@ -199,8 +201,28 @@ func (s *server) setupEnv() error {
 	return os.MkdirAll(s.cfg.CachePath, 0700)
 }
 
+func (s *server) setupManifestSlab() error {
+	var id uint16 = manifestSlabOffset
+	mfSlabPath := filepath.Join(s.cfg.CachePath, fmt.Sprintf("_manifest_slab_%d", id))
+	fd, err := unix.Open(mfSlabPath, unix.O_RDWR|unix.O_CREAT, 0600)
+	if err != nil {
+		log.Println("open manifest slab", mfSlabPath, err)
+		return err
+	}
+
+	s.lock.Lock()
+	defer s.lock.Unlock()
+	state := &openFileState{
+		fd:     common.TruncU32(fd),
+		tp:     typeManifestSlab,
+		slabId: id,
+		// cacheFd: fd,
+	}
+	s.stateBySlab[id] = state
+	return nil
+}
+
 func (s *server) openDevNode() (int, error) {
-	log.Print("opening cachefiles node")
 	fd, err := unix.Open(s.cfg.DevPath, unix.O_RDWR, 0600)
 	if err == unix.ENOENT {
 		_ = unix.Mknod(s.cfg.DevPath, 0600|unix.S_IFCHR, 10<<8+122)
@@ -234,11 +256,13 @@ func (s *server) setupDevNode() error {
 		return nil
 	}
 
+	/* TODO
 	if !s.haveSlabFiles() {
 		if err := s.preCreateSlabs(); err != nil {
 			return err
 		}
 	}
+	*/
 
 	fd, err = s.openDevNode()
 	if err != nil {
@@ -249,6 +273,8 @@ func (s *server) setupDevNode() error {
 	log.Println("set up cachefiles device")
 	return nil
 }
+
+/* TODO
 
 func (s *server) haveSlabFiles() bool {
 	for i := uint16(0); i < preCreatedSlabs; i++ {
@@ -301,6 +327,7 @@ func (s *server) preCreateSlabs() error {
 	}
 	return nil
 }
+*/
 
 // socket server + mount management
 
@@ -640,6 +667,9 @@ func (s *server) Start() error {
 	if err := s.initCatalog(); err != nil {
 		return err
 	}
+	if err := s.setupManifestSlab(); err != nil {
+		return err
+	}
 	if err := s.setupDevNode(); err != nil {
 		return err
 	}
@@ -647,26 +677,43 @@ func (s *server) Start() error {
 		return err
 	}
 	go s.cachefilesServer()
-	log.Print("cachefiles server ready")
+	log.Println("cachefiles server ready, using", s.cfg.CachePath)
 	systemd.Ready()
 	s.restoreMounts()
 	return nil
 }
 
-func (s *server) stopCachefilesServer() {
-	log.Print("stopping cachefiles server...")
+func (s *server) Stop() {
+	log.Print("stopping daemon...")
+	close(s.shutdownChan) // stops the socket server
+
+	s.closeAllFds() // TODO: do this before or after closing the devnode?
+
 	fd := s.devnode.Load()
 	s.devnode.Store(0)
 	unix.Close(int(fd))
 	s.shutdownWait.Wait()
-	log.Print("stopped cachefiles server")
+
+	s.db.Close()
+
+	log.Print("daemon shutdown done")
 }
 
-func (s *server) Stop() {
-	close(s.shutdownChan)    // stops the socket server
-	s.stopCachefilesServer() // stop cachefiles server. also waits for socket server
-	s.db.Close()
-	log.Print("daemon shutdown done")
+func (s *server) closeAllFds() {
+	s.lock.Lock()
+	defer s.lock.Unlock()
+	for _, s := range s.cacheState {
+		if s.fd > 0 {
+			unix.Close(int(s.fd))
+		}
+	}
+	for _, s := range s.stateBySlab {
+		if s.tp == typeManifestSlab {
+			if s.fd > 0 {
+				unix.Close(int(s.fd))
+			}
+		}
+	}
 }
 
 func (s *server) cachefilesServer() {
@@ -829,6 +876,7 @@ func (s *server) handleOpen(msgId, objectId, fd, flags uint32, volume, cookie []
 }
 
 func (s *server) handleOpenSlab(msgId, objectId, fd, flags uint32, id uint16) (int64, error) {
+	/* TODO
 	// find backing file
 	tag, _ := s.SlabInfo(id)
 	backingPath := filepath.Join(s.cfg.CachePath, fscachePath(s.cfg.CacheDomain, tag))
@@ -838,15 +886,16 @@ func (s *server) handleOpenSlab(msgId, objectId, fd, flags uint32, id uint16) (i
 		log.Println("failed to open backing file for slab", id)
 		return 0, err
 	}
+	*/
 
 	// record open state
 	s.lock.Lock()
 	defer s.lock.Unlock()
 	state := &openFileState{
-		fd:      fd,
-		tp:      typeSlab,
-		slabId:  id,
-		cacheFd: common.TruncU32(cacheFd),
+		fd:     fd,
+		tp:     typeSlab,
+		slabId: id,
+		// cacheFd: common.TruncU32(cacheFd),
 	}
 	s.cacheState[objectId] = state
 	s.stateBySlab[id] = state
@@ -971,7 +1020,7 @@ func (s *server) handleOpenImage(msgId, objectId, fd, flags uint32, cookie strin
 		blocks := common.MakeBlocksList(entry.Size, common.BlkShift(s.cfg.Params.Params.ChunkShift), s.blockShift)
 
 		ctxForManifestChunks := context.WithValue(ctx, "sph", manifestSph)
-		locs, err := s.AllocateBatch(ctxForManifestChunks, blocks, entry.Digests)
+		locs, err := s.AllocateBatch(ctxForManifestChunks, blocks, entry.Digests, true)
 		if err != nil {
 			return 0, err
 		}
@@ -1038,9 +1087,9 @@ func (s *server) handleClose(msgId, objectId uint32) error {
 	if state == nil {
 		return nil
 	}
-	if state.cacheFd != 0 {
-		unix.Close(int(state.cacheFd))
-	}
+	// if state.cacheFd != 0 {
+	// 	unix.Close(int(state.cacheFd))
+	// }
 	unix.Close(int(state.fd))
 	if state.tp == typeSlab {
 		delete(s.stateBySlab, state.slabId)
@@ -1190,14 +1239,18 @@ func (s *server) VerifyParams(hashBytes int, blockShift, chunkShift common.BlkSh
 	return nil
 }
 
-func (s *server) AllocateBatch(ctx context.Context, blocks []uint16, digests []byte) ([]erofs.SlabLoc, error) {
+func (s *server) AllocateBatch(ctx context.Context, blocks []uint16, digests []byte, forManifest bool) ([]erofs.SlabLoc, error) {
 	sph := ctx.Value("sph").(Sph)
 
 	n := len(blocks)
 	out := make([]erofs.SlabLoc, n)
 	err := s.db.Update(func(tx *bbolt.Tx) error {
 		cb, slabroot := tx.Bucket(chunkBucket), tx.Bucket(slabBucket)
-		sb, err := slabroot.CreateBucketIfNotExists(slabKey(0))
+		var slabId uint16 = 0
+		if forManifest {
+			slabId = manifestSlabOffset
+		}
+		sb, err := slabroot.CreateBucketIfNotExists(slabKey(slabId))
 		if err != nil {
 			return err
 		}
@@ -1210,28 +1263,24 @@ func (s *server) AllocateBatch(ctx context.Context, blocks []uint16, digests []b
 
 		for i := range out {
 			digest := digests[i*s.digestBytes : (i+1)*s.digestBytes]
-			var id uint16
-			var addr uint32
 			if loc := cb.Get(digest); loc == nil { // allocate
-				addr = common.TruncU32(seq)
+				// TODO: check seq for overflow here and move to next slab
+				addr := common.TruncU32(seq)
 				seq += uint64(blocks[i])
-				if err := cb.Put(digest, locValue(id, addr, sph)); err != nil {
+				if err := cb.Put(digest, locValue(slabId, addr, sph)); err != nil {
 					return err
 				} else if err = sb.Put(addrKey(addr), digest); err != nil {
 					return err
 				}
+				out[i].SlabId, out[i].Addr = slabId, addr
 			} else {
 				if newLoc := appendSph(loc, sph); newLoc != nil {
 					if err := cb.Put(digest, newLoc); err != nil {
 						return err
 					}
 				}
-				id, addr = loadLoc(loc)
+				out[i].SlabId, out[i].Addr = loadLoc(loc)
 			}
-			out[i].SlabId = id
-			out[i].Addr = addr
-
-			// TODO: check seq for overflow here and move to next slab
 		}
 
 		return sb.SetSequence(seq)

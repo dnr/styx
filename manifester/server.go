@@ -455,7 +455,7 @@ func (s *server) handleChunk(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer f.Close()
-	log.Println("chunk", key)
+	// log.Println("get chunk", key)
 	w.Header().Set("Content-Encoding", "zstd")
 	w.WriteHeader(http.StatusOK)
 	io.Copy(w, f)
