@@ -2,6 +2,7 @@ package tests
 
 import (
 	"fmt"
+	"log"
 	"math/rand"
 	"net/http"
 	"os"
@@ -54,6 +55,8 @@ type (
 )
 
 func newTestBase(t *testing.T) *testBase {
+	log.SetFlags(log.Lmicroseconds | log.Lshortfile)
+
 	// check uid
 	require.Equal(t, 0, os.Getuid(), "tests must be run as root")
 
@@ -71,6 +74,7 @@ func newTestBase(t *testing.T) *testBase {
 	t.Log("cache tag/domain", tag)
 
 	basetmpdir := t.TempDir()
+	// basetmpdir = "/tmp"
 	chunkdir := filepath.Join(basetmpdir, "chunks")
 	require.NoError(t, os.Mkdir(chunkdir, 0755))
 	cachedir := filepath.Join(basetmpdir, "cache")
@@ -177,6 +181,7 @@ func (tb *testBase) startDaemon() {
 func (tb *testBase) mount(storePath string) string {
 	mp := tb.t.TempDir()
 	tb.t.Cleanup(func() {
+		// if the test unmounted already this will just fail
 		_ = unix.Unmount(mp, 0)
 	})
 	sock := filepath.Join(tb.cachedir, "styx.sock")
@@ -191,6 +196,18 @@ func (tb *testBase) mount(storePath string) string {
 	require.Equal(tb.t, code, http.StatusOK)
 	require.True(tb.t, res.Success, "error:", res.Error)
 	return mp
+}
+
+func (tb *testBase) umount(storePath string) {
+	sock := filepath.Join(tb.cachedir, "styx.sock")
+	c := client.NewClient(sock)
+	var res daemon.Status
+	code, err := c.Call(daemon.UmountPath, daemon.UmountReq{
+		StorePath: storePath,
+	}, &res)
+	require.NoError(tb.t, err)
+	require.Equal(tb.t, code, http.StatusOK)
+	require.True(tb.t, res.Success, "error:", res.Error)
 }
 
 func (tb *testBase) nixHash(path string) string {

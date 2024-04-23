@@ -1,0 +1,6 @@
+#!/bin/sh
+nix-store --dump $1 > /dev/shm/a.nar
+nix-store --dump $2 > /dev/shm/b.nar
+trap "rm /dev/shm/a.nar /dev/shm/b.nar" EXIT
+du -b /dev/shm/{a,b}.nar
+zstd -c --single-thread -3 --patch-from /dev/shm/{a,b}.nar | wc -c

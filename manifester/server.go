@@ -384,7 +384,7 @@ func (s *server) handleChunkDiff(w http.ResponseWriter, req *http.Request) {
 		w.Write(s.enc.EncodeAll(statsEnc, nil))
 	}
 
-	log.Println("diff done", stats)
+	log.Printf("diff done %#v", stats)
 }
 
 func (s *server) fetchChunkSeries(ctx context.Context, digests []byte, parallel int) (string, int, error) {

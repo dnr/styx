@@ -6,16 +6,18 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// mount small image with inline manifest
-// check metadata
-// check data
-// unmount
 func TestSmallImage(t *testing.T) {
 	tb := newTestBase(t)
 
 	tb.startManifester()
 	tb.startDaemon()
 
-	mp := tb.mount("jc774xyapmj56icn80q9h60nhavxc272-ripgrep-13.0.0")
-	require.Equal(t, "0f7f5vqizf9inqn51c0mpi7l3zv1k64w4xwgldivbq0mhxf4spxx", tb.nixHash(mp))
+	// 144K package
+	mp1 := tb.mount("qa22bifihaxyvn6q2a6w9m0nklqrk9wh-opusfile-0.12")
+	require.Equal(t, "1rswindywkyq2jmfpxd6n772jii3z5xz6ypfbb63c17k5il39hfm", tb.nixHash(mp1))
+
+	// TODO: get stats, read again, ensure everything was read directly from cache
+
+	// try explicit unmount
+	tb.umount("qa22bifihaxyvn6q2a6w9m0nklqrk9wh-opusfile-0.12")
 }
