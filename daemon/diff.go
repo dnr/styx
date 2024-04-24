@@ -59,9 +59,8 @@ func (s *server) readChunks(
 	for {
 		missing := -1
 		_ = s.db.View(func(tx *bbolt.Tx) error {
-			sb := tx.Bucket(slabBucket)
 			for idx, loc := range locs {
-				if sb.Bucket(slabKey(loc.SlabId)).Get(addrKey(loc.Addr|presentMask)) == nil {
+				if !s.locPresent(tx, loc) {
 					missing = idx
 					return nil
 				}
@@ -156,7 +155,6 @@ func (s *server) tryDiff(ctx context.Context, slabId uint16, addr uint32, target
 
 	_ = s.db.View(func(tx *bbolt.Tx) error {
 		cb := tx.Bucket(chunkBucket)
-		sb := tx.Bucket(slabBucket)
 
 		has := func(d []byte) (uint16, uint32, bool) {
 			loc := cb.Get(d)
@@ -164,7 +162,7 @@ func (s *server) tryDiff(ctx context.Context, slabId uint16, addr uint32, target
 				return 0, 0, false // shouldn't happen
 			}
 			slabId, addr := loadLoc(loc)
-			return slabId, addr, sb.Bucket(slabKey(slabId)).Get(addrKey(addr|presentMask)) != nil
+			return slabId, addr, s.locPresent(tx, erofs.SlabLoc{slabId, addr})
 		}
 
 		found := false
@@ -341,14 +339,24 @@ func (s *server) gotNewChunk(slabId uint16, addr uint32, digest []byte, b []byte
 	}
 
 	// record async
-	// FIXME: but keep in-mem cache of recent ones
-	go s.db.Batch(func(tx *bbolt.Tx) error {
-		sb := tx.Bucket(slabBucket).Bucket(slabKey(slabId))
-		if sb == nil {
-			return errors.New("missing slab bucket")
+	s.presentLock.Lock()
+	s.presentMap[erofs.SlabLoc{slabId, addr}] = struct{}{}
+	s.presentLock.Unlock()
+
+	go func() {
+		err := s.db.Batch(func(tx *bbolt.Tx) error {
+			sb := tx.Bucket(slabBucket).Bucket(slabKey(slabId))
+			if sb == nil {
+				return errors.New("missing slab bucket")
+			}
+			return sb.Put(addrKey(presentMask|addr), []byte{})
+		})
+		if err == nil {
+			s.presentLock.Lock()
+			delete(s.presentMap, erofs.SlabLoc{slabId, addr})
+			s.presentLock.Unlock()
 		}
-		return sb.Put(addrKey(presentMask|addr), []byte{})
-	})
+	}()
 
 	return nil
 }
@@ -427,6 +435,19 @@ func (s *server) getKnownChunk(slabId uint16, addr uint32, buf []byte) error {
 
 	_, err := unix.Pread(fd, buf, int64(addr)<<s.blockShift)
 	return err
+}
+
+func (s *server) locPresent(tx *bbolt.Tx, loc erofs.SlabLoc) bool {
+	s.presentLock.Lock()
+	if _, ok := s.presentMap[loc]; ok {
+		s.presentLock.Unlock()
+		return true
+	}
+	s.presentLock.Unlock()
+
+	sb := tx.Bucket(slabBucket)
+	db := sb.Bucket(slabKey(loc.SlabId))
+	return db.Get(addrKey(loc.Addr|presentMask)) != nil
 }
 
 func (i *digestIterator) next() (string, []byte, int64, bool) {

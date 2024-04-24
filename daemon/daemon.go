@@ -69,6 +69,10 @@ type (
 		cacheState  map[uint32]*openFileState // object id -> state
 		stateBySlab map[uint16]*openFileState // slab id -> state
 
+		// keeps track of locs that we know are present before we persist them
+		presentLock sync.Mutex
+		presentMap  map[erofs.SlabLoc]struct{}
+
 		shutdownChan chan struct{}
 		shutdownWait sync.WaitGroup
 	}
@@ -122,6 +126,7 @@ func CachefilesServer(cfg Config) *server {
 		builder:      erofs.NewBuilder(erofs.BuilderConfig{BlockShift: cfg.ErofsBlockShift}),
 		cacheState:   make(map[uint32]*openFileState),
 		stateBySlab:  make(map[uint16]*openFileState),
+		presentMap:   make(map[erofs.SlabLoc]struct{}),
 		shutdownChan: make(chan struct{}),
 	}
 }
