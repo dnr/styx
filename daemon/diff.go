@@ -33,18 +33,14 @@ type (
 	}
 )
 
-func (s *server) requestChunk(slabId uint16, addr uint32, digest []byte, sphs []Sph) chan error {
+func (s *server) requestChunk(slabId uint16, addr uint32, digest []byte, sphs []Sph) error {
 	ctx := context.Background()
-	ch := make(chan error)
-	go func() {
-		err := s.tryDiff(ctx, slabId, addr, digest, sphs)
-		if err != nil {
-			log.Printf("tryDiff(%s): %v, falling back to single read", common.DigestStr(digest), err)
-			err = s.readSingle(ctx, slabId, addr, digest)
-		}
-		ch <- err
-	}()
-	return ch
+	err := s.tryDiff(ctx, slabId, addr, digest, sphs)
+	if err != nil {
+		log.Printf("tryDiff(%s…): %v, doing plain read", common.DigestStr(digest)[:5], err)
+		err = s.readSingle(ctx, slabId, addr, digest)
+	}
+	return err
 }
 
 func (s *server) readChunks(
@@ -76,7 +72,7 @@ func (s *server) readChunks(
 
 		// request first missing one. the differ will do some readahead.
 		digest := digests[missing*s.digestBytes : (missing+1)*s.digestBytes]
-		err := <-s.requestChunk(locs[missing].SlabId, locs[missing].Addr, digest, sphs)
+		err := s.requestChunk(locs[missing].SlabId, locs[missing].Addr, digest, sphs)
 		if err != nil {
 			return nil, err
 		}

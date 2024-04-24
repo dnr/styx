@@ -1185,8 +1185,7 @@ func (s *server) handleReadSlab(state *openFileState, ln, off uint64) error {
 		return err
 	}
 
-	ch := s.requestChunk(slabId, addr, digest, splitSphs(sphs))
-	return <-ch
+	return s.requestChunk(slabId, addr, digest, splitSphs(sphs))
 }
 
 // slab manager
