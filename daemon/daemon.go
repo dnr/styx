@@ -39,6 +39,7 @@ import (
 
 const (
 	typeImage uint16 = iota
+	typeMagicImage
 	typeSlab
 	typeManifestSlab
 )
@@ -81,11 +82,11 @@ type (
 		fd uint32
 		tp uint16
 
-		// for slabs and manifest slabs
+		// for slabs and manifest slabs, and magic images
 		slabId uint16
 		// cacheFd uint32
 
-		// for images
+		// for store images
 		fsid      string
 		imageData []byte // data from manifester to be written
 	}
@@ -863,13 +864,21 @@ func (s *server) handleOpen(msgId, objectId, fd, flags uint32, volume, cookie []
 	}
 
 	// slab or manifest
-	if strings.HasPrefix(fsid, slabPrefix) {
-		log.Println("open slab", fsid[len(slabPrefix):], "as", objectId)
-		slabId, err := strconv.Atoi(fsid[len(slabPrefix):])
+	if idx := strings.TrimPrefix(fsid, slabPrefix); idx != fsid {
+		log.Println("open slab", idx, "as", objectId)
+		slabId, err := strconv.Atoi(idx)
 		if err != nil {
 			return err
 		}
 		cacheSize, retErr = s.handleOpenSlab(msgId, objectId, fd, flags, common.TruncU16(slabId))
+		return
+	} else if idx := strings.TrimPrefix(fsid, magicImagePrefix); idx != fsid {
+		log.Println("open magic image", idx, "as", objectId)
+		slabId, err := strconv.Atoi(idx)
+		if err != nil {
+			return err
+		}
+		cacheSize, retErr = s.handleOpenMagicImage(msgId, objectId, fd, flags, common.TruncU16(slabId))
 		return
 	} else if len(fsid) == 32 {
 		log.Println("open image", fsid, "as", objectId)
@@ -905,6 +914,19 @@ func (s *server) handleOpenSlab(msgId, objectId, fd, flags uint32, id uint16) (i
 	s.cacheState[objectId] = state
 	s.stateBySlab[id] = state
 	return slabBytes, nil
+}
+
+func (s *server) handleOpenMagicImage(msgId, objectId, fd, flags uint32, id uint16) (int64, error) {
+	// record open state
+	s.lock.Lock()
+	defer s.lock.Unlock()
+	state := &openFileState{
+		fd:     fd,
+		tp:     typeMagicImage,
+		slabId: id,
+	}
+	s.cacheState[objectId] = state
+	return erofs.MagicImageSize(slabBytes), nil
 }
 
 func (s *server) handleOpenImage(msgId, objectId, fd, flags uint32, cookie string) (int64, error) {
@@ -1123,6 +1145,9 @@ func (s *server) handleRead(msgId, objectId uint32, ln, off uint64) (retErr erro
 	case typeImage:
 		log.Printf("read image %5d: %2dk @ %#x", objectId, ln>>10, off)
 		return s.handleReadImage(state, ln, off)
+	case typeMagicImage:
+		log.Printf("read magic image %5d: %2dk @ %#x", objectId, ln>>10, off)
+		return s.handleReadMagicImage(state, ln, off)
 	case typeSlab:
 		log.Printf("read slab %5d: %2dk @ %#x", objectId, ln>>10, off)
 		return s.handleReadSlab(state, ln, off)
@@ -1142,6 +1167,21 @@ func (s *server) handleReadImage(state *openFileState, _, _ uint64) error {
 	}
 	state.imageData = nil
 	return nil
+}
+
+func (s *server) handleReadMagicImage(state *openFileState, ln, off uint64) error {
+	var devid string
+	if off == 0 {
+		// only superblock needs this
+		devid = slabPrefix + strconv.Itoa(int(state.slabId))
+	}
+	buf := s.chunkPool.Get(int(ln))
+	defer s.chunkPool.Put(buf)
+
+	b := buf[:ln]
+	erofs.MagicImageRead(devid, slabBytes, off, b)
+	_, err := unix.Pwrite(int(state.fd), b, int64(off))
+	return err
 }
 
 func (s *server) handleReadSlab(state *openFileState, ln, off uint64) error {
@@ -1293,7 +1333,7 @@ func (s *server) AllocateBatch(ctx context.Context, blocks []uint16, digests []b
 }
 
 func (s *server) SlabInfo(slabId uint16) (tag string, totalBlocks uint32) {
-	return fmt.Sprintf("_slab_%d", slabId), common.TruncU32(uint64(slabBytes) >> s.blockShift)
+	return slabPrefix + strconv.Itoa(int(slabId)), common.TruncU32(uint64(slabBytes) >> s.blockShift)
 }
 
 // like AllocateBatch but only lookup

@@ -25,7 +25,8 @@ func (cp *chunkPool) Get(size int) []byte {
 	}
 }
 
-func (cp *chunkPool) Put(size int, b []byte) {
+func (cp *chunkPool) Put(b []byte) {
+	size := cap(b)
 	switch {
 	case size <= 1<<12:
 		cp.p12.Put(b)

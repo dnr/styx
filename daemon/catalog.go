@@ -134,7 +134,7 @@ func (c *catalog) findBase(reqHash Sph) (catalogResult, error) {
 		})
 
 	if best.rest == "" {
-		return catalogResult{}, errors.New("no base found for " + reqName)
+		return catalogResult{}, errors.New("no diff base for " + reqName)
 	}
 
 	return catalogResult{

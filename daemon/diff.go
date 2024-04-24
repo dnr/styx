@@ -95,7 +95,7 @@ func (s *server) readChunks(
 func (s *server) readSingle(ctx context.Context, slabId uint16, addr uint32, digest []byte) error {
 	// we have no size info here
 	buf := s.chunkPool.Get(1 << s.cfg.Params.Params.ChunkShift)
-	defer s.chunkPool.Put(1<<s.cfg.Params.Params.ChunkShift, buf)
+	defer s.chunkPool.Put(buf)
 
 	digestStr := common.DigestStr(digest)
 	chunk, err := s.csread.Get(ctx, digestStr, buf[:0])
@@ -282,7 +282,7 @@ func (s *server) expandChunkDiff(ctx context.Context, baseData []byte, diff io.R
 func (s *server) findBase(sphs []Sph) (catalogResult, Sph, error) {
 	// find a base with similar data. go backwards on the assumption that recent images with
 	// this chunk will be more similar.
-	errs := []string{"couldn't find base"}
+	var errs []string
 	for i := len(sphs) - 1; i >= 0; i-- {
 		if res, err := s.catalog.findBase(sphs[i]); err == nil {
 			return res, sphs[i], nil
@@ -315,7 +315,7 @@ func (s *server) gotNewChunk(slabId uint16, addr uint32, digest []byte, b []byte
 	if rounded > cap(b) {
 		// need to copy
 		buf := s.chunkPool.Get(rounded)
-		defer s.chunkPool.Put(rounded, buf)
+		defer s.chunkPool.Put(buf)
 		copy(buf, b)
 		b = buf[:rounded]
 	} else if rounded > prevLen {
