@@ -415,20 +415,18 @@ func (s *server) getDigestsFromImage(sph Sph, isManifest bool) ([]*pb.Entry, err
 }
 
 func (s *server) getKnownChunk(slabId uint16, addr uint32, buf []byte) error {
-	if slabId < manifestSlabOffset {
-		return errors.New("not yet") // TODO: use special image
-	}
-
 	var fd int
 	s.lock.Lock()
 	if state := s.stateBySlab[slabId]; state != nil {
-		fd = int(state.fd)
+		fd = int(state.slabFd)
 	}
 	s.lock.Unlock()
 	if fd == 0 {
 		return errors.New("slab not loaded or missing cache")
 	}
 
+	// TODO: if we don't actually have this cached, this could lead to an infinite loop.
+	// maybe keep map of reads that we initiated to cut off the loop.
 	_, err := unix.Pread(fd, buf, int64(addr)<<s.blockShift)
 	return err
 }

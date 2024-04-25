@@ -79,15 +79,15 @@ type (
 	}
 
 	openFileState struct {
-		fd uint32
+		fd uint32 // for slabs, magic images, and store images
 		tp uint16
 
-		// for slabs and manifest slabs, and magic images
+		// for slabs, magic images, and manifest slabs
 		slabId uint16
+		slabFd uint32
 		// cacheFd uint32
 
 		// for store images
-		fsid      string
 		imageData []byte // data from manifester to be written
 	}
 
@@ -209,7 +209,7 @@ func (s *server) setupEnv() error {
 
 func (s *server) setupManifestSlab() error {
 	var id uint16 = manifestSlabOffset
-	mfSlabPath := filepath.Join(s.cfg.CachePath, fmt.Sprintf("_manifest_slab_%d", id))
+	mfSlabPath := filepath.Join(s.cfg.CachePath, manifestSlabPrefix+strconv.Itoa(int(id)))
 	fd, err := unix.Open(mfSlabPath, unix.O_RDWR|unix.O_CREAT, 0600)
 	if err != nil {
 		log.Println("open manifest slab", mfSlabPath, err)
@@ -219,9 +219,9 @@ func (s *server) setupManifestSlab() error {
 	s.lock.Lock()
 	defer s.lock.Unlock()
 	state := &openFileState{
-		fd:     common.TruncU32(fd),
 		tp:     typeManifestSlab,
 		slabId: id,
+		slabFd: common.TruncU32(fd),
 		// cacheFd: fd,
 	}
 	s.stateBySlab[id] = state
@@ -708,16 +708,16 @@ func (s *server) Stop() {
 func (s *server) closeAllFds() {
 	s.lock.Lock()
 	defer s.lock.Unlock()
-	for _, s := range s.cacheState {
-		if s.fd > 0 {
-			unix.Close(int(s.fd))
+	for _, state := range s.cacheState {
+		if state.fd > 0 {
+			unix.Close(int(state.fd))
 		}
-	}
-	for _, s := range s.stateBySlab {
-		if s.tp == typeManifestSlab {
-			if s.fd > 0 {
-				unix.Close(int(s.fd))
-			}
+		if state.slabFd > 0 {
+			unix.Close(int(state.slabFd))
+		}
+		if state.tp == typeSlab {
+			mp := filepath.Join(s.cfg.CachePath, magicImagePrefix+strconv.Itoa(int(state.slabId)))
+			_ = unix.Unmount(mp, 0)
 		}
 	}
 }
@@ -837,6 +837,7 @@ func (s *server) handleOpen(msgId, objectId, fd, flags uint32, volume, cookie []
 
 	var cacheSize int64
 	fsid := string(cookie)
+	mountMagicImage := -1
 
 	defer func() {
 		if r := recover(); r != nil {
@@ -856,6 +857,8 @@ func (s *server) handleOpen(msgId, objectId, fd, flags uint32, volume, cookie []
 		}
 		if cacheSize < 0 {
 			unix.Close(int(fd))
+		} else if mountMagicImage >= 0 {
+			go s.mountMagicImage(mountMagicImage)
 		}
 	}()
 
@@ -871,6 +874,7 @@ func (s *server) handleOpen(msgId, objectId, fd, flags uint32, volume, cookie []
 			return err
 		}
 		cacheSize, retErr = s.handleOpenSlab(msgId, objectId, fd, flags, common.TruncU16(slabId))
+		mountMagicImage = slabId
 		return
 	} else if idx := strings.TrimPrefix(fsid, magicImagePrefix); idx != fsid {
 		log.Println("open magic image", idx, "as", objectId)
@@ -946,9 +950,8 @@ func (s *server) handleOpenImage(msgId, objectId, fd, flags uint32, cookie strin
 		s.lock.Lock()
 		defer s.lock.Unlock()
 		state := &openFileState{
-			fd:   fd,
-			tp:   typeImage,
-			fsid: cookie,
+			fd: fd,
+			tp: typeImage,
 		}
 		s.cacheState[objectId] = state
 		return img.ImageSize, nil
@@ -1098,7 +1101,6 @@ func (s *server) handleOpenImage(msgId, objectId, fd, flags uint32, cookie strin
 	state := &openFileState{
 		fd:        fd,
 		tp:        typeImage,
-		fsid:      cookie,
 		imageData: image.Bytes(),
 	}
 	s.cacheState[objectId] = state
@@ -1109,19 +1111,29 @@ func (s *server) handleOpenImage(msgId, objectId, fd, flags uint32, cookie strin
 func (s *server) handleClose(msgId, objectId uint32) error {
 	log.Println("close", objectId)
 	s.lock.Lock()
-	defer s.lock.Unlock()
 	state := s.cacheState[objectId]
 	if state == nil {
+		s.lock.Unlock()
+		log.Println("missing state for close")
 		return nil
 	}
-	// if state.cacheFd != 0 {
-	// 	unix.Close(int(state.cacheFd))
-	// }
-	unix.Close(int(state.fd))
 	if state.tp == typeSlab {
 		delete(s.stateBySlab, state.slabId)
 	}
 	delete(s.cacheState, objectId)
+	s.lock.Unlock()
+
+	// do rest of cleanup outside lock
+
+	if state.slabFd != 0 {
+		_ = unix.Close(int(state.slabFd))
+		mp := filepath.Join(s.cfg.CachePath, magicImagePrefix+strconv.Itoa(int(state.slabId)))
+		_ = unix.Unmount(mp, 0)
+	}
+	// if state.cacheFd != 0 {
+	// 	unix.Close(int(state.cacheFd))
+	// }
+	_ = unix.Close(int(state.fd))
 	return nil
 }
 
@@ -1226,6 +1238,40 @@ func (s *server) handleReadSlab(state *openFileState, ln, off uint64) error {
 	}
 
 	return s.requestChunk(slabId, addr, digest, splitSphs(sphs))
+}
+
+func (s *server) mountMagicImage(slabId int) {
+	fsid := magicImagePrefix + strconv.Itoa(slabId)
+	mountPoint := filepath.Join(s.cfg.CachePath, fsid)
+	if err := os.MkdirAll(mountPoint, 0755); err != nil {
+		log.Println("error mkdir on magic image mountpoint", mountPoint, err)
+	}
+	opts := fmt.Sprintf("domain_id=%s,fsid=%s", s.cfg.CacheDomain, fsid)
+	err := unix.Mount("none", mountPoint, "erofs", 0, opts)
+	if err != nil {
+		log.Println("error mounting magic image", fsid, "on", mountPoint, err)
+		return
+	}
+	log.Println("mounted magic image", fsid, "on", mountPoint)
+	slabFile := filepath.Join(mountPoint, "slab")
+	slabFd, err := unix.Open(slabFile, unix.O_RDONLY, 0)
+	if err != nil {
+		log.Println("error opening magic image file", slabFile, err)
+		_ = unix.Unmount(mountPoint, 0)
+		return
+	}
+
+	s.lock.Lock()
+	if state := s.stateBySlab[common.TruncU16(slabId)]; state == nil {
+		s.lock.Unlock()
+		log.Print("state not found in mountMagicImage")
+		_ = unix.Close(slabFd)
+		_ = unix.Unmount(mountPoint, 0)
+		return
+	} else {
+		state.slabFd = common.TruncU32(slabFd)
+		s.lock.Unlock()
+	}
 }
 
 // slab manager

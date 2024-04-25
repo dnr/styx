@@ -3,8 +3,9 @@ package daemon
 const (
 	dbFilename = "styx.bolt"
 
-	slabPrefix       = "_slab_"
-	magicImagePrefix = "_magic_"
+	slabPrefix         = "_slab_"
+	magicImagePrefix   = "_magic_"
+	manifestSlabPrefix = "_manifests_"
 
 	isManifestPrefix = "M/"
 )
