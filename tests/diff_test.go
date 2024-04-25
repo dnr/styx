@@ -7,8 +7,6 @@ import (
 )
 
 func TestDiffChunks(t *testing.T) {
-	t.Skip("diff not working yet")
-
 	tb := newTestBase(t)
 
 	tb.startManifester()

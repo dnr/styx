@@ -4,7 +4,7 @@ let
   runstyxtest = pkgs.writeShellScriptBin "runstyxtest" ''
     cd ${styxtest}/bin
     if [[ $UID != 0 ]]; then sudo=sudo; fi
-    exec $sudo ./styxtest -test.v
+    exec $sudo ./styxtest -test.v "$@"
   '';
 in
 {

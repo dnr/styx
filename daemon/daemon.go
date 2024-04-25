@@ -1256,6 +1256,8 @@ func (s *server) mountMagicImage(slabId int) {
 		_ = unix.Unmount(mountPoint, 0)
 		return
 	}
+	// disable readahead so we don't get requests for parts we haven't written
+	_ = unix.Fadvise(slabFd, 0, 0, unix.FADV_RANDOM)
 
 	s.lock.Lock()
 	if state := s.stateBySlab[common.TruncU16(slabId)]; state == nil {
