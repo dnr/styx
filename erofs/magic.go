@@ -16,12 +16,11 @@ const (
 	magicChunkShift common.BlkShift = 20
 	magicBlkShift   common.BlkShift = 12
 	// offset of start of chunk indexes
-	magicOffset = 4096 + 32 + 64 + 64
+	magicOffset = 1024 + 128 + 128 + 64
 )
 
 func MagicImageSize(slabSize int64) int64 {
-	// TODO: this isn't exactly right but close enough for now
-	return (slabSize>>magicChunkShift)*8 + 4096
+	return (slabSize>>magicChunkShift)*8 + magicOffset
 }
 
 func MagicImageRead(devid string, slabBytes int64, off uint64, out []byte) {
@@ -37,30 +36,22 @@ func MagicImageRead(devid string, slabBytes int64, off uint64, out []byte) {
 }
 
 func magicImageStart(devid string, slabBytes int64) []byte {
-	// layout:
-	// super at 1024
-	// devtable at 1024+128
-	// inodebase at 4096
-	// nid 0 is root directory. directory data follows inline
-	// nid 3 is magic file. chunk index follows
-
 	const inodebase = 1 << magicBlkShift
 	const incompat = (EROFS_FEATURE_INCOMPAT_CHUNKED_FILE |
 		EROFS_FEATURE_INCOMPAT_DEVICE_TABLE)
 
-	const rootNid = 0
-	const slabNid = 3
+	const rootNid = 20
+	const slabNid = 40
 
-	out := bytes.NewBuffer(make([]byte, 0, 2<<magicBlkShift))
-
+	// setup super
 	super := erofs_super_block{
 		Magic:           EROFS_MAGIC,
 		FeatureIncompat: incompat,
 		BlkSzBits:       common.TruncU8(magicBlkShift),
-		RootNid:         common.TruncU16(0),
-		Inos:            common.TruncU64(4),
+		RootNid:         common.TruncU16(rootNid),
+		Inos:            common.TruncU64(2),
 		Blocks:          common.TruncU32(MagicImageSize(slabBytes) >> magicBlkShift),
-		MetaBlkAddr:     common.TruncU32(inodebase >> magicBlkShift),
+		MetaBlkAddr:     common.TruncU32(0),
 		ExtraDevices:    common.TruncU16(1),
 		DevtSlotOff:     (EROFS_SUPER_OFFSET + 128) / 128, // TODO: use constants
 	}
@@ -74,9 +65,40 @@ func magicImageStart(devid string, slabBytes int64) []byte {
 	pack(c, &super)
 	super.Checksum = c.Sum32()
 
-	// write super
+	// dirents
+	const numDirents = 3
+	dirents := [numDirents]erofs_dirent{
+		{Nid: rootNid, NameOff: numDirents*12 + 0, FileType: EROFS_FT_DIR},      // "."
+		{Nid: rootNid, NameOff: numDirents*12 + 1, FileType: EROFS_FT_DIR},      // ".."
+		{Nid: slabNid, NameOff: numDirents*12 + 3, FileType: EROFS_FT_REG_FILE}, // "slab"
+	}
+	const direntNames = "...slab"
+	const direntSize = len(dirents)*12 + len(direntNames)
+
+	out := bytes.NewBuffer(make([]byte, 0, 2<<magicBlkShift))
 	// offset 0
-	pad(out, EROFS_SUPER_OFFSET)
+	pad(out, rootNid*32)
+	// offset 640
+
+	// nid 20: root dir
+	var root erofs_inode_compact
+	const layoutCompact = EROFS_INODE_LAYOUT_COMPACT << EROFS_I_VERSION_BIT
+	const formatInline = (layoutCompact | (EROFS_INODE_FLAT_INLINE << EROFS_I_DATALAYOUT_BIT))
+	root.IFormat = formatInline
+	root.IIno = 1
+	root.IMode = unix.S_IFDIR | 0755
+	root.INlink = 2
+	root.ISize = uint32(direntSize)
+	pack(out, root)
+	// offset 672
+	// dirents immediately follow as inline
+	pack(out, dirents)
+	// offset 708
+	out.WriteString(direntNames)
+	// offset 715
+
+	// write super
+	pad(out, int64(EROFS_SUPER_OFFSET-out.Len()))
 	// offset 1024
 	pack(out, &super)
 	// offset 1152
@@ -88,43 +110,6 @@ func magicImageStart(devid string, slabBytes int64) []byte {
 	copy(dev.Tag[:], devid)
 	pack(out, dev)
 	// offset 1280
-
-	pad(out, int64(inodebase-EROFS_SUPER_OFFSET-128-128))
-	// offset 4096
-
-	// dirents
-	const numDirents = 3
-	dirents := [numDirents]erofs_dirent{
-		{Nid: rootNid, NameOff: numDirents*12 + 0, FileType: EROFS_FT_DIR},      // "."
-		{Nid: rootNid, NameOff: numDirents*12 + 1, FileType: EROFS_FT_DIR},      // ".."
-		{Nid: slabNid, NameOff: numDirents*12 + 3, FileType: EROFS_FT_REG_FILE}, // "slab"
-	}
-	const direntNames = "...slab"
-	const direntSize = len(dirents)*12 + len(direntNames)
-	if direntSize > slabNid*32 {
-		panic("dirents too big")
-	}
-
-	// nid 0: root dir
-	var root erofs_inode_compact
-	const layoutCompact = EROFS_INODE_LAYOUT_COMPACT << EROFS_I_VERSION_BIT
-	const formatInline = (layoutCompact | (EROFS_INODE_FLAT_INLINE << EROFS_I_DATALAYOUT_BIT))
-	root.IFormat = formatInline
-	root.IIno = 1
-	root.IMode = unix.S_IFDIR | 0755
-	root.INlink = 2
-	root.ISize = uint32(direntSize)
-
-	pack(out, root)
-	// offset 4128
-
-	// dirents immediately follow as inline
-	pack(out, dirents)
-	// offset 4164
-	out.WriteString(direntNames)
-	// offset 4171
-	pad(out, int64(64-direntSize)) // 21
-	// offset 4192
 
 	// nid 3: slab file
 	chunkedIU, err := inodeChunkInfo(magicBlkShift, magicChunkShift)
@@ -142,9 +127,8 @@ func magicImageStart(devid string, slabBytes int64) []byte {
 	slab.ISize = uint64(slabBytes)
 	slab.IU = chunkedIU
 	pack(out, slab)
-	// offset 4256
+	// offset 1344
 
-	// offset is now 4096 + 32(inode) + 64(dirent+pad) + 64(inode)
 	if out.Len() != magicOffset {
 		panic(fmt.Sprintln("math was wrong", out.Len(), magicOffset))
 	}
