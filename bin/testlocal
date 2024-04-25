@@ -1,0 +1,5 @@
+#!/bin/sh
+set -eux
+# Be careful, this can lock up the cachefiles subsystem if tests fail in
+# particular ways.
+go test -v -exec sudo "$@" ./tests

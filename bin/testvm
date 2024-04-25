@@ -1,0 +1,6 @@
+#!/bin/sh
+set -eux
+# Tests require internet access (for now) so disable sandbox.
+# Need to run nix-build with sudo to allow disabling sandbox.
+# Note: test flags need to be in form "-test.run", not just "-run"
+sudo nix-build --no-out-link --option sandbox false --argstr testflags "$*" testvm.nix
