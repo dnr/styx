@@ -2,6 +2,7 @@ package erofs
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/binary"
 	"fmt"
 	"hash/crc32"
@@ -41,14 +42,14 @@ func magicImageStart(devid string, slabBytes int64) []byte {
 	// devtable at 1024+128
 	// inodebase at 4096
 	// nid 0 is root directory. directory data follows inline
-	// nid 2 is magic file. chunk index follows
+	// nid 3 is magic file. chunk index follows
 
 	const inodebase = 1 << magicBlkShift
 	const incompat = (EROFS_FEATURE_INCOMPAT_CHUNKED_FILE |
 		EROFS_FEATURE_INCOMPAT_DEVICE_TABLE)
 
 	const rootNid = 0
-	const slabNid = 2
+	const slabNid = 3
 
 	out := bytes.NewBuffer(make([]byte, 0, 2<<magicBlkShift))
 
@@ -57,13 +58,17 @@ func magicImageStart(devid string, slabBytes int64) []byte {
 		FeatureIncompat: incompat,
 		BlkSzBits:       common.TruncU8(magicBlkShift),
 		RootNid:         common.TruncU16(0),
-		Inos:            common.TruncU64(2),
+		Inos:            common.TruncU64(4),
 		Blocks:          common.TruncU32(MagicImageSize(slabBytes) >> magicBlkShift),
 		MetaBlkAddr:     common.TruncU32(inodebase >> magicBlkShift),
 		ExtraDevices:    common.TruncU16(1),
 		DevtSlotOff:     (EROFS_SUPER_OFFSET + 128) / 128, // TODO: use constants
 	}
-	copy(super.VolumeName[:], "styx_magic"+devid)
+	copy(super.VolumeName[:], "@"+devid)
+	h := sha256.New()
+	h.Write(super.VolumeName[:])
+	var hsum [sha256.Size]byte
+	copy(super.Uuid[:], h.Sum(hsum[:]))
 
 	c := crc32.NewIEEE()
 	pack(c, &super)
@@ -121,7 +126,7 @@ func magicImageStart(devid string, slabBytes int64) []byte {
 	pad(out, int64(64-direntSize)) // 21
 	// offset 4192
 
-	// nid 2: slab file
+	// nid 3: slab file
 	chunkedIU, err := inodeChunkInfo(magicBlkShift, magicChunkShift)
 	if err != nil {
 		panic(err)

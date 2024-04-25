@@ -299,14 +299,14 @@ func (s *server) gotNewChunk(slabId uint16, addr uint32, digest []byte, b []byte
 		return err
 	}
 
-	var fd int
+	var writeFd int
 	s.lock.Lock()
 	if state := s.stateBySlab[slabId]; state != nil {
-		fd = int(state.fd)
+		writeFd = int(state.writeFd)
 	}
 	s.lock.Unlock()
-	if fd == 0 {
-		return errors.New("slab not loaded or missing fd")
+	if writeFd == 0 {
+		return errors.New("slab not loaded or missing write fd")
 	}
 
 	// we can only write full blocks
@@ -328,7 +328,7 @@ func (s *server) gotNewChunk(slabId uint16, addr uint32, digest []byte, b []byte
 	}
 
 	off := int64(addr) << s.blockShift
-	if n, err := unix.Pwrite(fd, b, off); err != nil {
+	if n, err := unix.Pwrite(writeFd, b, off); err != nil {
 		return err
 	} else if n != len(b) {
 		return fmt.Errorf("short write %d != %d", n, len(b))
@@ -415,19 +415,19 @@ func (s *server) getDigestsFromImage(sph Sph, isManifest bool) ([]*pb.Entry, err
 }
 
 func (s *server) getKnownChunk(slabId uint16, addr uint32, buf []byte) error {
-	var fd int
+	var readFd int
 	s.lock.Lock()
 	if state := s.stateBySlab[slabId]; state != nil {
-		fd = int(state.slabFd)
+		readFd = int(state.readFd)
 	}
 	s.lock.Unlock()
-	if fd == 0 {
-		return errors.New("slab not loaded or missing cache")
+	if readFd == 0 {
+		return errors.New("slab not loaded or missing read fd")
 	}
 
 	// TODO: if we don't actually have this cached, this could lead to an infinite loop.
 	// maybe keep map of reads that we initiated to cut off the loop.
-	_, err := unix.Pread(fd, buf, int64(addr)<<s.blockShift)
+	_, err := unix.Pread(readFd, buf, int64(addr)<<s.blockShift)
 	return err
 }
 
