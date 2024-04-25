@@ -3,8 +3,6 @@ package erofs
 import (
 	"bytes"
 	"crypto/sha256"
-	"encoding/binary"
-	"fmt"
 	"hash/crc32"
 
 	"github.com/dnr/styx/common"
@@ -12,36 +10,25 @@ import (
 )
 
 const (
-	// this doesn't have to match the regular chunk shift
-	magicChunkShift common.BlkShift = 20
-	magicBlkShift   common.BlkShift = 12
-	// offset of start of chunk indexes
-	magicOffset = 1024 + 128 + 128 + 64
+	magicBlkShift common.BlkShift = 12
 )
 
 func MagicImageSize(slabSize int64) int64 {
-	return (slabSize>>magicChunkShift)*8 + magicOffset
+	return 1 << magicBlkShift
 }
 
 func MagicImageRead(devid string, slabBytes int64, off uint64, out []byte) {
-	if off < 2<<magicBlkShift {
-		start := magicImageStart(devid, slabBytes)
-		n := copy(out, start[off:])
-		if n < len(out) {
-			magicImageChunks(off+uint64(n), out[n:])
-		}
-	} else {
-		magicImageChunks(off, out)
-	}
+	block := magicImageStart(devid, slabBytes)
+	copy(out, block[off:])
 }
 
 func magicImageStart(devid string, slabBytes int64) []byte {
 	const inodebase = 1 << magicBlkShift
-	const incompat = (EROFS_FEATURE_INCOMPAT_CHUNKED_FILE |
-		EROFS_FEATURE_INCOMPAT_DEVICE_TABLE)
+	const incompat = EROFS_FEATURE_INCOMPAT_DEVICE_TABLE
 
 	const rootNid = 20
 	const slabNid = 40
+	const mappedBlkAddr = 1
 
 	// setup super
 	super := erofs_super_block{
@@ -50,7 +37,7 @@ func magicImageStart(devid string, slabBytes int64) []byte {
 		BlkSzBits:       common.TruncU8(magicBlkShift),
 		RootNid:         common.TruncU16(rootNid),
 		Inos:            common.TruncU64(2),
-		Blocks:          common.TruncU32(MagicImageSize(slabBytes) >> magicBlkShift),
+		Blocks:          common.TruncU32(MagicImageSize(slabBytes)>>magicBlkShift + 1),
 		MetaBlkAddr:     common.TruncU32(0),
 		ExtraDevices:    common.TruncU16(1),
 		DevtSlotOff:     (EROFS_SUPER_OFFSET + 128) / 128, // TODO: use constants
@@ -65,7 +52,7 @@ func magicImageStart(devid string, slabBytes int64) []byte {
 	pack(c, &super)
 	super.Checksum = c.Sum32()
 
-	// dirents
+	// setup dirents
 	const numDirents = 3
 	dirents := [numDirents]erofs_dirent{
 		{Nid: rootNid, NameOff: numDirents*12 + 0, FileType: EROFS_FT_DIR},      // "."
@@ -75,7 +62,7 @@ func magicImageStart(devid string, slabBytes int64) []byte {
 	const direntNames = "...slab"
 	const direntSize = len(dirents)*12 + len(direntNames)
 
-	out := bytes.NewBuffer(make([]byte, 0, 2<<magicBlkShift))
+	out := bytes.NewBuffer(make([]byte, 0, 1<<magicBlkShift))
 	// offset 0
 	pad(out, rootNid*32)
 	// offset 640
@@ -105,56 +92,27 @@ func magicImageStart(devid string, slabBytes int64) []byte {
 
 	// write devtable
 	dev := erofs_deviceslot{
-		Blocks: common.TruncU32(slabBytes >> magicBlkShift),
+		Blocks:        common.TruncU32(slabBytes >> magicBlkShift),
+		MappedBlkAddr: common.TruncU32(mappedBlkAddr),
 	}
 	copy(dev.Tag[:], devid)
 	pack(out, dev)
 	// offset 1280
 
-	// nid 3: slab file
-	chunkedIU, err := inodeChunkInfo(magicBlkShift, magicChunkShift)
-	if err != nil {
-		panic(err)
-	}
-
+	// nid 40: slab file
 	var slab erofs_inode_extended
 	const layoutExtended = EROFS_INODE_LAYOUT_EXTENDED << EROFS_I_VERSION_BIT
-	const formatChunked = (layoutExtended | (EROFS_INODE_CHUNK_BASED << EROFS_I_DATALAYOUT_BIT))
-	slab.IFormat = formatChunked
+	const formatPlainExt = (layoutExtended | (EROFS_INODE_FLAT_PLAIN << EROFS_I_DATALAYOUT_BIT))
+	slab.IFormat = formatPlainExt
 	slab.IIno = slabNid
-	slab.IMode = unix.S_IFREG | 0600
+	slab.IMode = unix.S_IFREG | 0400
 	slab.INlink = 1
 	slab.ISize = uint64(slabBytes)
-	slab.IU = chunkedIU
+	slab.IU = common.TruncU32(mappedBlkAddr)
 	pack(out, slab)
 	// offset 1344
 
-	if out.Len() != magicOffset {
-		panic(fmt.Sprintln("math was wrong", out.Len(), magicOffset))
-	}
-	// fill in rest with chunk indexes
+	// fill in rest with zero
 	pad(out, int64(out.Available()))
-	b := out.Bytes()
-	magicImageChunks(magicOffset, b[magicOffset:])
-
-	return b
-}
-
-func magicImageChunks(off uint64, buf []byte) {
-	if off < magicOffset {
-		panic("offset too low")
-	} else if off%8 != 0 {
-		panic("offset must be multiple of 8")
-	} else if len(buf)%8 != 0 {
-		panic("len must be multiple of 8")
-	}
-	const devId = 0x00010000 // advise + devid
-	startIdx := (off - magicOffset) / 8
-	addr := uint64(startIdx<<(magicChunkShift-magicBlkShift+32) | devId)
-	inc := uint64(1 << (magicChunkShift - magicBlkShift + 32))
-	for len(buf) > 0 {
-		binary.LittleEndian.PutUint64(buf, addr)
-		addr += inc
-		buf = buf[8:]
-	}
+	return out.Bytes()
 }
