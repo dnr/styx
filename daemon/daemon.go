@@ -75,6 +75,10 @@ type (
 		presentLock sync.Mutex
 		presentMap  map[erofs.SlabLoc]struct{}
 
+		// keeps track of pending diff/fetch state
+		diffLock sync.Mutex
+		diffMap  map[erofs.SlabLoc]*diffOp
+
 		shutdownChan chan struct{}
 		shutdownWait sync.WaitGroup
 	}
@@ -129,6 +133,7 @@ func CachefilesServer(cfg Config) *server {
 		cacheState:   make(map[uint32]*openFileState),
 		stateBySlab:  make(map[uint16]*openFileState),
 		presentMap:   make(map[erofs.SlabLoc]struct{}),
+		diffMap:      make(map[erofs.SlabLoc]*diffOp),
 		shutdownChan: make(chan struct{}),
 	}
 }
@@ -618,7 +623,8 @@ func (s *server) handleDebugReq(r *DebugReq) (*DebugResp, error) {
 		cur = tx.Bucket(chunkBucket).Cursor()
 		for k, v := cur.First(); k != nil; k, v = cur.Next() {
 			var ci DebugChunkInfo
-			ci.Slab, ci.Addr = loadLoc(v)
+			loc := loadLoc(v)
+			ci.Slab, ci.Addr = loc.SlabId, loc.Addr
 			sphs := v[6:]
 			for len(sphs) > 0 {
 				ci.StorePaths = append(ci.StorePaths, nixbase32.EncodeToString(sphs[:storepath.PathHashSize]))
@@ -1234,7 +1240,7 @@ func (s *server) handleReadSlab(state *openFileState, ln, off uint64) error {
 		return err
 	}
 
-	return s.requestChunk(slabId, addr, digest, splitSphs(sphs))
+	return s.requestChunk(erofs.SlabLoc{slabId, addr}, digest, splitSphs(sphs), false)
 }
 
 func (s *server) mountMagicImage(slabId int) {
@@ -1303,8 +1309,8 @@ func locValue(id uint16, addr uint32, sph Sph) []byte {
 	return loc
 }
 
-func loadLoc(b []byte) (id uint16, addr uint32) {
-	return binary.LittleEndian.Uint16(b), binary.LittleEndian.Uint32(b[2:])
+func loadLoc(b []byte) erofs.SlabLoc {
+	return erofs.SlabLoc{binary.LittleEndian.Uint16(b), binary.LittleEndian.Uint32(b[2:])}
 }
 
 func appendSph(loc []byte, sph Sph) []byte {
@@ -1368,7 +1374,7 @@ func (s *server) AllocateBatch(ctx context.Context, blocks []uint16, digests []b
 						return err
 					}
 				}
-				out[i].SlabId, out[i].Addr = loadLoc(loc)
+				out[i] = loadLoc(loc)
 			}
 		}
 
@@ -1392,7 +1398,7 @@ func (s *server) lookupLocs(digests []byte) ([]erofs.SlabLoc, error) {
 			if loc == nil {
 				return errors.New("missing")
 			}
-			out[i].SlabId, out[i].Addr = loadLoc(loc)
+			out[i] = loadLoc(loc)
 		}
 		return nil
 	})

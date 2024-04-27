@@ -31,16 +31,72 @@ type (
 		e          int
 		d          int
 	}
+
+	opType int
+
+	diffOp struct {
+		tp   opType        // type of operation. constant.
+		err  error         // result. only written by startOp, read by callers after done is closed
+		done chan struct{} // closed by startOp after writing err
+
+		// info for diff op
+		baseDigests, reqDigests     []byte
+		baseInfo, reqInfo           []info
+		baseTotalSize, reqTotalSize int64
+
+		// info for single op
+		singleLoc    erofs.SlabLoc
+		singleDigest []byte
+	}
+
+	info struct {
+		size int64
+		loc  erofs.SlabLoc
+	}
 )
 
-func (s *server) requestChunk(slabId uint16, addr uint32, digest []byte, sphs []Sph) error {
+const (
+	opTypeDiff opType = iota
+	opTypeSingle
+)
+
+func (s *server) requestChunk(loc erofs.SlabLoc, digest []byte, sphs []Sph, forceSingle bool) error {
 	ctx := context.Background()
-	err := s.tryDiff(ctx, slabId, addr, digest, sphs)
-	if err != nil {
-		log.Printf("tryDiff(%s…): %v, doing plain read", common.DigestStr(digest)[:5], err)
-		err = s.readSingle(ctx, slabId, addr, digest)
+
+	var op *diffOp
+
+	s.diffLock.Lock()
+	if haveOp, ok := s.diffMap[loc]; ok {
+		op = haveOp
+	} else if forceSingle {
+		op, _ = s.buildSingleOp(ctx, loc, digest)
+	} else {
+		// build it
+		var err error
+		op, err = s.buildDiffOp(ctx, digest, sphs)
+		if err != nil {
+			op, err = s.buildSingleOp(ctx, loc, digest)
+		} else if s.diffMap[loc] == nil {
+			// shouldn't happen:
+			log.Print("buildDiffOp did not include requested chunk")
+			op, err = s.buildSingleOp(ctx, loc, digest)
+		}
+		// start it
+		go s.startOp(ctx, op)
 	}
-	return err
+	s.diffLock.Unlock()
+
+	// TODO: consider racing the diff against a single chunk read (with small delay)
+	// return when either is done
+
+	<-op.done
+
+	if op.err != nil && op.tp != opTypeSingle {
+		log.Printf("diff failed (%v), doing plain read", op.err)
+		return s.requestChunk(loc, digest, sphs, true)
+	}
+
+	return op.err
 }
 
 func (s *server) readChunks(
@@ -72,7 +128,7 @@ func (s *server) readChunks(
 
 		// request first missing one. the differ will do some readahead.
 		digest := digests[missing*s.digestBytes : (missing+1)*s.digestBytes]
-		err := s.requestChunk(locs[missing].SlabId, locs[missing].Addr, digest, sphs)
+		err := s.requestChunk(locs[missing], digest, sphs, false)
 		if err != nil {
 			return nil, err
 		}
@@ -83,7 +139,7 @@ func (s *server) readChunks(
 	rest := out
 	for _, loc := range locs {
 		toRead := min(1<<s.cfg.Params.Params.ChunkShift, len(rest))
-		err := s.getKnownChunk(loc.SlabId, loc.Addr, rest[:toRead])
+		err := s.getKnownChunk(loc, rest[:toRead])
 		if err != nil {
 			return nil, err
 		}
@@ -92,7 +148,7 @@ func (s *server) readChunks(
 	return out, nil
 }
 
-func (s *server) readSingle(ctx context.Context, slabId uint16, addr uint32, digest []byte) error {
+func (s *server) readSingle(ctx context.Context, loc erofs.SlabLoc, digest []byte) error {
 	// we have no size info here
 	buf := s.chunkPool.Get(1 << s.cfg.Params.Params.ChunkShift)
 	defer s.chunkPool.Put(buf)
@@ -105,14 +161,19 @@ func (s *server) readSingle(ctx context.Context, slabId uint16, addr uint32, dig
 		return fmt.Errorf("chunk overflowed chunk size: %d > %d", len(chunk), len(buf))
 	}
 
-	return s.gotNewChunk(slabId, addr, digest, chunk)
+	return s.gotNewChunk(loc, digest, chunk)
 }
 
-func (s *server) tryDiff(ctx context.Context, slabId uint16, addr uint32, targetDigest []byte, sphs []Sph) error {
+// call with diffLock held
+func (s *server) buildDiffOp(
+	ctx context.Context,
+	targetDigest []byte,
+	sphs []Sph,
+) (*diffOp, error) {
 	// TODO: able to use multiple bases at once
 	res, reqHash, err := s.findBase(sphs)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	log.Printf("diffing %s…-%s -> %s…-%s",
@@ -127,49 +188,45 @@ func (s *server) tryDiff(ctx context.Context, slabId uint16, addr uint32, target
 		panic("catalog should not match manifest with data")
 	}
 
+	// TODO maybe: each of these does three separate db transactions, rewrite to combine them
 	baseEntries, err := s.getDigestsFromImage(res.baseHash, isManifest)
 	if err != nil {
-		return err
+		log.Println("failed to get digests for", res.baseHash, res.baseName)
+		return nil, err
 	}
 	reqEntries, err := s.getDigestsFromImage(reqHash, isManifest)
 	if err != nil {
-		return err
+		log.Println("failed to get digests for", reqHash, res.reqName)
+		return nil, err
 	}
 
-	cshift := common.BlkShift(s.cfg.Params.Params.ChunkShift)
-	baseIter := digestIterator{ents: baseEntries, digestLen: s.digestBytes, chunkShift: cshift}
-	reqIter := digestIterator{ents: reqEntries, digestLen: s.digestBytes, chunkShift: cshift}
+	op := newDiffOp(opTypeDiff)
 
-	var baseDigests, reqDigests []byte
-	type info struct {
-		size   int64
-		slabId uint16
-		addr   uint32
-	}
-	var baseInfo, reqInfo []info
-	var baseTotalSize, reqTotalSize int64
+	baseIter := s.newDigestIterator(baseEntries)
+	reqIter := s.newDigestIterator(reqEntries)
 
 	_ = s.db.View(func(tx *bbolt.Tx) error {
 		cb := tx.Bucket(chunkBucket)
 
-		has := func(d []byte) (uint16, uint32, bool) {
-			loc := cb.Get(d)
-			if loc == nil {
-				return 0, 0, false // shouldn't happen
+		has := func(digest []byte) (erofs.SlabLoc, bool) {
+			v := cb.Get(digest)
+			if v == nil {
+				return erofs.SlabLoc{}, false // shouldn't happen
 			}
-			slabId, addr := loadLoc(loc)
-			return slabId, addr, s.locPresent(tx, erofs.SlabLoc{slabId, addr})
+			loc := loadLoc(v)
+			return loc, s.locPresent(tx, loc)
 		}
 
+		// TODO: this algorithm is kind of awful
+
 		found := false
-		for len(baseDigests) < s.digestBytes*s.cfg.ReadaheadChunks || len(reqDigests) < s.digestBytes*s.cfg.ReadaheadChunks {
+		for len(op.baseDigests) < s.digestBytes*s.cfg.ReadaheadChunks ||
+			len(op.reqDigests) < s.digestBytes*s.cfg.ReadaheadChunks {
 			_, baseDigest, baseSize, baseOk := baseIter.next()
 			_, reqDigest, reqSize, reqOk := reqIter.next()
 			if !baseOk && !reqOk {
 				break
 			}
-
-			// TODO: this algorithm is kind of awful
 
 			// loop until we found the target digest
 			found = found || bytes.Equal(reqDigest, targetDigest)
@@ -177,23 +234,16 @@ func (s *server) tryDiff(ctx context.Context, slabId uint16, addr uint32, target
 				continue
 			}
 
-			if baseOk && len(baseDigests) < s.digestBytes*s.cfg.ReadaheadChunks {
-				baseSlab, baseAddr, baseHas := has(baseDigest)
-				if baseHas {
-					baseDigests = append(baseDigests, baseDigest...)
-					baseInfo = append(baseInfo, info{baseSize, baseSlab, baseAddr})
-					baseTotalSize += baseSize
-					// log.Println("appending base", common.DigestStr(baseDigest), baseSlab, baseAddr, baseSize)
+			if baseOk && len(op.baseDigests) < s.digestBytes*s.cfg.ReadaheadChunks {
+				if baseLoc, baseHas := has(baseDigest); baseHas {
+					op.addBase(baseDigest, baseSize, baseLoc)
 				}
 			}
-			if reqOk && len(reqDigests) < s.digestBytes*s.cfg.ReadaheadChunks {
-				reqSlab, reqAddr, reqHas := has(reqDigest)
-				if !reqHas {
-					reqDigests = append(reqDigests, reqDigest...)
-					reqInfo = append(reqInfo, info{reqSize, reqSlab, reqAddr})
-					reqTotalSize += reqSize
-					// log.Println("appending req", common.DigestStr(reqDigest), reqSlab, reqAddr, reqSize)
-					// TODO: mark these as in-flight so another goroutine doesn't request them
+			if reqOk && len(op.reqDigests) < s.digestBytes*s.cfg.ReadaheadChunks {
+				if reqLoc, reqHas := has(reqDigest); !reqHas && s.diffMap[reqLoc] == nil {
+					op.addReq(reqDigest, reqSize, reqLoc)
+					// record we're diffing this one in the map
+					s.diffMap[reqLoc] = op
 				}
 			}
 		}
@@ -201,17 +251,64 @@ func (s *server) tryDiff(ctx context.Context, slabId uint16, addr uint32, target
 		return nil
 	})
 
-	diff, err := s.getChunkDiff(ctx, baseDigests, reqDigests)
+	return op, nil
+}
+
+// call with diffLock held
+func (s *server) buildSingleOp(
+	ctx context.Context,
+	loc erofs.SlabLoc,
+	targetDigest []byte,
+) (*diffOp, error) {
+	op := newDiffOp(opTypeSingle)
+	op.singleLoc = loc
+	op.singleDigest = targetDigest
+	s.diffMap[loc] = op
+	return op, nil
+}
+
+// runs in separate goroutine
+func (s *server) startOp(ctx context.Context, op *diffOp) {
+	defer func() {
+		if r := recover(); r != nil {
+			op.err = fmt.Errorf("panic in diff op: %v", r)
+		}
+
+		// clear references to this op from the map
+		s.diffLock.Lock()
+		switch op.tp {
+		case opTypeDiff:
+			for _, i := range op.reqInfo {
+				s.diffMap[i.loc] = nil
+			}
+		case opTypeSingle:
+			s.diffMap[op.singleLoc] = nil
+		}
+		s.diffLock.Unlock()
+
+		// wake up waiters
+		close(op.done)
+	}()
+
+	switch op.tp {
+	case opTypeDiff:
+		op.err = s.doDiffOp(ctx, op)
+	case opTypeSingle:
+		op.err = s.readSingle(ctx, op.singleLoc, op.singleDigest)
+	}
+}
+
+func (s *server) doDiffOp(ctx context.Context, op *diffOp) error {
+	diff, err := s.getChunkDiff(ctx, op.baseDigests, op.reqDigests)
 	if err != nil {
-		log.Println("chunk diff failed", err)
-		return s.readSingle(ctx, slabId, addr, targetDigest)
+		return err
 	}
 	defer diff.Close()
 
-	baseData := make([]byte, baseTotalSize)
+	baseData := make([]byte, op.baseTotalSize)
 	p := int64(0)
-	for _, i := range baseInfo {
-		if err := s.getKnownChunk(i.slabId, i.addr, baseData[p:p+i.size]); err != nil {
+	for _, i := range op.baseInfo {
+		if err := s.getKnownChunk(i.loc, baseData[p:p+i.size]); err != nil {
 			return err
 		}
 		p += i.size
@@ -223,17 +320,17 @@ func (s *server) tryDiff(ctx context.Context, slabId uint16, addr uint32, target
 	if err != nil {
 		return err
 	}
-	if len(reqData) < int(reqTotalSize) {
-		return fmt.Errorf("decompressed data is too short: %d < %d", len(reqData), reqTotalSize)
+	if len(reqData) < int(op.reqTotalSize) {
+		return fmt.Errorf("decompressed data is too short: %d < %d", len(reqData), op.reqTotalSize)
 	}
 
 	// write out to slab
 	p = 0
-	for idx, i := range reqInfo {
+	for idx, i := range op.reqInfo {
 		// slice with cap to force copy if less than block size
 		b := reqData[p : p+i.size : p+i.size]
-		digest := reqDigests[idx*s.digestBytes : (idx+1)*s.digestBytes]
-		if err := s.gotNewChunk(i.slabId, i.addr, digest, b); err != nil {
+		digest := op.reqDigests[idx*s.digestBytes : (idx+1)*s.digestBytes]
+		if err := s.gotNewChunk(i.loc, digest, b); err != nil {
 			return err
 		}
 		p += i.size
@@ -294,14 +391,14 @@ func (s *server) findBase(sphs []Sph) (catalogResult, Sph, error) {
 }
 
 // gotNewChunk may reslice b up to block size and zero up to the new size!
-func (s *server) gotNewChunk(slabId uint16, addr uint32, digest []byte, b []byte) error {
+func (s *server) gotNewChunk(loc erofs.SlabLoc, digest []byte, b []byte) error {
 	if err := checkChunkDigest(b, digest); err != nil {
 		return err
 	}
 
 	var writeFd int
 	s.lock.Lock()
-	if state := s.stateBySlab[slabId]; state != nil {
+	if state := s.stateBySlab[loc.SlabId]; state != nil {
 		writeFd = int(state.writeFd)
 	}
 	s.lock.Unlock()
@@ -327,7 +424,7 @@ func (s *server) gotNewChunk(slabId uint16, addr uint32, digest []byte, b []byte
 		b[i] = 0
 	}
 
-	off := int64(addr) << s.blockShift
+	off := int64(loc.Addr) << s.blockShift
 	if n, err := unix.Pwrite(writeFd, b, off); err != nil {
 		return err
 	} else if n != len(b) {
@@ -336,20 +433,20 @@ func (s *server) gotNewChunk(slabId uint16, addr uint32, digest []byte, b []byte
 
 	// record async
 	s.presentLock.Lock()
-	s.presentMap[erofs.SlabLoc{slabId, addr}] = struct{}{}
+	s.presentMap[loc] = struct{}{}
 	s.presentLock.Unlock()
 
 	go func() {
 		err := s.db.Batch(func(tx *bbolt.Tx) error {
-			sb := tx.Bucket(slabBucket).Bucket(slabKey(slabId))
+			sb := tx.Bucket(slabBucket).Bucket(slabKey(loc.SlabId))
 			if sb == nil {
 				return errors.New("missing slab bucket")
 			}
-			return sb.Put(addrKey(presentMask|addr), []byte{})
+			return sb.Put(addrKey(presentMask|loc.Addr), []byte{})
 		})
 		if err == nil {
 			s.presentLock.Lock()
-			delete(s.presentMap, erofs.SlabLoc{slabId, addr})
+			delete(s.presentMap, loc)
 			s.presentLock.Unlock()
 		}
 	}()
@@ -414,10 +511,10 @@ func (s *server) getDigestsFromImage(sph Sph, isManifest bool) ([]*pb.Entry, err
 	return common.ValOrErr(m.Entries, err)
 }
 
-func (s *server) getKnownChunk(slabId uint16, addr uint32, buf []byte) error {
+func (s *server) getKnownChunk(loc erofs.SlabLoc, buf []byte) error {
 	var readFd int
 	s.lock.Lock()
-	if state := s.stateBySlab[slabId]; state != nil {
+	if state := s.stateBySlab[loc.SlabId]; state != nil {
 		readFd = int(state.readFd)
 	}
 	s.lock.Unlock()
@@ -427,7 +524,7 @@ func (s *server) getKnownChunk(slabId uint16, addr uint32, buf []byte) error {
 
 	// TODO: if we don't actually have this cached, this could lead to an infinite loop.
 	// maybe keep map of reads that we initiated to cut off the loop.
-	_, err := unix.Pread(readFd, buf, int64(addr)<<s.blockShift)
+	_, err := unix.Pread(readFd, buf, int64(loc.Addr)<<s.blockShift)
 	return err
 }
 
@@ -442,6 +539,11 @@ func (s *server) locPresent(tx *bbolt.Tx, loc erofs.SlabLoc) bool {
 	sb := tx.Bucket(slabBucket)
 	db := sb.Bucket(slabKey(loc.SlabId))
 	return db.Get(addrKey(loc.Addr|presentMask)) != nil
+}
+
+func (s *server) newDigestIterator(entries []*pb.Entry) digestIterator {
+	cs := common.BlkShift(s.cfg.Params.Params.ChunkShift)
+	return digestIterator{ents: entries, digestLen: s.digestBytes, chunkShift: cs}
 }
 
 func (i *digestIterator) next() (string, []byte, int64, bool) {
@@ -462,4 +564,23 @@ func (i *digestIterator) next() (string, []byte, int64, bool) {
 		}
 		return ent.Path, ent.Digests[i.d-i.digestLen : i.d], size, true
 	}
+}
+
+func newDiffOp(tp opType) *diffOp {
+	return &diffOp{
+		tp:   tp,
+		done: make(chan struct{}),
+	}
+}
+
+func (op *diffOp) addBase(digest []byte, size int64, loc erofs.SlabLoc) {
+	op.baseDigests = append(op.baseDigests, digest...)
+	op.baseInfo = append(op.baseInfo, info{size, loc})
+	op.baseTotalSize += size
+}
+
+func (op *diffOp) addReq(digest []byte, size int64, loc erofs.SlabLoc) {
+	op.reqDigests = append(op.reqDigests, digest...)
+	op.reqInfo = append(op.reqInfo, info{size, loc})
+	op.reqTotalSize += size
 }
