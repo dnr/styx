@@ -65,6 +65,7 @@ type (
 		chunkPool   *chunkPool
 		builder     *erofs.Builder
 		devnode     atomic.Int32
+		stats       daemonStats
 
 		lock        sync.Mutex
 		cacheState  map[uint32]*openFileState // object id -> state
