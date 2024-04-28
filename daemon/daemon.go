@@ -113,7 +113,7 @@ type (
 		Params      pb.DaemonParams
 
 		ErofsBlockShift int
-		SmallFileCutoff int
+		// SmallFileCutoff int
 
 		Workers         int
 		ReadaheadChunks int
@@ -981,12 +981,12 @@ func (s *server) handleOpenImage(msgId, objectId, fd, flags uint32, cookie strin
 	// check cached first
 	gParams := s.cfg.Params.Params
 	mReq := manifester.ManifestReq{
-		Upstream:        img.Upstream,
-		StorePathHash:   cookie,
-		ChunkShift:      int(gParams.ChunkShift),
-		DigestAlgo:      gParams.DigestAlgo,
-		DigestBits:      int(gParams.DigestBits),
-		SmallFileCutoff: s.cfg.SmallFileCutoff,
+		Upstream:      img.Upstream,
+		StorePathHash: cookie,
+		ChunkShift:    int(gParams.ChunkShift),
+		DigestAlgo:    gParams.DigestAlgo,
+		DigestBits:    int(gParams.DigestBits),
+		// SmallFileCutoff: s.cfg.SmallFileCutoff,
 	}
 	envelopeBytes, err := s.mcread.Get(ctx, mReq.CacheKey(), nil)
 	if err == nil {

@@ -74,7 +74,7 @@ func withDaemonConfig(c *cobra.Command) runE {
 	c.Flags().StringVar(&cfg.CacheTag, "cachetag", "styx0", "cachefiles tag")
 	c.Flags().StringVar(&cfg.CacheDomain, "cachedomain", "styx", "cachefiles domain")
 	c.Flags().IntVar(&cfg.ErofsBlockShift, "block_shift", 12, "block size bits for local fs images")
-	c.Flags().IntVar(&cfg.SmallFileCutoff, "small_file_cutoff", 224, "cutoff for embedding small files in images")
+	// c.Flags().IntVar(&cfg.SmallFileCutoff, "small_file_cutoff", 224, "cutoff for embedding small files in images")
 	c.Flags().IntVar(&cfg.Workers, "workers", 16, "worker goroutines for cachefilesd serving")
 	c.Flags().IntVar(&cfg.ReadaheadChunks, "readahead_chunks", 30, "target chunks for readahead (max 256)")
 

@@ -162,7 +162,7 @@ func (tb *testBase) startDaemon() {
 			ChunkDiffUrl:     tb.manifesterAddr,
 		},
 		ErofsBlockShift: blockShift,
-		SmallFileCutoff: 224,
+		// SmallFileCutoff: 224,
 		Workers:         10,
 		ReadaheadChunks: 30,
 		IsTesting:       true,

@@ -2,10 +2,13 @@ package manifester
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"crypto/sha256"
 	"errors"
 	"io"
+	"regexp"
+	"strings"
 
 	"github.com/nix-community/go-nix/pkg/nar"
 	"golang.org/x/sync/errgroup"
@@ -19,6 +22,7 @@ import (
 type (
 	BuildArgs struct {
 		SmallFileCutoff int
+		ExpandManFiles  bool
 	}
 
 	ManifestBuilder struct {
@@ -57,6 +61,7 @@ func (b *ManifestBuilder) Build(ctx context.Context, args BuildArgs, r io.Reader
 	m := &pb.Manifest{
 		Params:          b.params,
 		SmallFileCutoff: int32(args.SmallFileCutoff),
+		ExpandManFiles:  args.ExpandManFiles,
 	}
 
 	nr, err := nar.NewReader(r)
@@ -105,6 +110,7 @@ func (b *ManifestBuilder) entry(ctx context.Context, args BuildArgs, m *pb.Manif
 	} else if err = h.Validate(); err != nil {
 		return err
 	} else if h.Path == "/" && h.Type != nar.TypeDirectory {
+		// TODO: allow these in manifests, use bind mounts in daemon
 		return errors.New("can't handle bare file nars yet")
 	}
 
@@ -122,14 +128,29 @@ func (b *ManifestBuilder) entry(ctx context.Context, args BuildArgs, m *pb.Manif
 	case nar.TypeRegular:
 		e.Type = pb.EntryType_REGULAR
 
-		if h.Size <= int64(args.SmallFileCutoff) {
-			e.InlineData = make([]byte, h.Size)
-			if _, err := io.ReadFull(nr, e.InlineData); err != nil {
+		var dataR io.Reader = nr
+
+		if args.ExpandManFiles && isGzManFile(h) {
+			if gzr, err := gzip.NewReader(nr); err == nil {
+				data, dErr := io.ReadAll(gzr)
+				cErr := gzr.Close()
+				if dErr == nil && cErr == nil {
+					dataR = bytes.NewReader(data)
+					e.Size = int64(len(data))
+					e.Path = strings.TrimSuffix(e.Path, ".gz")
+					e.ExpandedByManifester = true
+				}
+			}
+		}
+
+		if e.Size <= int64(args.SmallFileCutoff) {
+			e.InlineData = make([]byte, e.Size)
+			if _, err := io.ReadFull(dataR, e.InlineData); err != nil {
 				return err
 			}
 		} else {
 			var err error
-			e.Digests, err = b.chunkData(ctx, h.Size, nr, eg)
+			e.Digests, err = b.chunkData(ctx, e.Size, dataR, eg)
 			if err != nil {
 				return err
 			}
@@ -174,4 +195,10 @@ func (b *ManifestBuilder) chunkData(ctx context.Context, size int64, r io.Reader
 	}
 
 	return fullDigests, nil
+}
+
+var reManPath = regexp.MustCompile(`^/share/man/.*[.]gz$`)
+
+func isGzManFile(h *nar.Header) bool {
+	return reManPath.MatchString(h.Path)
 }

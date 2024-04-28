@@ -29,8 +29,6 @@ type (
 		ChunkShift int
 		DigestAlgo string
 		DigestBits int
-
-		SmallFileCutoff int
 	}
 	// response is SignedManifest
 

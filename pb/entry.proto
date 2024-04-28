@@ -21,4 +21,6 @@ message Entry {
   bytes inline_data = 5;
   // Otherwise, this is a series of concatenated digests, one per chunk:
   bytes digests = 6;
+  // Other data (informative only):
+  bool expanded_by_manifester = 7; // Was compressed file expanded by manifester
 }

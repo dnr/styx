@@ -9,8 +9,11 @@ import "narinfo.proto";
 
 message Manifest {
   GlobalParams params = 1;
-  int32 small_file_cutoff = 2;
   repeated Entry entries = 3;
+
+  // build parameters
+  int32 small_file_cutoff = 2;
+  bool expand_man_files = 4;
 
   // Metadata on how this was generated
   ManifestMeta meta = 10;

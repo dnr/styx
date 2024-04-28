@@ -28,7 +28,9 @@ import (
 
 const (
 	defaultSmallFileCutoff = 224
-	maxSmallFileCutoff     = 480
+	// maxSmallFileCutoff     = 480
+	// TODO: fix and turn on by default
+	defaultExpandManFiles = false
 
 	smallManifestCutoff = 32 * 1024
 )
@@ -81,12 +83,6 @@ func (s *server) validateManifestReq(r *ManifestReq, upstreamHost string) error 
 
 	if !slices.Contains(s.cfg.AllowedUpstreams, upstreamHost) {
 		return fmt.Errorf("invalid upstream %q", upstreamHost)
-	}
-
-	if r.SmallFileCutoff > maxSmallFileCutoff {
-		return fmt.Errorf("small file cutoff too big")
-	} else if r.SmallFileCutoff == 0 {
-		r.SmallFileCutoff = defaultSmallFileCutoff
 	}
 
 	return nil
@@ -211,8 +207,10 @@ func (s *server) handleManifest(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	// TODO: make args configurable again (hashed in manifest cache key)
 	args := BuildArgs{
-		SmallFileCutoff: r.SmallFileCutoff,
+		SmallFileCutoff: defaultSmallFileCutoff,
+		ExpandManFiles:  defaultExpandManFiles,
 	}
 	manifest, err := s.mb.Build(req.Context(), args, io.TeeReader(narOut, narHasher))
 	if err != nil {

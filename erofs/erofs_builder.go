@@ -16,7 +16,6 @@ import (
 
 	"github.com/lunixbochs/struc"
 	"github.com/nix-community/go-nix/pkg/hash"
-	"github.com/nix-community/go-nix/pkg/nar"
 	"golang.org/x/sys/unix"
 
 	"github.com/dnr/styx/common"
@@ -518,15 +517,4 @@ func inodeChunkInfo(blkbits, chunkbits common.BlkShift) (uint32, error) {
 		return 0, err
 	}
 	return binary.LittleEndian.Uint32(b), nil
-}
-
-func readFullFromNar(nr *nar.Reader, h *nar.Header) ([]byte, error) {
-	buf := make([]byte, h.Size)
-	num, err := io.ReadFull(nr, buf)
-	if err != nil {
-		return nil, err
-	} else if num != int(h.Size) {
-		return nil, io.ErrUnexpectedEOF
-	}
-	return buf, nil
 }
