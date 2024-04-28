@@ -100,7 +100,8 @@ func (s *server) requestChunk(loc erofs.SlabLoc, digest []byte, sphs []Sph, forc
 }
 
 func (s *server) readChunks(
-	size int64,
+	useTx *bbolt.Tx, // optional
+	totalSize int64,
 	locs []erofs.SlabLoc,
 	digests []byte, // used if allowMissing is true
 	sphs []Sph, // used if allowMissing is true
@@ -108,18 +109,26 @@ func (s *server) readChunks(
 ) ([]byte, error) {
 	// TODO: if we can't diff, this will end up reading them all serially. maybe we should
 	// request in parallel and let differ manage what's in flight.
-	for {
-		missing := -1
-		_ = s.db.View(func(tx *bbolt.Tx) error {
-			for idx, loc := range locs {
-				if !s.locPresent(tx, loc) {
-					missing = idx
-					return nil
-				}
+
+	firstMissing := -1
+	findMissing := func(tx *bbolt.Tx) error {
+		for idx, loc := range locs {
+			if !s.locPresent(tx, loc) {
+				firstMissing = idx
+				return nil
 			}
-			return nil
-		})
-		if missing == -1 {
+		}
+		firstMissing = -1
+		return nil
+	}
+
+	for {
+		if useTx != nil {
+			findMissing(useTx)
+		} else {
+			s.db.View(findMissing)
+		}
+		if firstMissing == -1 {
 			break // we have them all
 		}
 		if !allowMissing {
@@ -127,15 +136,15 @@ func (s *server) readChunks(
 		}
 
 		// request first missing one. the differ will do some readahead.
-		digest := digests[missing*s.digestBytes : (missing+1)*s.digestBytes]
-		err := s.requestChunk(locs[missing], digest, sphs, false)
+		digest := digests[firstMissing*s.digestBytes : (firstMissing+1)*s.digestBytes]
+		err := s.requestChunk(locs[firstMissing], digest, sphs, false)
 		if err != nil {
 			return nil, err
 		}
 	}
 
 	// read all from slabs. all but last chunk must be full.
-	out := make([]byte, size)
+	out := make([]byte, totalSize)
 	rest := out
 	for _, loc := range locs {
 		toRead := min(1<<s.cfg.Params.Params.ChunkShift, len(rest))
@@ -188,13 +197,18 @@ func (s *server) buildDiffOp(
 		panic("catalog should not match manifest with data")
 	}
 
-	// TODO maybe: each of these does three separate db transactions, rewrite to combine them
-	baseEntries, err := s.getDigestsFromImage(res.baseHash, isManifest)
+	tx, err := s.db.Begin(false)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+
+	baseEntries, err := s.getDigestsFromImage(tx, res.baseHash, isManifest)
 	if err != nil {
 		log.Println("failed to get digests for", res.baseHash, res.baseName)
 		return nil, err
 	}
-	reqEntries, err := s.getDigestsFromImage(reqHash, isManifest)
+	reqEntries, err := s.getDigestsFromImage(tx, reqHash, isManifest)
 	if err != nil {
 		log.Println("failed to get digests for", reqHash, res.reqName)
 		return nil, err
@@ -205,51 +219,47 @@ func (s *server) buildDiffOp(
 	baseIter := s.newDigestIterator(baseEntries)
 	reqIter := s.newDigestIterator(reqEntries)
 
-	_ = s.db.View(func(tx *bbolt.Tx) error {
-		cb := tx.Bucket(chunkBucket)
+	// build diff
+	// TODO: this algorithm is kind of awful
 
-		has := func(digest []byte) (erofs.SlabLoc, bool) {
-			v := cb.Get(digest)
-			if v == nil {
-				return erofs.SlabLoc{}, false // shouldn't happen
-			}
-			loc := loadLoc(v)
-			return loc, s.locPresent(tx, loc)
+	cb := tx.Bucket(chunkBucket)
+	has := func(digest []byte) (erofs.SlabLoc, bool) {
+		v := cb.Get(digest)
+		if v == nil {
+			return erofs.SlabLoc{}, false // shouldn't happen
+		}
+		loc := loadLoc(v)
+		return loc, s.locPresent(tx, loc)
+	}
+
+	found := false
+	for len(op.baseDigests) < s.digestBytes*s.cfg.ReadaheadChunks ||
+		len(op.reqDigests) < s.digestBytes*s.cfg.ReadaheadChunks {
+		_, baseDigest, baseSize, baseOk := baseIter.next()
+		_, reqDigest, reqSize, reqOk := reqIter.next()
+		if !baseOk && !reqOk {
+			break
 		}
 
-		// TODO: this algorithm is kind of awful
-
-		found := false
-		for len(op.baseDigests) < s.digestBytes*s.cfg.ReadaheadChunks ||
-			len(op.reqDigests) < s.digestBytes*s.cfg.ReadaheadChunks {
-			_, baseDigest, baseSize, baseOk := baseIter.next()
-			_, reqDigest, reqSize, reqOk := reqIter.next()
-			if !baseOk && !reqOk {
-				break
-			}
-
-			// loop until we found the target digest
-			found = found || bytes.Equal(reqDigest, targetDigest)
-			if !found {
-				continue
-			}
-
-			if baseOk && len(op.baseDigests) < s.digestBytes*s.cfg.ReadaheadChunks {
-				if baseLoc, baseHas := has(baseDigest); baseHas {
-					op.addBase(baseDigest, baseSize, baseLoc)
-				}
-			}
-			if reqOk && len(op.reqDigests) < s.digestBytes*s.cfg.ReadaheadChunks {
-				if reqLoc, reqHas := has(reqDigest); !reqHas && s.diffMap[reqLoc] == nil {
-					op.addReq(reqDigest, reqSize, reqLoc)
-					// record we're diffing this one in the map
-					s.diffMap[reqLoc] = op
-				}
-			}
+		// loop until we found the target digest
+		found = found || bytes.Equal(reqDigest, targetDigest)
+		if !found {
+			continue
 		}
 
-		return nil
-	})
+		if baseOk && len(op.baseDigests) < s.digestBytes*s.cfg.ReadaheadChunks {
+			if baseLoc, baseHas := has(baseDigest); baseHas {
+				op.addBase(baseDigest, baseSize, baseLoc)
+			}
+		}
+		if reqOk && len(op.reqDigests) < s.digestBytes*s.cfg.ReadaheadChunks {
+			if reqLoc, reqHas := has(reqDigest); !reqHas && s.diffMap[reqLoc] == nil {
+				op.addReq(reqDigest, reqSize, reqLoc)
+				// record we're diffing this one in the map
+				s.diffMap[reqLoc] = op
+			}
+		}
+	}
 
 	return op, nil
 }
@@ -471,19 +481,20 @@ func (s *server) getChunkDiff(ctx context.Context, bases, reqs []byte) (io.ReadC
 	return res.Body, nil
 }
 
-func (s *server) getDigestsFromImage(sph Sph, isManifest bool) ([]*pb.Entry, error) {
+// note: called with diffLock and read-only tx
+func (s *server) getDigestsFromImage(tx *bbolt.Tx, sph Sph, isManifest bool) ([]*pb.Entry, error) {
 	if isManifest {
 		// get the image sph back. makeManifestSph is its own inverse.
 		sph = makeManifestSph(sph)
 	}
+
+	v := tx.Bucket(manifestBucket).Get([]byte(sph.String()))
+	if v == nil {
+		return nil, errors.New("manifest not found")
+	}
 	var sm pb.SignedMessage
-	if err := s.db.View(func(tx *bbolt.Tx) error {
-		v := tx.Bucket(manifestBucket).Get([]byte(sph.String()))
-		if v == nil {
-			return errors.New("manifest not found")
-		}
-		return proto.Unmarshal(v, &sm)
-	}); err != nil {
+	err := proto.Unmarshal(v, &sm)
+	if err != nil {
 		return nil, err
 	}
 
@@ -495,11 +506,11 @@ func (s *server) getDigestsFromImage(sph Sph, isManifest bool) ([]*pb.Entry, err
 	// read chunks if needed
 	data := entry.InlineData
 	if len(data) == 0 {
-		locs, err := s.lookupLocs(entry.Digests)
+		locs, err := s.lookupLocs(tx, entry.Digests)
 		if err != nil {
 			return nil, err
 		}
-		data, err = s.readChunks(entry.Size, locs, nil, nil, false)
+		data, err = s.readChunks(tx, entry.Size, locs, nil, nil, false)
 		if err != nil {
 			return nil, err
 		}
@@ -507,7 +518,7 @@ func (s *server) getDigestsFromImage(sph Sph, isManifest bool) ([]*pb.Entry, err
 
 	// unmarshal
 	var m pb.Manifest
-	err := proto.Unmarshal(data, &m)
+	err = proto.Unmarshal(data, &m)
 	return common.ValOrErr(m.Entries, err)
 }
 

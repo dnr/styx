@@ -76,6 +76,8 @@ type (
 		presentMap  map[erofs.SlabLoc]struct{}
 
 		// keeps track of pending diff/fetch state
+		// note: we open a read-only transaction inside of diffLock.
+		// therefore we must not try to lock diffLock while in a read or write tx.
 		diffLock sync.Mutex
 		diffMap  map[erofs.SlabLoc]*diffOp
 
@@ -1055,7 +1057,7 @@ func (s *server) handleOpenImage(msgId, objectId, fd, flags uint32, cookie strin
 		}
 
 		// read them out
-		data, err = s.readChunks(entry.Size, locs, entry.Digests, []Sph{manifestSph}, true)
+		data, err = s.readChunks(nil, entry.Size, locs, entry.Digests, []Sph{manifestSph}, true)
 		if err != nil {
 			return 0, err
 		}
@@ -1388,19 +1390,16 @@ func (s *server) SlabInfo(slabId uint16) (tag string, totalBlocks uint32) {
 }
 
 // like AllocateBatch but only lookup
-func (s *server) lookupLocs(digests []byte) ([]erofs.SlabLoc, error) {
+func (s *server) lookupLocs(tx *bbolt.Tx, digests []byte) ([]erofs.SlabLoc, error) {
 	out := make([]erofs.SlabLoc, len(digests)/s.digestBytes)
-	err := s.db.View(func(tx *bbolt.Tx) error {
-		cb := tx.Bucket(chunkBucket)
-		for i := range out {
-			digest := digests[i*s.digestBytes : (i+1)*s.digestBytes]
-			loc := cb.Get(digest)
-			if loc == nil {
-				return errors.New("missing")
-			}
-			out[i] = loadLoc(loc)
+	cb := tx.Bucket(chunkBucket)
+	for i := range out {
+		digest := digests[i*s.digestBytes : (i+1)*s.digestBytes]
+		loc := cb.Get(digest)
+		if loc == nil {
+			return nil, errors.New("missing chunk")
 		}
-		return nil
-	})
-	return common.ValOrErr(out, err)
+		out[i] = loadLoc(loc)
+	}
+	return out, nil
 }
