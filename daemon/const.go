@@ -4,7 +4,7 @@ const (
 	dbFilename = "styx.bolt"
 
 	slabPrefix         = "_slab_"
-	magicImagePrefix   = "_magic_"
+	slabImagePrefix    = "_slabimg_"
 	manifestSlabPrefix = "_manifests_"
 
 	isManifestPrefix = "M/"

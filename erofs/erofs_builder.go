@@ -78,8 +78,6 @@ func (b *Builder) BuildFromManifestWithSlab(
 		return err
 	}
 
-	const inodeshift = common.BlkShift(5)
-	const inodesize = 1 << inodeshift
 	const layoutCompact = EROFS_INODE_LAYOUT_COMPACT << EROFS_I_VERSION_BIT
 	const formatPlain = (layoutCompact | (EROFS_INODE_FLAT_PLAIN << EROFS_I_DATALAYOUT_BIT))
 	const formatInline = (layoutCompact | (EROFS_INODE_FLAT_INLINE << EROFS_I_DATALAYOUT_BIT))
@@ -99,7 +97,7 @@ func (b *Builder) BuildFromManifestWithSlab(
 
 	allowedTail := func(tail int64) bool {
 		// tail has to fit in a block with the inode
-		return tail > 0 && tail <= b.blk.Size()-inodesize
+		return tail > 0 && tail <= b.blk.Size()-EROFS_COMPACT_INODE_SIZE
 	}
 	setDataOnInode := func(i *inodebuilder, data []byte) {
 		tail := b.blk.Leftover(int64(len(data)))
@@ -292,11 +290,11 @@ func (b *Builder) BuildFromManifestWithSlab(
 	p := int64(inodestart)
 	blkoff := int64(inodestart)
 	for i, inode := range inodes {
-		need := inodesize + inodeshift.Roundup(int64(len(inode.taildata)))
+		need := EROFS_COMPACT_INODE_SIZE + EROFS_NID_SHIFT.Roundup(int64(len(inode.taildata)))
 
 		if inode.taildataIsChunkIndex {
 			// chunk index does not need to fit in a block, it just gets laid out directly
-			inodes[i].nid = common.TruncU64(p >> inodeshift)
+			inodes[i].nid = common.TruncU64(p >> EROFS_NID_SHIFT)
 			p += need
 			blkoff = b.blk.Leftover(blkoff + need)
 			continue
@@ -306,7 +304,7 @@ func (b *Builder) BuildFromManifestWithSlab(
 			p += b.blk.Size() - blkoff
 			blkoff = 0
 		}
-		inodes[i].nid = common.TruncU64(p >> inodeshift)
+		inodes[i].nid = common.TruncU64(p >> EROFS_NID_SHIFT)
 		p += need
 		blkoff = b.blk.Leftover(blkoff + need)
 	}
@@ -357,7 +355,7 @@ func (b *Builder) BuildFromManifestWithSlab(
 		Blocks:          common.TruncU32(finalImageSize >> b.blk),
 		MetaBlkAddr:     common.TruncU32(0),
 		ExtraDevices:    common.TruncU16(len(devs)),
-		DevtSlotOff:     (EROFS_SUPER_OFFSET + 128) / 128, // TODO: use constants
+		DevtSlotOff:     (EROFS_SUPER_OFFSET + EROFS_SUPER_SIZE) / EROFS_DEVT_SLOT_SIZE,
 	}
 
 	var narhash []byte
@@ -382,12 +380,12 @@ func (b *Builder) BuildFromManifestWithSlab(
 	// 3.2: inodes and tails
 	blkoff = int64(inodestart)
 	for _, i := range inodes {
-		need := inodesize + inodeshift.Roundup(int64(len(i.taildata)))
+		need := EROFS_COMPACT_INODE_SIZE + EROFS_NID_SHIFT.Roundup(int64(len(i.taildata)))
 
 		if i.taildataIsChunkIndex {
 			// chunk index does not need to fit in a block, it just gets laid out directly
 			pack(out, i.i)
-			writeAndPad(out, i.taildata, inodeshift)
+			writeAndPad(out, i.taildata, EROFS_NID_SHIFT)
 			blkoff = b.blk.Leftover(blkoff + need)
 			continue
 		}
@@ -397,7 +395,7 @@ func (b *Builder) BuildFromManifestWithSlab(
 			blkoff = 0
 		}
 		pack(out, i.i)
-		writeAndPad(out, i.taildata, inodeshift)
+		writeAndPad(out, i.taildata, EROFS_NID_SHIFT)
 		blkoff = b.blk.Leftover(blkoff + need)
 	}
 	if blkoff > 0 {

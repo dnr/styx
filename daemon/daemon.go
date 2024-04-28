@@ -39,7 +39,7 @@ import (
 
 const (
 	typeImage uint16 = iota
-	typeMagicImage
+	typeSlabImage
 	typeSlab
 	typeManifestSlab
 )
@@ -91,10 +91,10 @@ type (
 	}
 
 	openFileState struct {
-		writeFd uint32 // for slabs, magic images, and store images
+		writeFd uint32 // for slabs, slab images, and store images
 		tp      uint16
 
-		// for slabs, magic images, and manifest slabs
+		// for slabs, slab images, and manifest slabs
 		slabId uint16
 		readFd uint32
 		// cacheFd uint32
@@ -845,7 +845,7 @@ func (s *server) handleOpen(msgId, objectId, fd, flags uint32, volume, cookie []
 
 	var cacheSize int64
 	fsid := string(cookie)
-	mountMagicImage := -1
+	mountSlabImage := -1
 
 	defer func() {
 		if r := recover(); r != nil {
@@ -865,8 +865,8 @@ func (s *server) handleOpen(msgId, objectId, fd, flags uint32, volume, cookie []
 		}
 		if cacheSize < 0 {
 			unix.Close(int(fd))
-		} else if mountMagicImage >= 0 {
-			go s.mountMagicImage(mountMagicImage)
+		} else if mountSlabImage >= 0 {
+			go s.mountSlabImage(mountSlabImage)
 		}
 	}()
 
@@ -882,15 +882,15 @@ func (s *server) handleOpen(msgId, objectId, fd, flags uint32, volume, cookie []
 			return err
 		}
 		cacheSize, retErr = s.handleOpenSlab(msgId, objectId, fd, flags, common.TruncU16(slabId))
-		mountMagicImage = slabId
+		mountSlabImage = slabId
 		return
-	} else if idx := strings.TrimPrefix(fsid, magicImagePrefix); idx != fsid {
-		log.Println("open magic image", idx, "as", objectId)
+	} else if idx := strings.TrimPrefix(fsid, slabImagePrefix); idx != fsid {
+		log.Println("open slab image", idx, "as", objectId)
 		slabId, err := strconv.Atoi(idx)
 		if err != nil {
 			return err
 		}
-		cacheSize, retErr = s.handleOpenMagicImage(msgId, objectId, fd, flags, common.TruncU16(slabId))
+		cacheSize, retErr = s.handleOpenSlabImage(msgId, objectId, fd, flags, common.TruncU16(slabId))
 		return
 	} else if len(fsid) == 32 {
 		log.Println("open image", fsid, "as", objectId)
@@ -928,17 +928,18 @@ func (s *server) handleOpenSlab(msgId, objectId, fd, flags uint32, id uint16) (i
 	return slabBytes, nil
 }
 
-func (s *server) handleOpenMagicImage(msgId, objectId, fd, flags uint32, id uint16) (int64, error) {
+func (s *server) handleOpenSlabImage(msgId, objectId, fd, flags uint32, id uint16) (int64, error) {
 	// record open state
 	s.lock.Lock()
 	defer s.lock.Unlock()
 	state := &openFileState{
 		writeFd: fd,
-		tp:      typeMagicImage,
+		tp:      typeSlabImage,
 		slabId:  id,
 	}
 	s.cacheState[objectId] = state
-	return erofs.MagicImageSize(slabBytes), nil
+	// always one block
+	return 1 << s.blockShift, nil
 }
 
 func (s *server) handleOpenImage(msgId, objectId, fd, flags uint32, cookie string) (int64, error) {
@@ -1145,7 +1146,7 @@ func (s *server) closeState(state *openFileState) {
 		_ = unix.Close(int(state.readFd))
 	}
 	if state.tp == typeSlab {
-		mp := filepath.Join(s.cfg.CachePath, magicImagePrefix+strconv.Itoa(int(state.slabId)))
+		mp := filepath.Join(s.cfg.CachePath, slabImagePrefix+strconv.Itoa(int(state.slabId)))
 		_ = unix.Unmount(mp, 0)
 	}
 }
@@ -1170,9 +1171,9 @@ func (s *server) handleRead(msgId, objectId uint32, ln, off uint64) (retErr erro
 	case typeImage:
 		log.Printf("read image %5d: %2dk @ %#x", objectId, ln>>10, off)
 		return s.handleReadImage(state, ln, off)
-	case typeMagicImage:
-		log.Printf("read magic image %5d: %2dk @ %#x", objectId, ln>>10, off)
-		return s.handleReadMagicImage(state, ln, off)
+	case typeSlabImage:
+		log.Printf("read slab image %5d: %2dk @ %#x", objectId, ln>>10, off)
+		return s.handleReadSlabImage(state, ln, off)
 	case typeSlab:
 		log.Printf("read slab %5d: %2dk @ %#x", objectId, ln>>10, off)
 		return s.handleReadSlab(state, ln, off)
@@ -1194,7 +1195,7 @@ func (s *server) handleReadImage(state *openFileState, _, _ uint64) error {
 	return nil
 }
 
-func (s *server) handleReadMagicImage(state *openFileState, ln, off uint64) error {
+func (s *server) handleReadSlabImage(state *openFileState, ln, off uint64) error {
 	var devid string
 	if off == 0 {
 		// only superblock needs this
@@ -1204,7 +1205,7 @@ func (s *server) handleReadMagicImage(state *openFileState, ln, off uint64) erro
 	defer s.chunkPool.Put(buf)
 
 	b := buf[:ln]
-	erofs.MagicImageRead(devid, slabBytes, off, b)
+	erofs.SlabImageRead(devid, slabBytes, s.blockShift, off, b)
 	_, err := unix.Pwrite(int(state.writeFd), b, int64(off))
 	return err
 }
@@ -1253,23 +1254,23 @@ func (s *server) handleReadSlab(state *openFileState, ln, off uint64) error {
 	return s.requestChunk(erofs.SlabLoc{slabId, addr}, digest, splitSphs(sphs), false)
 }
 
-func (s *server) mountMagicImage(slabId int) {
-	fsid := magicImagePrefix + strconv.Itoa(slabId)
+func (s *server) mountSlabImage(slabId int) {
+	fsid := slabImagePrefix + strconv.Itoa(slabId)
 	mountPoint := filepath.Join(s.cfg.CachePath, fsid)
 	if err := os.MkdirAll(mountPoint, 0755); err != nil {
-		log.Println("error mkdir on magic image mountpoint", mountPoint, err)
+		log.Println("error mkdir on slab image mountpoint", mountPoint, err)
 	}
 	opts := fmt.Sprintf("domain_id=%s,fsid=%s", s.cfg.CacheDomain, fsid)
 	err := unix.Mount("none", mountPoint, "erofs", 0, opts)
 	if err != nil {
-		log.Println("error mounting magic image", fsid, "on", mountPoint, err)
+		log.Println("error mounting slab image", fsid, "on", mountPoint, err)
 		return
 	}
-	log.Println("mounted magic image", fsid, "on", mountPoint)
+	log.Println("mounted slab image", fsid, "on", mountPoint)
 	slabFile := filepath.Join(mountPoint, "slab")
 	slabFd, err := unix.Open(slabFile, unix.O_RDONLY, 0)
 	if err != nil {
-		log.Println("error opening magic image file", slabFile, err)
+		log.Println("error opening slab image file", slabFile, err)
 		_ = unix.Unmount(mountPoint, 0)
 		return
 	}
@@ -1279,7 +1280,7 @@ func (s *server) mountMagicImage(slabId int) {
 	s.lock.Lock()
 	if state := s.stateBySlab[common.TruncU16(slabId)]; state == nil {
 		s.lock.Unlock()
-		log.Print("state not found in mountMagicImage")
+		log.Print("state not found in mountSlabImage")
 		_ = unix.Close(slabFd)
 		_ = unix.Unmount(mountPoint, 0)
 		return

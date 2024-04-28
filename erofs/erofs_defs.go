@@ -3,6 +3,7 @@ package erofs
 import (
 	"fmt"
 
+	"github.com/dnr/styx/common"
 	"github.com/lunixbochs/struc"
 )
 
@@ -175,6 +176,12 @@ const (
 	EROFS_FT_SOCK     = 6
 	EROFS_FT_SYMLINK  = 7
 	EROFS_FT_MAX      = 8
+
+	// added, not in header file:
+	EROFS_SUPER_SIZE          = 128
+	EROFS_COMPACT_INODE_SIZE  = 32
+	EROFS_EXTENDED_INODE_SIZE = 64
+	EROFS_NID_SHIFT           = common.BlkShift(5)
 )
 
 type (
@@ -449,11 +456,11 @@ func init() {
 	// 		.h_clusterbits = 1 << Z_EROFS_FRAGMENT_INODE_BIT
 	// 	};
 	// 	BUILD_BUG_ON(sizeof(struct erofs_super_block) != 128);
-	checkSize(&erofs_super_block{}, 128)
+	checkSize(&erofs_super_block{}, EROFS_SUPER_SIZE)
 	// 	BUILD_BUG_ON(sizeof(struct erofs_inode_compact) != 32);
-	checkSize(&erofs_inode_compact{}, 32)
+	checkSize(&erofs_inode_compact{}, EROFS_COMPACT_INODE_SIZE)
 	// 	BUILD_BUG_ON(sizeof(struct erofs_inode_extended) != 64);
-	checkSize(&erofs_inode_extended{}, 64)
+	checkSize(&erofs_inode_extended{}, EROFS_EXTENDED_INODE_SIZE)
 	// 	BUILD_BUG_ON(sizeof(struct erofs_xattr_ibody_header) != 12);
 	// 	BUILD_BUG_ON(sizeof(struct erofs_xattr_entry) != 4);
 	// 	BUILD_BUG_ON(sizeof(struct erofs_inode_chunk_info) != 4);
@@ -468,7 +475,7 @@ func init() {
 	// 	BUILD_BUG_ON(sizeof(struct erofs_inode_chunk_index) !=
 	// 		     sizeof(struct z_erofs_lcluster_index));
 	// 	BUILD_BUG_ON(sizeof(struct erofs_deviceslot) != 128);
-	checkSize(&erofs_deviceslot{}, 128)
+	checkSize(&erofs_deviceslot{}, EROFS_DEVT_SLOT_SIZE)
 
 	//		BUILD_BUG_ON(BIT(Z_EROFS_LI_LCLUSTER_TYPE_BITS) <
 	//			     Z_EROFS_LCLUSTER_TYPE_MAX - 1);

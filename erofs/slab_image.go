@@ -3,44 +3,37 @@ package erofs
 import (
 	"bytes"
 	"crypto/sha256"
+	"errors"
 	"hash/crc32"
 
 	"github.com/dnr/styx/common"
 	"golang.org/x/sys/unix"
 )
 
-const (
-	magicBlkShift common.BlkShift = 12
-)
+func SlabImageRead(devid string, slabBytes int64, blkShift common.BlkShift, off uint64, buf []byte) error {
+	if off != 0 {
+		return errors.New("slab image read must be from start")
+	} else if len(buf) < 4096 {
+		return errors.New("slab image read must be at least 4k")
+	}
 
-func MagicImageSize(slabSize int64) int64 {
-	return 1 << magicBlkShift
-}
-
-func MagicImageRead(devid string, slabBytes int64, off uint64, out []byte) {
-	block := magicImageStart(devid, slabBytes)
-	copy(out, block[off:])
-}
-
-func magicImageStart(devid string, slabBytes int64) []byte {
-	const inodebase = 1 << magicBlkShift
 	const incompat = EROFS_FEATURE_INCOMPAT_DEVICE_TABLE
 
 	const rootNid = 20
-	const slabNid = 40
+	const slabNid = 24
 	const mappedBlkAddr = 1
 
 	// setup super
 	super := erofs_super_block{
 		Magic:           EROFS_MAGIC,
 		FeatureIncompat: incompat,
-		BlkSzBits:       common.TruncU8(magicBlkShift),
+		BlkSzBits:       common.TruncU8(blkShift),
 		RootNid:         common.TruncU16(rootNid),
 		Inos:            common.TruncU64(2),
-		Blocks:          common.TruncU32(MagicImageSize(slabBytes)>>magicBlkShift + 1),
+		Blocks:          common.TruncU32(1),
 		MetaBlkAddr:     common.TruncU32(0),
 		ExtraDevices:    common.TruncU16(1),
-		DevtSlotOff:     (EROFS_SUPER_OFFSET + 128) / 128, // TODO: use constants
+		DevtSlotOff:     (EROFS_SUPER_OFFSET +EROFS_SUPER_SIZE ) / EROFS_DEVT_SLOT_SIZE,
 	}
 	copy(super.VolumeName[:], "@"+devid)
 	h := sha256.New()
@@ -62,9 +55,10 @@ func magicImageStart(devid string, slabBytes int64) []byte {
 	const direntNames = "...slab"
 	const direntSize = len(dirents)*12 + len(direntNames)
 
-	out := bytes.NewBuffer(make([]byte, 0, 1<<magicBlkShift))
+	// writes to out will fill in buf
+	out := bytes.NewBuffer(buf[:0:len(buf)])
 	// offset 0
-	pad(out, rootNid*32)
+	pad(out, rootNid<<EROFS_NID_SHIFT)
 	// offset 640
 
 	// nid 20: root dir
@@ -84,22 +78,9 @@ func magicImageStart(devid string, slabBytes int64) []byte {
 	out.WriteString(direntNames)
 	// offset 715
 
-	// write super
-	pad(out, int64(EROFS_SUPER_OFFSET-out.Len()))
-	// offset 1024
-	pack(out, &super)
-	// offset 1152
-
-	// write devtable
-	dev := erofs_deviceslot{
-		Blocks:        common.TruncU32(slabBytes >> magicBlkShift),
-		MappedBlkAddr: common.TruncU32(mappedBlkAddr),
-	}
-	copy(dev.Tag[:], devid)
-	pack(out, dev)
-	// offset 1280
-
-	// nid 40: slab file
+	// nid 24: slab file
+	pad(out, int64(slabNid<<EROFS_NID_SHIFT-out.Len()))
+	// offset 768
 	var slab erofs_inode_extended
 	const layoutExtended = EROFS_INODE_LAYOUT_EXTENDED << EROFS_I_VERSION_BIT
 	const formatPlainExt = (layoutExtended | (EROFS_INODE_FLAT_PLAIN << EROFS_I_DATALAYOUT_BIT))
@@ -110,9 +91,24 @@ func magicImageStart(devid string, slabBytes int64) []byte {
 	slab.ISize = uint64(slabBytes)
 	slab.IU = common.TruncU32(mappedBlkAddr)
 	pack(out, slab)
-	// offset 1344
+	// offset 832
+
+	// write super
+	pad(out, int64(EROFS_SUPER_OFFSET-out.Len()))
+	// offset 1024
+	pack(out, &super)
+	// offset 1152
+
+	// write devtable
+	dev := erofs_deviceslot{
+		Blocks:        common.TruncU32(slabBytes >> blkShift),
+		MappedBlkAddr: common.TruncU32(mappedBlkAddr),
+	}
+	copy(dev.Tag[:], devid)
+	pack(out, dev)
+	// offset 1280
 
 	// fill in rest with zero
 	pad(out, int64(out.Available()))
-	return out.Bytes()
+	return nil
 }
