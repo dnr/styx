@@ -251,13 +251,14 @@ func (b *Builder) BuildFromManifestWithSlab(
 	// all inodes have correct len(taildata)
 	// files have correct taildata but dirs do not
 
-	// TODO: test this math with > 23 devs
-	inodebase := b.blk.Roundup(EROFS_SUPER_OFFSET + 128 + devTableSize)
+	// put first inode right after super + devtable
+	// TODO: put first few inodes < 1024 if they fit?
+	inodestart := EROFS_SUPER_OFFSET + 128 + devTableSize
 
 	// 2.2: lay out inodes and tails
 	// using greedy for now. TODO: use best fit or something
-	p := int64(0) // position relative to inode base ("metadata area")
-	blkoff := int64(0)
+	p := int64(inodestart)
+	blkoff := int64(inodestart)
 	for i, inode := range inodes {
 		need := inodesize + inodeshift.Roundup(int64(len(inode.taildata)))
 
@@ -297,9 +298,6 @@ func (b *Builder) BuildFromManifestWithSlab(
 	// at this point:
 	// all inodes have correct taildata
 
-	// from here on, p is relative to 0
-	p += inodebase
-
 	// 2.4: lay out full blocks
 	for _, data := range datablocks {
 		data.i.i.IU = common.TruncU32(p >> b.blk)
@@ -325,7 +323,7 @@ func (b *Builder) BuildFromManifestWithSlab(
 		RootNid:         common.TruncU16(root.nid),
 		Inos:            common.TruncU64(len(inodes)),
 		Blocks:          common.TruncU32(finalImageSize >> b.blk),
-		MetaBlkAddr:     common.TruncU32(inodebase >> b.blk),
+		MetaBlkAddr:     common.TruncU32(0),
 		ExtraDevices:    common.TruncU16(len(devs)),
 		DevtSlotOff:     (EROFS_SUPER_OFFSET + 128) / 128, // TODO: use constants
 	}
@@ -348,10 +346,9 @@ func (b *Builder) BuildFromManifestWithSlab(
 	pad(out, EROFS_SUPER_OFFSET)
 	pack(out, &super)
 	pack(out, devs)
-	pad(out, inodebase-EROFS_SUPER_OFFSET-128-devTableSize)
 
 	// 3.2: inodes and tails
-	blkoff = 0
+	blkoff = int64(inodestart)
 	for _, i := range inodes {
 		need := inodesize + inodeshift.Roundup(int64(len(i.taildata)))
 
