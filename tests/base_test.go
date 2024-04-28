@@ -164,7 +164,7 @@ func (tb *testBase) startDaemon() {
 		ErofsBlockShift: blockShift,
 		SmallFileCutoff: 224,
 		Workers:         10,
-		ReadaheadChunks: 100,
+		ReadaheadChunks: 30,
 		IsTesting:       true,
 	}
 	pk, err := os.ReadFile("../keys/testsuite.public")

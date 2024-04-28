@@ -56,6 +56,8 @@ type (
 )
 
 const (
+	noBaseName = "<none>"
+
 	opTypeDiff opType = iota
 	opTypeSingle
 )
@@ -109,6 +111,7 @@ func (s *server) requestChunk(loc erofs.SlabLoc, digest []byte, sphs []Sph, forc
 	return op.err
 }
 
+// currently this is only used to read manifest chunks
 func (s *server) readChunks(
 	useTx *bbolt.Tx, // optional
 	totalSize int64,
@@ -117,9 +120,6 @@ func (s *server) readChunks(
 	sphs []Sph, // used if allowMissing is true
 	allowMissing bool,
 ) ([]byte, error) {
-	// TODO: if we can't diff, this will end up reading them all serially. maybe we should
-	// request in parallel and let differ manage what's in flight.
-
 	firstMissing := -1
 	findMissing := func(tx *bbolt.Tx) error {
 		for idx, loc := range locs {
@@ -190,21 +190,14 @@ func (s *server) buildDiffOp(
 	sphs []Sph,
 ) (*diffOp, error) {
 	// TODO: able to use multiple bases at once
-	res, reqHash, err := s.findBase(sphs)
-	if err != nil {
-		return nil, err
-	}
-
-	log.Printf("diffing %s…-%s -> %s…-%s",
-		res.baseHash.String()[:5],
-		res.baseName,
-		reqHash.String()[:5],
-		res.reqName,
-	)
+	res, reqHash := s.findBase(sphs)
+	usingBase := res.baseName != noBaseName
 
 	isManifest := strings.HasPrefix(res.reqName, isManifestPrefix)
-	if isManifest != strings.HasPrefix(res.baseName, isManifestPrefix) {
-		panic("catalog should not match manifest with data")
+	if usingBase {
+		if isManifest != strings.HasPrefix(res.baseName, isManifestPrefix) {
+			panic("catalog should not match manifest with data")
+		}
 	}
 
 	tx, err := s.db.Begin(false)
@@ -213,27 +206,29 @@ func (s *server) buildDiffOp(
 	}
 	defer tx.Rollback()
 
-	baseEntries, err := s.getDigestsFromImage(tx, res.baseHash, isManifest)
-	if err != nil {
-		log.Println("failed to get digests for", res.baseHash, res.baseName)
-		return nil, err
+	var baseIter digestIterator
+	if usingBase {
+		baseEntries, err := s.getDigestsFromImage(tx, res.baseHash, isManifest)
+		if err != nil {
+			log.Println("failed to get digests for", res.baseHash, res.baseName)
+			return nil, err
+		}
+		baseIter = s.newDigestIterator(baseEntries)
 	}
 	reqEntries, err := s.getDigestsFromImage(tx, reqHash, isManifest)
 	if err != nil {
 		log.Println("failed to get digests for", reqHash, res.reqName)
 		return nil, err
 	}
+	reqIter := s.newDigestIterator(reqEntries)
 
 	op := newDiffOp(opTypeDiff)
-
-	baseIter := s.newDigestIterator(baseEntries)
-	reqIter := s.newDigestIterator(reqEntries)
 
 	// build diff
 	// TODO: this algorithm is kind of awful
 
 	cb := tx.Bucket(chunkBucket)
-	has := func(digest []byte) (erofs.SlabLoc, bool) {
+	present := func(digest []byte) (erofs.SlabLoc, bool) {
 		v := cb.Get(digest)
 		if v == nil {
 			return erofs.SlabLoc{}, false // shouldn't happen
@@ -243,8 +238,8 @@ func (s *server) buildDiffOp(
 	}
 
 	found := false
-	for len(op.baseDigests) < s.digestBytes*s.cfg.ReadaheadChunks ||
-		len(op.reqDigests) < s.digestBytes*s.cfg.ReadaheadChunks {
+	maxDigestLen := s.digestBytes * s.cfg.ReadaheadChunks
+	for len(op.baseDigests) < maxDigestLen || len(op.reqDigests) < maxDigestLen {
 		_, baseDigest, baseSize, baseOk := baseIter.next()
 		_, reqDigest, reqSize, reqOk := reqIter.next()
 		if !baseOk && !reqOk {
@@ -257,18 +252,38 @@ func (s *server) buildDiffOp(
 			continue
 		}
 
-		if baseOk && len(op.baseDigests) < s.digestBytes*s.cfg.ReadaheadChunks {
-			if baseLoc, baseHas := has(baseDigest); baseHas {
+		if baseOk && len(op.baseDigests) < maxDigestLen {
+			if baseLoc, basePresent := present(baseDigest); basePresent {
 				op.addBase(baseDigest, baseSize, baseLoc)
 			}
 		}
-		if reqOk && len(op.reqDigests) < s.digestBytes*s.cfg.ReadaheadChunks {
-			if reqLoc, reqHas := has(reqDigest); !reqHas && s.diffMap[reqLoc] == nil {
+		if reqOk && len(op.reqDigests) < maxDigestLen {
+			if reqLoc, reqPresent := present(reqDigest); !reqPresent && s.diffMap[reqLoc] == nil {
 				op.addReq(reqDigest, reqSize, reqLoc)
 				// record we're diffing this one in the map
 				s.diffMap[reqLoc] = op
 			}
 		}
+	}
+
+	if usingBase {
+		log.Printf("diffing %s…-%s -> %s…-%s [%d/%d -> %d/%d]",
+			res.baseHash.String()[:5],
+			res.baseName,
+			reqHash.String()[:5],
+			res.reqName,
+			op.baseTotalSize,
+			len(op.baseInfo),
+			op.reqTotalSize,
+			len(op.reqInfo),
+		)
+	} else {
+		log.Printf("requesting %s…-%s [%d/%d]",
+			reqHash.String()[:5],
+			res.reqName,
+			op.reqTotalSize,
+			len(op.reqInfo),
+		)
 	}
 
 	return op, nil
@@ -357,9 +372,11 @@ func (s *server) doDiffOp(ctx context.Context, op *diffOp) error {
 	}
 
 	// rest is json stats
-	var diffStats manifester.ChunkDiffStats
-	if err = json.Unmarshal(reqData[p:], &diffStats); err == nil {
-		log.Printf("diff stats: %#v", diffStats)
+	var st manifester.ChunkDiffStats
+	if err = json.Unmarshal(reqData[p:], &st); err == nil {
+		log.Printf("diff %d/%d -> %d/%d = %d (%.1f%%)",
+			st.BaseBytes, st.BaseChunks, st.ReqBytes, st.ReqChunks,
+			st.DiffBytes, 100*float64(st.DiffBytes)/float64(st.ReqBytes))
 	}
 
 	return nil
@@ -396,18 +413,21 @@ func (s *server) expandChunkDiff(ctx context.Context, baseData []byte, diff io.R
 	return out, nil
 }
 
-func (s *server) findBase(sphs []Sph) (catalogResult, Sph, error) {
-	// find a base with similar data. go backwards on the assumption that recent images with
-	// this chunk will be more similar.
-	var errs []string
+func (s *server) findBase(sphs []Sph) (catalogResult, Sph) {
+	// find an image with a base with similar data. go backwards on the assumption that recent
+	// images with this chunk will be more similar.
 	for i := len(sphs) - 1; i >= 0; i-- {
 		if res, err := s.catalog.findBase(sphs[i]); err == nil {
-			return res, sphs[i], nil
-		} else {
-			errs = append(errs, err.Error())
+			return res, sphs[i]
 		}
 	}
-	return catalogResult{}, Sph{}, errors.New(strings.Join(errs, "; "))
+	// can't find any base, diff latest against nothing
+	sph := sphs[len(sphs)-1]
+	name := s.catalog.findName(sph)
+	return catalogResult{
+		reqName:  name,
+		baseName: noBaseName,
+	}, sph
 }
 
 // gotNewChunk may reslice b up to block size and zero up to the new size!
