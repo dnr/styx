@@ -595,8 +595,7 @@ func (s *server) locPresent(tx *bbolt.Tx, loc erofs.SlabLoc) bool {
 }
 
 func (s *server) newDigestIterator(entries []*pb.Entry) digestIterator {
-	cs := common.BlkShift(s.cfg.Params.Params.ChunkShift)
-	return digestIterator{ents: entries, digestLen: s.digestBytes, chunkShift: cs}
+	return digestIterator{ents: entries, digestLen: s.digestBytes, chunkShift: s.chunkShift}
 }
 
 func (i *digestIterator) next() (string, []byte, int64, bool) {

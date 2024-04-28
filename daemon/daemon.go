@@ -57,6 +57,7 @@ type (
 		cfg         *Config
 		digestBytes int
 		blockShift  common.BlkShift
+		chunkShift  common.BlkShift
 		csread      manifester.ChunkStoreRead
 		mcread      manifester.ChunkStoreRead
 		catalog     *catalog
@@ -130,6 +131,7 @@ func CachefilesServer(cfg Config) *server {
 		cfg:          &cfg,
 		digestBytes:  int(cfg.Params.Params.DigestBits >> 3),
 		blockShift:   common.BlkShift(cfg.ErofsBlockShift),
+		chunkShift:   common.BlkShift(cfg.Params.Params.ChunkShift),
 		csread:       manifester.NewChunkStoreReadUrl(cfg.Params.ChunkReadUrl, manifester.ChunkReadPath),
 		mcread:       manifester.NewChunkStoreReadUrl(cfg.Params.ManifestCacheUrl, manifester.ManifestCachePath),
 		catalog:      newCatalog(),
@@ -1053,7 +1055,8 @@ func (s *server) handleOpenImage(msgId, objectId, fd, flags uint32, cookie strin
 		log.Printf("loading chunked manifest for %s", storePath)
 
 		// allocate space for manifest chunks in slab
-		blocks := common.MakeBlocksList(entry.Size, common.BlkShift(s.cfg.Params.Params.ChunkShift), s.blockShift)
+		blocks := make([]uint16, 0, len(entry.Digests)/s.digestBytes)
+		blocks = common.AppendBlocksList(blocks, entry.Size, s.chunkShift, s.blockShift)
 
 		ctxForManifestChunks := context.WithValue(ctx, "sph", manifestSph)
 		locs, err := s.AllocateBatch(ctxForManifestChunks, blocks, entry.Digests, true)

@@ -43,6 +43,8 @@ type (
 		nid      uint64
 
 		taildataIsChunkIndex bool
+
+		batchStart, batchEnd int
 	}
 
 	dbent struct {
@@ -70,10 +72,10 @@ func (b *Builder) BuildFromManifestWithSlab(
 	out io.Writer,
 	sm SlabManager,
 ) error {
-	hashBytes := int(m.Params.DigestBits >> 3)
+	digestBytes := int(m.Params.DigestBits >> 3)
 	chunkShift := common.BlkShift(m.Params.ChunkShift)
 
-	if err := sm.VerifyParams(hashBytes, b.blk, chunkShift); err != nil {
+	if err := sm.VerifyParams(digestBytes, b.blk, chunkShift); err != nil {
 		return err
 	}
 
@@ -118,6 +120,41 @@ func (b *Builder) BuildFromManifestWithSlab(
 	}
 
 	// pass 1: read manifest
+
+	const batchSize = 1000
+	batchBlocks := make([]uint16, 0, batchSize)
+	batchDigests := make([]byte, 0, batchSize*digestBytes)
+	batchInodes := make([]*inodebuilder, 0, batchSize/10)
+
+	flushBlocks := func() error {
+		allLocs, err := sm.AllocateBatch(ctx, batchBlocks, batchDigests, false)
+		if err != nil {
+			return err
+		}
+
+		for _, i := range batchInodes {
+			locs := allLocs[i.batchStart:i.batchEnd]
+			idxs := make([]erofs_inode_chunk_index, len(locs))
+			for j, loc := range locs {
+				devId, ok := slabmap[loc.SlabId]
+				if !ok {
+					devId = common.TruncU16(len(slabmap))
+					slabmap[loc.SlabId] = devId
+				}
+				idxs[j].DeviceId = devId + 1
+				idxs[j].BlkAddr = loc.Addr
+			}
+			if i.taildata, err = packToBytes(idxs); err != nil {
+				return err
+			}
+			i.taildataIsChunkIndex = true
+		}
+
+		batchBlocks = batchBlocks[:0]
+		batchDigests = batchDigests[:0]
+		batchInodes = batchInodes[:0]
+		return nil
+	}
 
 	for _, e := range m.Entries {
 		// every entry gets an inode and all but the root get a dirent
@@ -167,32 +204,25 @@ func (b *Builder) BuildFromManifestWithSlab(
 				if e.Size > math.MaxUint32 {
 					return fmt.Errorf("TODO: support larger files with extended inode")
 				}
+
 				i.i.ISize = common.TruncU32(e.Size)
-				blocks := common.MakeBlocksList(e.Size, chunkShift, b.blk)
-				if len(e.Digests) != len(blocks)*hashBytes {
-					return fmt.Errorf("digest list wrong size")
-				}
-				// TODO: do in larger batches
-				locs, err := sm.AllocateBatch(ctx, blocks, e.Digests, false)
-				if err != nil {
-					return err
-				}
 				i.i.IFormat = formatChunked
 				i.i.IU = chunkedIU
-				idxs := make([]erofs_inode_chunk_index, len(blocks))
-				for i, loc := range locs {
-					devId, ok := slabmap[loc.SlabId]
-					if !ok {
-						devId = common.TruncU16(len(slabmap))
-						slabmap[loc.SlabId] = devId
+
+				nChunks := int(chunkShift.Blocks(e.Size))
+				if len(e.Digests) != nChunks*digestBytes {
+					return fmt.Errorf("digest list wrong size")
+				}
+				if len(batchBlocks)+nChunks > batchSize {
+					if err := flushBlocks(); err != nil {
+						return err
 					}
-					idxs[i].DeviceId = devId + 1
-					idxs[i].BlkAddr = loc.Addr
 				}
-				if i.taildata, err = packToBytes(idxs); err != nil {
-					return err
-				}
-				i.taildataIsChunkIndex = true
+				i.batchStart = len(batchBlocks)
+				batchBlocks = common.AppendBlocksList(batchBlocks, e.Size, chunkShift, b.blk)
+				i.batchEnd = len(batchBlocks)
+				batchDigests = append(batchDigests, e.Digests...)
+				batchInodes = append(batchInodes, i)
 			} else if e.Size > 0 {
 				return fmt.Errorf("non-zero size but no taildata or digests")
 			}
@@ -222,6 +252,9 @@ func (b *Builder) BuildFromManifestWithSlab(
 				tp:   fstype,
 			})
 		}
+	}
+	if err := flushBlocks(); err != nil {
+		return err
 	}
 
 	// pass 2: pack inodes and tails

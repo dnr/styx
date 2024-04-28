@@ -1,12 +1,12 @@
 package common
 
-func MakeBlocksList(size int64, chunkShift, blockShift BlkShift) []uint16 {
-	blocks := make([]uint16, chunkShift.Blocks(size))
+func AppendBlocksList(blocks []uint16, size int64, chunkShift, blockShift BlkShift) []uint16 {
+	nChunks := chunkShift.Blocks(size)
 	allButLast := TruncU16(chunkShift.Size() >> blockShift)
-	for j := range blocks {
-		blocks[j] = allButLast
+	for j := 0; j < int(nChunks)-1; j++ {
+		blocks = append(blocks, allButLast)
 	}
 	lastChunkLen := chunkShift.Leftover(size)
-	blocks[len(blocks)-1] = TruncU16(blockShift.Blocks(lastChunkLen))
+	blocks = append(blocks, TruncU16(blockShift.Blocks(lastChunkLen)))
 	return blocks
 }
