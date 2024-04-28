@@ -63,6 +63,16 @@ const (
 func (s *server) requestChunk(loc erofs.SlabLoc, digest []byte, sphs []Sph, forceSingle bool) error {
 	ctx := context.Background()
 
+	s.readKnownLock.Lock()
+	if _, ok := s.readKnownMap[loc]; ok {
+		// We think we have this chunk and are trying to use it as a base, but we got asked for
+		// it again. This shouldn't happen, but at least try to recover by doing a single read
+		// instead of diffing more.
+		log.Printf("bug: got request for supposedly-known chunk %s at %v", common.DigestStr(digest), loc)
+		forceSingle = true
+	}
+	s.readKnownLock.Unlock()
+
 	var op *diffOp
 
 	s.diffLock.Lock()
@@ -537,9 +547,17 @@ func (s *server) getKnownChunk(loc erofs.SlabLoc, buf []byte) error {
 		return errors.New("slab not loaded or missing read fd")
 	}
 
-	// TODO: if we don't actually have this cached, this could lead to an infinite loop.
-	// maybe keep map of reads that we initiated to cut off the loop.
+	// record that we're reading this out of the slab
+	s.readKnownLock.Lock()
+	s.readKnownMap[loc] = struct{}{}
+	s.readKnownLock.Unlock()
+
 	_, err := unix.Pread(readFd, buf, int64(loc.Addr)<<s.blockShift)
+
+	s.readKnownLock.Lock()
+	delete(s.readKnownMap, loc)
+	s.readKnownLock.Unlock()
+
 	return err
 }
 

@@ -75,6 +75,10 @@ type (
 		presentLock sync.Mutex
 		presentMap  map[erofs.SlabLoc]struct{}
 
+		// tracks reads for chunks that we should have, to detect bugs
+		readKnownLock sync.Mutex
+		readKnownMap  map[erofs.SlabLoc]struct{}
+
 		// keeps track of pending diff/fetch state
 		// note: we open a read-only transaction inside of diffLock.
 		// therefore we must not try to lock diffLock while in a read or write tx.
@@ -135,6 +139,7 @@ func CachefilesServer(cfg Config) *server {
 		cacheState:   make(map[uint32]*openFileState),
 		stateBySlab:  make(map[uint16]*openFileState),
 		presentMap:   make(map[erofs.SlabLoc]struct{}),
+		readKnownMap: make(map[erofs.SlabLoc]struct{}),
 		diffMap:      make(map[erofs.SlabLoc]*diffOp),
 		shutdownChan: make(chan struct{}),
 	}
