@@ -22,6 +22,12 @@ import (
 	"github.com/dnr/styx/pb"
 )
 
+// larger block sizes don't seem to work with erofs yet
+const (
+	maxBlockShift = 12
+	maxBlockSize  = 1 << maxBlockShift
+)
+
 type (
 	BuilderConfig struct {
 		BlockShift int
@@ -60,6 +66,9 @@ type (
 )
 
 func NewBuilder(cfg BuilderConfig) *Builder {
+	if cfg.BlockShift > maxBlockShift {
+		panic("larger block size not supported yet")
+	}
 	return &Builder{
 		blk: common.BlkShift(cfg.BlockShift),
 	}
@@ -266,7 +275,6 @@ func (b *Builder) BuildFromManifestWithSlab(
 	devTableSize := int64(len(devs) * 128)
 
 	// 2.1: directory sizes
-	dummy := make([]byte, b.blk.Size())
 	for _, db := range dirs {
 		db.sortAndSize(b.blk)
 		tail := b.blk.Leftover(db.size)
@@ -274,7 +282,7 @@ func (b *Builder) BuildFromManifestWithSlab(
 			tail = 0
 		}
 		// dummy data just to track size
-		db.i.taildata = dummy[:tail]
+		db.i.taildata = _zeros[:tail]
 	}
 
 	// at this point:
@@ -472,16 +480,16 @@ func (db *dirbuilder) write(out io.Writer, shift common.BlkShift) {
 	return
 }
 
-var _zeros = make([]byte, 4096)
+var _zeros = make([]byte, maxBlockSize)
 
 func pad(out io.Writer, n int64) error {
 	for {
-		if n <= 4096 {
+		if n <= maxBlockSize {
 			_, err := out.Write(_zeros[:n])
 			return err
 		}
 		out.Write(_zeros)
-		n -= 4096
+		n -= maxBlockSize
 	}
 }
 
