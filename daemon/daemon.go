@@ -1356,17 +1356,20 @@ func (s *server) AllocateBatch(ctx context.Context, blocks []uint16, digests []b
 		if err != nil {
 			return err
 		}
-
-		seq := sb.Sequence()
-		if seq == 0 {
-			// reserve some blocks for future purposes
-			seq = reservedBlocks
-		}
+		// reserve some blocks for future purposes
+		seq := max(sb.Sequence(), reservedBlocks)
 
 		for i := range out {
 			digest := digests[i*s.digestBytes : (i+1)*s.digestBytes]
-			if loc := cb.Get(digest); loc == nil { // allocate
-				// TODO: check seq for overflow here and move to next slab
+			if loc := cb.Get(digest); loc == nil {
+				// allocate
+				if seq >= slabBytes>>s.blockShift {
+					slabId++
+					if sb, err = slabroot.CreateBucketIfNotExists(slabKey(slabId)); err != nil {
+						return err
+					}
+					seq = max(sb.Sequence(), reservedBlocks)
+				}
 				addr := common.TruncU32(seq)
 				seq += uint64(blocks[i])
 				if err := cb.Put(digest, locValue(slabId, addr, sph)); err != nil {
@@ -1374,7 +1377,7 @@ func (s *server) AllocateBatch(ctx context.Context, blocks []uint16, digests []b
 				} else if err = sb.Put(addrKey(addr), digest); err != nil {
 					return err
 				}
-				out[i].SlabId, out[i].Addr = slabId, addr
+				out[i] = erofs.SlabLoc{slabId, addr}
 			} else {
 				if newLoc := appendSph(loc, sph); newLoc != nil {
 					if err := cb.Put(digest, newLoc); err != nil {
