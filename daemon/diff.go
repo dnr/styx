@@ -470,8 +470,12 @@ func (s *server) getChunkDiff(ctx context.Context, bases, reqs []byte) (io.ReadC
 		return nil, err
 	}
 	u := strings.TrimSuffix(s.cfg.Params.ChunkDiffUrl, "/") + manifester.ChunkDiffPath
-	// TODO: use context here
-	res, err := http.Post(u, "application/json", bytes.NewReader(reqBytes))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, bytes.NewReader(reqBytes))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	res, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return nil, err
 	} else if res.StatusCode != http.StatusOK {

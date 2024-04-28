@@ -40,7 +40,7 @@ type (
 		Reqs  []byte
 	}
 	// Response is compressed concatenation of reqs, using bases as compression base,
-	// with ChunkDiffStats (json) appended after that.
+	// with ChunkDiffStats (json) appended after that (also compressed).
 	// Bases and Reqs do not need to be the same length.
 	// (Caller must know the lengths of reqs ahead of time to be able to split the result.)
 	// Max number of digests in each is 256. With 64KiB chunks, that makes 16MiB total data.
