@@ -215,3 +215,13 @@ func (tb *testBase) nixHash(path string) string {
 	require.NoErrorf(tb.t, err, "output: %q %v", b, err)
 	return strings.TrimSpace(string(b))
 }
+
+func (tb *testBase) debug() *daemon.DebugResp {
+	sock := filepath.Join(tb.cachedir, "styx.sock")
+	c := client.NewClient(sock)
+	var res daemon.DebugResp
+	code, err := c.Call(daemon.DebugPath, daemon.DebugReq{}, &res)
+	require.NoError(tb.t, err)
+	require.Equal(tb.t, code, http.StatusOK)
+	return &res
+}

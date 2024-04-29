@@ -583,20 +583,27 @@ func (s *server) handleDebugReq(r *DebugReq) (*DebugResp, error) {
 		var gp pb.GlobalParams
 		_ = proto.Unmarshal(tx.Bucket(metaBucket).Get(metaParams), &gp)
 		res.Params = &gp
+
+		// stats
+		res.Stats = s.stats.export()
+
 		// images
-		cur := tx.Bucket(imageBucket).Cursor()
-		for k, v := cur.First(); k != nil; k, v = cur.Next() {
-			var img pb.DbImage
-			if err := proto.Unmarshal(v, &img); err != nil {
-				log.Print("unmarshal error iterating images", err)
-				continue
+		if r.IncludeImages {
+			cur := tx.Bucket(imageBucket).Cursor()
+			for k, v := cur.First(); k != nil; k, v = cur.Next() {
+				var img pb.DbImage
+				if err := proto.Unmarshal(v, &img); err != nil {
+					log.Print("unmarshal error iterating images", err)
+					continue
+				}
+				img.StorePath = ""
+				res.Images[img.StorePath] = &img
 			}
-			img.StorePath = ""
-			res.Images[img.StorePath] = &img
 		}
+
 		// slabs
 		slabroot := tx.Bucket(slabBucket)
-		cur = slabroot.Cursor()
+		cur := slabroot.Cursor()
 		for k, _ := cur.First(); k != nil; k, _ = cur.Next() {
 			blockSizes := make(map[uint32]uint32)
 			sb := slabroot.Bucket(k)
@@ -628,19 +635,22 @@ func (s *server) handleDebugReq(r *DebugReq) (*DebugResp, error) {
 			}
 			res.Slabs = append(res.Slabs, &si)
 		}
+
 		// chunks
-		cur = tx.Bucket(chunkBucket).Cursor()
-		for k, v := cur.First(); k != nil; k, v = cur.Next() {
-			var ci DebugChunkInfo
-			loc := loadLoc(v)
-			ci.Slab, ci.Addr = loc.SlabId, loc.Addr
-			sphs := v[6:]
-			for len(sphs) > 0 {
-				ci.StorePaths = append(ci.StorePaths, nixbase32.EncodeToString(sphs[:storepath.PathHashSize]))
-				sphs = sphs[storepath.PathHashSize:]
+		if r.IncludeChunks {
+			cur = tx.Bucket(chunkBucket).Cursor()
+			for k, v := cur.First(); k != nil; k, v = cur.Next() {
+				var ci DebugChunkInfo
+				loc := loadLoc(v)
+				ci.Slab, ci.Addr = loc.SlabId, loc.Addr
+				sphs := v[6:]
+				for len(sphs) > 0 {
+					ci.StorePaths = append(ci.StorePaths, nixbase32.EncodeToString(sphs[:storepath.PathHashSize]))
+					sphs = sphs[storepath.PathHashSize:]
+				}
+				ci.Present = slabroot.Bucket(slabKey(ci.Slab)).Get(addrKey(ci.Addr|presentMask)) != nil
+				res.Chunks[common.DigestStr(k)] = &ci
 			}
-			ci.Present = slabroot.Bucket(slabKey(ci.Slab)).Get(addrKey(ci.Addr|presentMask)) != nil
-			res.Chunks[common.DigestStr(k)] = &ci
 		}
 		return nil
 	})
@@ -989,9 +999,11 @@ func (s *server) handleOpenImage(msgId, objectId, fd, flags uint32, cookie strin
 		DigestBits:    int(gParams.DigestBits),
 		// SmallFileCutoff: s.cfg.SmallFileCutoff,
 	}
+	s.stats.manifestCacheReqs.Add(1)
 	envelopeBytes, err := s.mcread.Get(ctx, mReq.CacheKey(), nil)
 	if err == nil {
 		log.Printf("got manifest for %s from cache", cookie)
+		s.stats.manifestCacheHits.Add(1)
 	} else {
 		// not found cached, request it
 		log.Printf("requesting manifest for %s", cookie)
@@ -1000,16 +1012,21 @@ func (s *server) handleOpenImage(msgId, objectId, fd, flags uint32, cookie strin
 		if err != nil {
 			return 0, err
 		}
+		s.stats.manifestReqs.Add(1)
 		res, err := http.Post(u, "application/json", bytes.NewReader(reqBytes))
 		if err != nil {
+			s.stats.manifestErrs.Add(1)
 			return 0, fmt.Errorf("manifester http error: %w", err)
 		}
 		defer res.Body.Close()
 		if res.StatusCode != http.StatusOK {
+			s.stats.manifestErrs.Add(1)
 			return 0, fmt.Errorf("manifester http status: %s", res.Status)
 		} else if zr, err := zstd.NewReader(res.Body); err != nil {
+			s.stats.manifestErrs.Add(1)
 			return 0, err
 		} else if envelopeBytes, err = io.ReadAll(zr); err != nil {
+			s.stats.manifestErrs.Add(1)
 			return 0, err
 		}
 		log.Printf("got manifest for %s", cookie)
@@ -1210,7 +1227,14 @@ func (s *server) handleReadSlabImage(state *openFileState, ln, off uint64) error
 	return err
 }
 
-func (s *server) handleReadSlab(state *openFileState, ln, off uint64) error {
+func (s *server) handleReadSlab(state *openFileState, ln, off uint64) (retErr error) {
+	s.stats.slabReads.Add(1)
+	defer func() {
+		if retErr != nil {
+			s.stats.slabReadErrs.Add(1)
+		}
+	}()
+
 	if ln > (1 << s.cfg.Params.Params.ChunkShift) {
 		panic("got too big slab read")
 	}
@@ -1275,7 +1299,12 @@ func (s *server) mountSlabImage(slabId int) {
 		return
 	}
 	// disable readahead so we don't get requests for parts we haven't written
-	_ = unix.Fadvise(slabFd, 0, 0, unix.FADV_RANDOM)
+	if err = unix.Fadvise(slabFd, 0, 0, unix.FADV_RANDOM); err != nil {
+		log.Println("error fadvise", err)
+		_ = unix.Close(slabFd)
+		_ = unix.Unmount(mountPoint, 0)
+		return
+	}
 
 	s.lock.Lock()
 	if state := s.stateBySlab[common.TruncU16(slabId)]; state == nil {

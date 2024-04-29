@@ -31,9 +31,12 @@ type (
 	// returns Status
 
 	DebugReq struct {
+		IncludeImages bool
+		IncludeChunks bool
 	}
 	DebugResp struct {
 		Params *pb.GlobalParams
+		Stats  Stats
 		Images map[string]*pb.DbImage
 		Slabs  []*DebugSlabInfo
 		Chunks map[string]*DebugChunkInfo

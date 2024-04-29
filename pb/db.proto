@@ -44,7 +44,7 @@ message DbImage {
 
   // size of erofs image
   int64 image_size = 1;
-  int64 manifest_size = 8;
+  int64 manifest_size = 8; // TODO: this isn't needed since we have it in manifests bucket?
   // manifest metadata
   ManifestMeta meta = 9;
 }
