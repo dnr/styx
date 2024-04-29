@@ -16,6 +16,7 @@ import (
 
 	"github.com/lunixbochs/struc"
 	"github.com/nix-community/go-nix/pkg/hash"
+	"golang.org/x/exp/slices"
 	"golang.org/x/sys/unix"
 
 	"github.com/dnr/styx/common"
@@ -272,7 +273,8 @@ func (b *Builder) BuildFromManifestWithSlab(
 		devs[devId].Blocks = blocks
 		copy(devs[devId].Tag[:], tag)
 	}
-	devTableSize := int64(len(devs) * 128)
+	devTableSize := int64(len(devs) * EROFS_DEVT_SLOT_SIZE)
+	superEnd := EROFS_SUPER_OFFSET + EROFS_SUPER_SIZE + devTableSize
 
 	// 2.1: directory sizes
 	for _, db := range dirs {
@@ -289,39 +291,78 @@ func (b *Builder) BuildFromManifestWithSlab(
 	// all inodes have correct len(taildata)
 	// files have correct taildata but dirs do not
 
-	// put first inode right after super + devtable
-	// TODO: put first few inodes < 1024 if they fit?
-	inodestart := EROFS_SUPER_OFFSET + 128 + devTableSize
-
 	// 2.2: lay out inodes and tails
-	// using greedy for now. TODO: use best fit or something
-	p := int64(inodestart)
-	blkoff := int64(inodestart)
+	// use limited first-fit
+	type inodespace struct {
+		addr uint32
+		off  uint16
+		ln   uint16
+	}
+	// available space in first block:
+	inodealloc := []inodespace{
+		inodespace{0, 0, EROFS_SUPER_OFFSET},
+		inodespace{0, common.TruncU16(superEnd), common.TruncU16(b.blk.Size() - superEnd)},
+	}
+	nextAddr := uint32(1)
+
 	for i, inode := range inodes {
 		need := EROFS_COMPACT_INODE_SIZE + EROFS_NID_SHIFT.Roundup(int64(len(inode.taildata)))
-
-		if inode.taildataIsChunkIndex {
-			// chunk index does not need to fit in a block, it just gets laid out directly
-			inodes[i].nid = common.TruncU64(p >> EROFS_NID_SHIFT)
-			p += need
-			blkoff = b.blk.Leftover(blkoff + need)
-			continue
+		found := -1
+		for idx, space := range inodealloc {
+			if int64(space.ln) >= need {
+				found = idx
+				break
+			}
+		}
+		// log.Printf("ALLOC %v", inodealloc)
+		// log.Printf("INODE %d need %d ischunkindex %v found %d", i, need, inode.taildataIsChunkIndex, found)
+		if found == -1 {
+			if inode.taildataIsChunkIndex && len(inodealloc) > 0 &&
+				inodealloc[len(inodealloc)-1].addr == nextAddr-1 {
+				// can use last block and overflow
+				found = len(inodealloc) - 1
+				// log.Printf("is chunk index, using last block")
+			} else {
+				// allocate new block
+				found = len(inodealloc)
+				inodealloc = append(inodealloc, inodespace{nextAddr, 0, common.TruncU16(b.blk.Size())})
+				nextAddr++
+				// log.Printf("alloc new block")
+			}
 		}
 
-		if blkoff+need > b.blk.Size() {
-			p += b.blk.Size() - blkoff
-			blkoff = 0
+		space := inodealloc[found]
+		inodes[i].nid = (uint64(space.addr)<<b.blk + uint64(space.off)) >> EROFS_NID_SHIFT
+		if inode.taildataIsChunkIndex && need > int64(space.ln) {
+			// overflow this one (must be last)
+			if found != len(inodealloc)-1 || space.addr != nextAddr-1 {
+				panic("bug")
+			}
+			need -= int64(space.ln)
+			space.addr += 1 + common.TruncU32(need>>b.blk)
+			nextAddr = space.addr + 1
+			space.off = common.TruncU16(b.blk.Leftover(need))
+			space.ln = common.TruncU16(b.blk.Size()) - space.off
+			// log.Printf("OVERFLOWED nid %d", inodes[i].nid)
+		} else {
+			space.off += common.TruncU16(need)
+			space.ln -= common.TruncU16(need)
+			// log.Printf("FIT nid %d", inodes[i].nid)
 		}
-		inodes[i].nid = common.TruncU64(p >> EROFS_NID_SHIFT)
-		p += need
-		blkoff = b.blk.Leftover(blkoff + need)
-	}
-	if blkoff > 0 {
-		p += b.blk.Size() - blkoff
+		inodealloc[found] = space
+		// clear filled blocks and also anything more than 16 back
+		inodealloc = slices.DeleteFunc(inodealloc, func(space inodespace) bool {
+			return space.ln == 0 || nextAddr-space.addr > 16
+		})
 	}
 
 	// at this point:
 	// all inodes have correct nid
+
+	// sort inodes by nid so we can write them in the right order
+	slices.SortFunc(inodes, func(a, b *inodebuilder) int {
+		return int(a.nid) - int(b.nid)
+	})
 
 	// 2.3: write actual dirs to buffers
 	for _, db := range dirs {
@@ -336,6 +377,12 @@ func (b *Builder) BuildFromManifestWithSlab(
 	// at this point:
 	// all inodes have correct taildata
 
+	// start data blocks at block following last inode block
+	// (if last inode was chunk data and exactly filled an overflow block, this will leave one
+	// unused block after the inodes. just don't care about that case.)
+	dataStart := int64(nextAddr) << b.blk
+	p := dataStart
+
 	// 2.4: lay out full blocks
 	for _, data := range datablocks {
 		data.i.i.IU = common.TruncU32(p >> b.blk)
@@ -349,6 +396,27 @@ func (b *Builder) BuildFromManifestWithSlab(
 	// all inodes have correct IU and ISize
 
 	// pass 3: write
+
+	// write pre-super inodes
+	p = 0
+	writeInode := func(i *inodebuilder) {
+		needPad := int64(i.nid)<<EROFS_NID_SHIFT - p
+		// log.Printf("WRITE INODE p is %d, nid is %d, pad %d", p, i.nid, needPad)
+		pad(out, needPad)
+		p += needPad
+		pack(out, i.i)
+		p += EROFS_COMPACT_INODE_SIZE
+		if i.taildata != nil {
+			writeAndPad(out, i.taildata, EROFS_NID_SHIFT)
+			p += EROFS_NID_SHIFT.Roundup(int64(len(i.taildata)))
+		}
+	}
+	for _, i := range inodes {
+		if i.nid >= EROFS_SUPER_OFFSET>>EROFS_NID_SHIFT {
+			break
+		}
+		writeInode(i)
+	}
 
 	// 3.1: fill in super
 	const incompat = (EROFS_FEATURE_INCOMPAT_CHUNKED_FILE |
@@ -381,34 +449,19 @@ func (b *Builder) BuildFromManifestWithSlab(
 	pack(c, &super)
 	super.Checksum = c.Sum32()
 
-	pad(out, EROFS_SUPER_OFFSET)
+	pad(out, EROFS_SUPER_OFFSET-p)
 	pack(out, &super)
 	pack(out, devs)
+	p = superEnd
 
 	// 3.2: inodes and tails
-	blkoff = int64(inodestart)
 	for _, i := range inodes {
-		need := EROFS_COMPACT_INODE_SIZE + EROFS_NID_SHIFT.Roundup(int64(len(i.taildata)))
-
-		if i.taildataIsChunkIndex {
-			// chunk index does not need to fit in a block, it just gets laid out directly
-			pack(out, i.i)
-			writeAndPad(out, i.taildata, EROFS_NID_SHIFT)
-			blkoff = b.blk.Leftover(blkoff + need)
+		if i.nid < EROFS_SUPER_OFFSET>>EROFS_NID_SHIFT {
 			continue
 		}
-
-		if blkoff+need > b.blk.Size() {
-			pad(out, b.blk.Size()-blkoff)
-			blkoff = 0
-		}
-		pack(out, i.i)
-		writeAndPad(out, i.taildata, EROFS_NID_SHIFT)
-		blkoff = b.blk.Leftover(blkoff + need)
+		writeInode(i)
 	}
-	if blkoff > 0 {
-		pad(out, b.blk.Size()-blkoff)
-	}
+	pad(out, dataStart-p)
 
 	// 3.4: full blocks
 	for _, data := range datablocks {
@@ -484,7 +537,9 @@ var _zeros = make([]byte, maxBlockSize)
 
 func pad(out io.Writer, n int64) error {
 	for {
-		if n <= maxBlockSize {
+		if n == 0 {
+			return nil
+		} else if n <= maxBlockSize {
 			_, err := out.Write(_zeros[:n])
 			return err
 		}
