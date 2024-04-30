@@ -25,6 +25,8 @@ func TestSmallImage(t *testing.T) {
 	require.NotZero(t, d2.Slabs[0].PresentChunks)
 	require.NotZero(t, d2.Slabs[0].PresentBlocks)
 
+	tb.dropCaches()
+
 	require.Equal(t, "1rswindywkyq2jmfpxd6n772jii3z5xz6ypfbb63c17k5il39hfm", tb.nixHash(mp1))
 	d3 := tb.debug()
 	require.Equal(t, d2.Stats.SlabReads, d3.Stats.SlabReads)

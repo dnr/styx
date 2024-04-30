@@ -225,3 +225,10 @@ func (tb *testBase) debug() *daemon.DebugResp {
 	require.Equal(tb.t, code, http.StatusOK)
 	return &res
 }
+
+func (tb *testBase) dropCaches() {
+	fd, err := unix.Open("/proc/sys/vm/drop_caches", unix.O_WRONLY, 0)
+	require.NoError(tb.t, err)
+	unix.Write(fd, []byte("3"))
+	unix.Close(fd)
+}
