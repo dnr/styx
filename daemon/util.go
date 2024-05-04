@@ -7,10 +7,12 @@ import (
 	"os"
 	"regexp"
 
+	"github.com/nix-community/go-nix/pkg/nixbase32"
 	"github.com/nix-community/go-nix/pkg/storepath"
 )
 
-var reStorePath = regexp.MustCompile(`^[0123456789abcdfghijklmnpqrsvwxyz]{32}-.*$`)
+// matches store path without the /nix/store
+var reStorePath = regexp.MustCompile(`^[` + nixbase32.Alphabet + `]{32}-.*$`)
 
 func checkChunkDigest(got, digest []byte) error {
 	h := sha256.New() // TODO: support other hashes
@@ -46,7 +48,7 @@ func writeToTempFile(b []byte) (string, error) {
 
 func makeManifestSph(sph Sph) Sph {
 	// the "manifest sph" for a sph is the same with one bit flipped (will affect _end_ of base32
-	// string form)
+	// string form). note that this is its own inverse.
 	sph[0] ^= 1
 	return sph
 }
