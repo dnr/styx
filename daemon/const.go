@@ -18,4 +18,5 @@ var (
 	manifestBucket = []byte("manifest")
 
 	metaParams = []byte("params")
+	metaSchema = []byte("schema")
 )

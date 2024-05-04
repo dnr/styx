@@ -45,6 +45,12 @@ const (
 )
 
 const (
+	schemaV0 uint32 = iota
+
+	schemaLatest = schemaV0
+)
+
+const (
 	savedFdName = "devnode"
 	// preCreatedSlabs    = 1
 	presentMask        = 1 << 31
@@ -158,8 +164,40 @@ func (s *server) openDb() (err error) {
 	}
 	s.db.MaxBatchDelay = 100 * time.Millisecond
 
-	return s.db.Update(func(tx *bbolt.Tx) error {
+	checkSchemaVer := func(mb *bbolt.Bucket) error {
+		b := mb.Get(metaSchema)
+		if len(b) != 4 {
+			ver := binary.LittleEndian.AppendUint32(nil, schemaLatest)
+			return mb.Put(metaSchema, ver)
+		}
+		have := binary.LittleEndian.Uint32(b)
+		if have != schemaLatest {
+			return fmt.Errorf("mismatched schema version %d != %d", have, schemaLatest)
+		}
+		return nil
+	}
+
+	checkParams := func(mb *bbolt.Bucket) error {
+		b := mb.Get(metaParams)
+		if b == nil {
+			if b, err = proto.Marshal(s.cfg.Params.Params); err != nil {
+				return err
+			}
+			return mb.Put(metaParams, b)
+		}
 		var gp pb.GlobalParams
+		if err = proto.Unmarshal(b, &gp); err != nil {
+			return err
+		} else if mp := s.cfg.Params.Params; false ||
+			gp.ChunkShift != mp.ChunkShift ||
+			gp.DigestAlgo != mp.DigestAlgo ||
+			gp.DigestBits != mp.DigestBits {
+			return fmt.Errorf("mismatched global params; wipe state and start over")
+		}
+		return nil
+	}
+
+	return s.db.Update(func(tx *bbolt.Tx) error {
 		if mb, err := tx.CreateBucketIfNotExists(metaBucket); err != nil {
 			return err
 		} else if _, err = tx.CreateBucketIfNotExists(chunkBucket); err != nil {
@@ -170,18 +208,10 @@ func (s *server) openDb() (err error) {
 			return err
 		} else if _, err = tx.CreateBucketIfNotExists(manifestBucket); err != nil {
 			return err
-		} else if b := mb.Get(metaParams); b == nil {
-			if b, err = proto.Marshal(s.cfg.Params.Params); err != nil {
-				return err
-			}
-			mb.Put(metaParams, b)
-		} else if err = proto.Unmarshal(b, &gp); err != nil {
+		} else if err = checkSchemaVer(mb); err != nil {
 			return err
-		} else if mp := s.cfg.Params.Params; false ||
-			gp.ChunkShift != mp.ChunkShift ||
-			gp.DigestAlgo != mp.DigestAlgo ||
-			gp.DigestBits != mp.DigestBits {
-			return fmt.Errorf("mismatched global params; wipe cache and start over")
+		} else if err = checkParams(mb); err != nil {
+			return err
 		}
 		return nil
 	})
