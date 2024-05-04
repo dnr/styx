@@ -1,6 +1,10 @@
 package daemon
 
-import "github.com/dnr/styx/pb"
+import (
+	"go.etcd.io/bbolt"
+
+	"github.com/dnr/styx/pb"
+)
 
 var (
 	// protocol is json over http over unix socket
@@ -35,13 +39,13 @@ type (
 		IncludeChunks bool
 	}
 	DebugResp struct {
-		Params *pb.GlobalParams
-		Stats  Stats
-		Images map[string]*pb.DbImage
-		Slabs  []*DebugSlabInfo
-		Chunks map[string]*DebugChunkInfo
+		Params  *pb.GlobalParams
+		Stats   Stats
+		DbStats bbolt.Stats
+		Images  map[string]*pb.DbImage
+		Slabs   []*DebugSlabInfo
+		Chunks  map[string]*DebugChunkInfo
 		// TODO: add manifests
-		// TODO: add boltdb stats
 	}
 	DebugSlabInfo struct {
 		Index         uint16

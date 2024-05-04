@@ -575,8 +575,7 @@ func (s *server) handleGcReq(r *GcReq) (*Status, error) {
 
 func (s *server) handleDebugReq(r *DebugReq) (*DebugResp, error) {
 	res := &DebugResp{
-		Images: make(map[string]*pb.DbImage),
-		Chunks: make(map[string]*DebugChunkInfo),
+		DbStats: s.db.Stats(),
 	}
 	return res, s.db.View(func(tx *bbolt.Tx) error {
 		// meta
@@ -589,6 +588,7 @@ func (s *server) handleDebugReq(r *DebugReq) (*DebugResp, error) {
 
 		// images
 		if r.IncludeImages {
+			res.Images = make(map[string]*pb.DbImage)
 			cur := tx.Bucket(imageBucket).Cursor()
 			for k, v := cur.First(); k != nil; k, v = cur.Next() {
 				var img pb.DbImage
@@ -638,6 +638,7 @@ func (s *server) handleDebugReq(r *DebugReq) (*DebugResp, error) {
 
 		// chunks
 		if r.IncludeChunks {
+			res.Chunks = make(map[string]*DebugChunkInfo)
 			cur = tx.Bucket(chunkBucket).Cursor()
 			for k, v := cur.First(); k != nil; k, v = cur.Next() {
 				var ci DebugChunkInfo
