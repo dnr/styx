@@ -4,6 +4,7 @@ import (
 	"context"
 	"log"
 	"os"
+	"strings"
 
 	"github.com/nix-community/go-nix/pkg/narinfo/signature"
 	"github.com/spf13/cobra"
@@ -24,6 +25,7 @@ const (
 	ctxSignKeys
 	ctxStyxPubKeys
 	ctxStyxClient
+	ctxDebugReq
 )
 
 func withChunkStoreWrite(c *cobra.Command) runE {
@@ -160,6 +162,23 @@ func withStyxClient(c *cobra.Command) runE {
 	}
 }
 
+func withDebugReq(c *cobra.Command) runE {
+	var req daemon.DebugReq
+	c.Flags().BoolVar(&req.IncludeAllImages, "all-images", false, "include all images")
+	c.Flags().StringArrayVarP(&req.IncludeImages, "image", "i", nil, "specific images to include")
+	c.Flags().BoolVar(&req.IncludeChunks, "chunks", false, "include all chunks")
+	c.Flags().BoolVar(&req.IncludeSlabs, "slabs", false, "include slabs")
+	return func(c *cobra.Command, args []string) error {
+		for i, img := range req.IncludeImages {
+			img = strings.TrimPrefix(img, "/nix/store/")
+			img, _, _ = strings.Cut(img, "-")
+			req.IncludeImages[i] = img
+		}
+		c.SetContext(context.WithValue(c.Context(), ctxDebugReq, &req))
+		return nil
+	}
+}
+
 func main() {
 	if os.Getenv("NOTIFY_SOCKET") != "" || os.Getenv("AWS_LAMBDA_RUNTIME_API") != "" {
 		// running in systemd or on lambda
@@ -244,10 +263,10 @@ func main() {
 					Short: "dumps info from daemon",
 				},
 				withStyxClient,
+				withDebugReq,
 				func(c *cobra.Command, args []string) error {
 					return c.Context().Value(ctxStyxClient).(*client.StyxClient).CallAndPrint(
-						daemon.DebugPath, &daemon.DebugReq{},
-					)
+						daemon.DebugPath, c.Context().Value(ctxDebugReq).(*daemon.DebugReq))
 				},
 			),
 		),

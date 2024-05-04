@@ -227,16 +227,6 @@ func (s *server) buildDiffOp(
 	// build diff
 	// TODO: this algorithm is kind of awful
 
-	cb := tx.Bucket(chunkBucket)
-	present := func(digest []byte) (erofs.SlabLoc, bool) {
-		v := cb.Get(digest)
-		if v == nil {
-			return erofs.SlabLoc{}, false // shouldn't happen
-		}
-		loc := loadLoc(v)
-		return loc, s.locPresent(tx, loc)
-	}
-
 	found := false
 	maxDigestLen := s.digestBytes * s.cfg.ReadaheadChunks
 	for len(op.baseDigests) < maxDigestLen || len(op.reqDigests) < maxDigestLen {
@@ -253,12 +243,12 @@ func (s *server) buildDiffOp(
 		}
 
 		if baseOk && len(op.baseDigests) < maxDigestLen {
-			if baseLoc, basePresent := present(baseDigest); basePresent {
+			if baseLoc, basePresent := s.digestPresent(tx, baseDigest); basePresent {
 				op.addBase(baseDigest, baseSize, baseLoc)
 			}
 		}
 		if reqOk && len(op.reqDigests) < maxDigestLen {
-			if reqLoc, reqPresent := present(reqDigest); !reqPresent && s.diffMap[reqLoc] == nil {
+			if reqLoc, reqPresent := s.digestPresent(tx, reqDigest); !reqPresent && s.diffMap[reqLoc] == nil {
 				op.addReq(reqDigest, reqSize, reqLoc)
 				// record we're diffing this one in the map
 				s.diffMap[reqLoc] = op
@@ -572,6 +562,38 @@ func (s *server) getDigestsFromImage(tx *bbolt.Tx, sph Sph, isManifest bool) ([]
 	return common.ValOrErr(m.Entries, err)
 }
 
+// simplied form of getDigestsFromImage (TODO: consolidate)
+func (s *server) getManifest(tx *bbolt.Tx, key []byte) (*pb.Manifest, error) {
+	v := tx.Bucket(manifestBucket).Get(key)
+	if v == nil {
+		return nil, errors.New("manifest not found")
+	}
+	var sm pb.SignedMessage
+	err := proto.Unmarshal(v, &sm)
+	if err != nil {
+		return nil, err
+	}
+
+	// read chunks if needed
+	entry := sm.Msg
+	data := entry.InlineData
+	if len(data) == 0 {
+		locs, err := s.lookupLocs(tx, entry.Digests)
+		if err != nil {
+			return nil, err
+		}
+		data, err = s.readChunks(tx, entry.Size, locs, nil, nil, false)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	// unmarshal
+	var m pb.Manifest
+	err = proto.Unmarshal(data, &m)
+	return common.ValOrErr(&m, err)
+}
+
 func (s *server) getKnownChunk(loc erofs.SlabLoc, buf []byte) error {
 	var readFd int
 	s.lock.Lock()
@@ -608,6 +630,15 @@ func (s *server) locPresent(tx *bbolt.Tx, loc erofs.SlabLoc) bool {
 	sb := tx.Bucket(slabBucket)
 	db := sb.Bucket(slabKey(loc.SlabId))
 	return db.Get(addrKey(loc.Addr|presentMask)) != nil
+}
+
+func (s *server) digestPresent(tx *bbolt.Tx, digest []byte) (erofs.SlabLoc, bool) {
+	v := tx.Bucket(chunkBucket).Get(digest)
+	if v == nil {
+		return erofs.SlabLoc{}, false // shouldn't happen
+	}
+	loc := loadLoc(v)
+	return loc, s.locPresent(tx, loc)
 }
 
 func (s *server) newDigestIterator(entries []*pb.Entry) digestIterator {

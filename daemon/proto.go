@@ -35,17 +35,19 @@ type (
 	// returns Status
 
 	DebugReq struct {
-		IncludeImages bool
+		IncludeAllImages bool
+		IncludeImages    []string // list of base32 sph
+
+		IncludeSlabs  bool
 		IncludeChunks bool
 	}
 	DebugResp struct {
 		Params  *pb.GlobalParams
 		Stats   Stats
 		DbStats bbolt.Stats
-		Images  map[string]*pb.DbImage
+		Images  map[string]DebugImage
 		Slabs   []*DebugSlabInfo
 		Chunks  map[string]*DebugChunkInfo
-		// TODO: add manifests
 	}
 	DebugSlabInfo struct {
 		Index         uint16
@@ -60,6 +62,10 @@ type (
 		Addr       uint32
 		StorePaths []string
 		Present    bool
+	}
+	DebugImage struct {
+		Image    *pb.DbImage
+		Manifest *pb.Manifest
 	}
 
 	Status struct {

@@ -23,4 +23,8 @@ message Entry {
   bytes digests = 6;
   // Other data (informative only):
   bool expanded_by_manifester = 7; // Was compressed file expanded by manifester
+  // Debug data (only in debug output, not on network or db)
+  int32 stats_inline_data = 100;
+  int32 stats_present_chunks = 101;
+  int32 stats_present_blocks = 102;
 }

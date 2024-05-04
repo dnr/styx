@@ -603,90 +603,6 @@ func (s *server) handleGcReq(r *GcReq) (*Status, error) {
 	return nil, errors.New("unimplemented")
 }
 
-func (s *server) handleDebugReq(r *DebugReq) (*DebugResp, error) {
-	res := &DebugResp{
-		DbStats: s.db.Stats(),
-	}
-	return res, s.db.View(func(tx *bbolt.Tx) error {
-		// meta
-		var gp pb.GlobalParams
-		_ = proto.Unmarshal(tx.Bucket(metaBucket).Get(metaParams), &gp)
-		res.Params = &gp
-
-		// stats
-		res.Stats = s.stats.export()
-
-		// images
-		if r.IncludeImages {
-			res.Images = make(map[string]*pb.DbImage)
-			cur := tx.Bucket(imageBucket).Cursor()
-			for k, v := cur.First(); k != nil; k, v = cur.Next() {
-				var img pb.DbImage
-				if err := proto.Unmarshal(v, &img); err != nil {
-					log.Print("unmarshal error iterating images", err)
-					continue
-				}
-				img.StorePath = ""
-				res.Images[img.StorePath] = &img
-			}
-		}
-
-		// slabs
-		slabroot := tx.Bucket(slabBucket)
-		cur := slabroot.Cursor()
-		for k, _ := cur.First(); k != nil; k, _ = cur.Next() {
-			blockSizes := make(map[uint32]uint32)
-			sb := slabroot.Bucket(k)
-			si := DebugSlabInfo{
-				Index:         binary.BigEndian.Uint16(k),
-				ChunkSizeDist: make(map[uint32]int),
-			}
-			scur := sb.Cursor()
-			for sk, _ := scur.First(); sk != nil; {
-				nextSk, _ := scur.Next()
-				addr := addrFromKey(sk)
-				if addr&presentMask == 0 {
-					var nextAddr uint32
-					if nextSk != nil && nextSk[0]&0x80 == 0 {
-						nextAddr = addrFromKey(nextSk)
-					} else {
-						nextAddr = common.TruncU32(sb.Sequence())
-					}
-					blockSize := uint32(nextAddr - addr)
-					blockSizes[addr] = blockSize
-					si.TotalChunks++
-					si.TotalBlocks += int(blockSize)
-					si.ChunkSizeDist[blockSize]++
-				} else {
-					si.PresentChunks++
-					si.PresentBlocks += int(blockSizes[addr&^presentMask])
-				}
-				sk = nextSk
-			}
-			res.Slabs = append(res.Slabs, &si)
-		}
-
-		// chunks
-		if r.IncludeChunks {
-			res.Chunks = make(map[string]*DebugChunkInfo)
-			cur = tx.Bucket(chunkBucket).Cursor()
-			for k, v := cur.First(); k != nil; k, v = cur.Next() {
-				var ci DebugChunkInfo
-				loc := loadLoc(v)
-				ci.Slab, ci.Addr = loc.SlabId, loc.Addr
-				sphs := v[6:]
-				for len(sphs) > 0 {
-					ci.StorePaths = append(ci.StorePaths, nixbase32.EncodeToString(sphs[:storepath.PathHashSize]))
-					sphs = sphs[storepath.PathHashSize:]
-				}
-				ci.Present = slabroot.Bucket(slabKey(ci.Slab)).Get(addrKey(ci.Addr|presentMask)) != nil
-				res.Chunks[common.DigestStr(k)] = &ci
-			}
-		}
-		return nil
-	})
-}
-
 func (s *server) restoreMounts() {
 	var toRestore []*pb.DbImage
 	_ = s.db.View(func(tx *bbolt.Tx) error {
@@ -1145,8 +1061,6 @@ func (s *server) handleOpenImage(msgId, objectId, fd, flags uint32, cookie strin
 	// record in db
 	err = s.imageTx(cookie, func(img *pb.DbImage) error {
 		img.ImageSize = size
-		img.ManifestSize = entry.Size
-		img.Meta = m.Meta
 		return nil
 	})
 	if err != nil {
