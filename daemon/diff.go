@@ -327,10 +327,18 @@ func (s *server) startOp(ctx context.Context, op *diffOp) {
 
 	switch op.tp {
 	case opTypeDiff:
-		s.stats.diffReqs.Add(1)
+		if len(op.baseInfo) == 0 {
+			s.stats.batchReqs.Add(1)
+		} else {
+			s.stats.diffReqs.Add(1)
+		}
 		op.err = s.doDiffOp(ctx, op)
 		if op.err != nil {
-			s.stats.diffErrs.Add(1)
+			if len(op.baseInfo) == 0 {
+				s.stats.batchErrs.Add(1)
+			} else {
+				s.stats.diffErrs.Add(1)
+			}
 		}
 	case opTypeSingle:
 		s.stats.singleReqs.Add(1)

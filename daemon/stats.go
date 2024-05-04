@@ -12,8 +12,10 @@ type (
 		slabReadErrs      atomic.Int64 // failed read requests to slab
 		singleReqs        atomic.Int64 // chunk request count
 		singleErrs        atomic.Int64 // chunk request error count
-		diffReqs          atomic.Int64 // diff request count
-		diffErrs          atomic.Int64 // diff request error count
+		batchReqs         atomic.Int64 // no-base diff request count
+		batchErrs         atomic.Int64 // no-base diff request error count
+		diffReqs          atomic.Int64 // with-base diff request count
+		diffErrs          atomic.Int64 // with-base diff request error count
 	}
 
 	Stats struct {
@@ -25,8 +27,10 @@ type (
 		SlabReadErrs      int64 // failed read requests to slab
 		SingleReqs        int64 // chunk request count
 		SingleErrs        int64 // chunk request error count
-		DiffReqs          int64 // diff request count
-		DiffErrs          int64 // diff request error count
+		BatchReqs         int64 // no-base diff request count
+		BatchErrs         int64 // no-base diff request error count
+		DiffReqs          int64 // with-base diff request count
+		DiffErrs          int64 // with-base diff request error count
 	}
 )
 
@@ -40,6 +44,8 @@ func (s *daemonStats) export() Stats {
 		SlabReadErrs:      s.slabReadErrs.Load(),
 		SingleReqs:        s.singleReqs.Load(),
 		SingleErrs:        s.singleErrs.Load(),
+		BatchReqs:         s.batchReqs.Load(),
+		BatchErrs:         s.batchErrs.Load(),
 		DiffReqs:          s.diffReqs.Load(),
 		DiffErrs:          s.diffErrs.Load(),
 	}

@@ -18,6 +18,7 @@ func TestChunkedManifest(t *testing.T) {
 	require.Equal(t, "1m9w6v5z6w73ii42xyfsgyckvl3zkk1bx5wzvsydd95jbfhz8aga", tb.nixHash(mp1))
 
 	d1 := tb.debug()
+	tb.dropCaches()
 	require.Equal(t, "1m9w6v5z6w73ii42xyfsgyckvl3zkk1bx5wzvsydd95jbfhz8aga", tb.nixHash(mp1))
 	d2 := tb.debug()
 	require.Equal(t, d1.Stats.SlabReads, d2.Stats.SlabReads)
