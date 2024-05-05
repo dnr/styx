@@ -216,11 +216,14 @@ func (tb *testBase) nixHash(path string) string {
 	return strings.TrimSpace(string(b))
 }
 
-func (tb *testBase) debug() *daemon.DebugResp {
+func (tb *testBase) debug(req ...daemon.DebugReq) *daemon.DebugResp {
 	sock := filepath.Join(tb.cachedir, "styx.sock")
 	c := client.NewClient(sock)
 	var res daemon.DebugResp
-	code, err := c.Call(daemon.DebugPath, daemon.DebugReq{}, &res)
+	if len(req) == 0 {
+		req = append(req, daemon.DebugReq{})
+	}
+	code, err := c.Call(daemon.DebugPath, req[0], &res)
 	require.NoError(tb.t, err)
 	require.Equal(tb.t, code, http.StatusOK)
 	return &res

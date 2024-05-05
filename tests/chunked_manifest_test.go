@@ -4,6 +4,8 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/dnr/styx/daemon"
 )
 
 func TestChunkedManifest(t *testing.T) {
@@ -31,13 +33,13 @@ func TestChunkedManifest(t *testing.T) {
 	require.Zero(t, d3.Stats.DiffErrs)
 
 	mp3 := tb.mount("xd96wmj058ky40aywv72z63vdw9yzzzb-openssl-3.0.12-man")
-	d4 := tb.debug()
+	d4 := tb.debug(daemon.DebugReq{IncludeSlabs: true})
 	require.Greater(t, d4.Stats.DiffReqs, d3.Stats.DiffReqs)
 	require.Zero(t, d4.Stats.DiffErrs)
 
 	// Actually this one has identical contents, manifest chunks should be identical:
 	mp4 := tb.mount("v35ysx9k1ln4c6r7lj74204ss4bw7l5l-openssl-3.0.12-man")
-	d5 := tb.debug()
+	d5 := tb.debug(daemon.DebugReq{IncludeSlabs: true})
 	require.Equal(t, d4.Slabs[0].TotalChunks, d5.Slabs[0].TotalChunks)
 	require.Equal(t, d4.Slabs[0].PresentChunks, d5.Slabs[0].PresentChunks)
 

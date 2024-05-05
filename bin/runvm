@@ -1,5 +1,5 @@
 #!/bin/sh
 set -eux
-vm=$(nix-build --no-out-link '<nixpkgs/nixos>' -A vm -I nixos-config=./vm.nix)
+vm=$(nix-build --no-out-link '<nixpkgs/nixos>' -A vm -I nixos-config=./vm-interactive.nix)
 export QEMU_KERNEL_PARAMS=console=ttyS0
 exec $vm/bin/run-testvm-vm -nographic
