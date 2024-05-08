@@ -69,16 +69,21 @@ in with lib; {
     (mkIf cfg.enable {
       systemd.services.styx = {
         description = "Nix storage manager";
-        serviceConfig.ExecStart = let
-          keys = strings.concatMapStringsSep " " (k: "--styx_pubkey ${k}") cfg.keys;
-          flags = "--params ${cfg.params} ${keys}";
-        in "${cfg.package}/bin/styx daemon ${flags}";
-        serviceConfig.Type = "notify";
-        serviceConfig.NotifyAccess = "all";
-        serviceConfig.FileDescriptorStoreMax = "1";
-        serviceConfig.FileDescriptorStorePreserve = "yes";
-        serviceConfig.LimitNOFILE = "500000";
-        #serviceConfig.TemporaryFileSystem = "/tmpfs:size=16G,mode=1777"; # force tmpfs
+        wantedBy = [ "multi-user.target" ];
+        after = [ "network-online.target" ];
+        serviceConfig = {
+          ExecStart = let
+            keys = strings.concatMapStringsSep " " (k: "--styx_pubkey ${k}") cfg.keys;
+            flags = "--params ${cfg.params} ${keys}";
+          in "${cfg.package}/bin/styx daemon ${flags}";
+          Type = "notify";
+          NotifyAccess = "all";
+          FileDescriptorStoreMax = "1";
+          FileDescriptorStorePreserve = "yes";
+          LimitNOFILE = "500000";
+          Restart = "on-failure";
+          #TemporaryFileSystem = "/tmpfs:size=16G,mode=1777"; # force tmpfs
+        };
         #environment.TMPDIR = "/tmpfs";
       };
     })

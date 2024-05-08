@@ -175,7 +175,7 @@ func (s *server) readSingle(ctx context.Context, loc erofs.SlabLoc, digest []byt
 	digestStr := common.DigestStr(digest)
 	chunk, err := s.csread.Get(ctx, digestStr, buf[:0])
 	if err != nil {
-		return err
+		return fmt.Errorf("chunk read error: %w", err)
 	} else if len(chunk) > len(buf) || &buf[0] != &chunk[0] {
 		return fmt.Errorf("chunk overflowed chunk size: %d > %d", len(chunk), len(buf))
 	}
@@ -304,10 +304,10 @@ func (s *server) startOp(ctx context.Context, op *diffOp) {
 		switch op.tp {
 		case opTypeDiff:
 			for _, i := range op.reqInfo {
-				s.diffMap[i.loc] = nil
+				delete(s.diffMap, i.loc)
 			}
 		case opTypeSingle:
-			s.diffMap[op.singleLoc] = nil
+			delete(s.diffMap, op.singleLoc)
 		}
 		s.diffLock.Unlock()
 
@@ -342,7 +342,7 @@ func (s *server) startOp(ctx context.Context, op *diffOp) {
 func (s *server) doDiffOp(ctx context.Context, op *diffOp) error {
 	diff, err := s.getChunkDiff(ctx, op.baseDigests, op.reqDigests)
 	if err != nil {
-		return err
+		return fmt.Errorf("getChunkDiff error: %w", err)
 	}
 	defer diff.Close()
 
@@ -350,7 +350,7 @@ func (s *server) doDiffOp(ctx context.Context, op *diffOp) error {
 	p := int64(0)
 	for _, i := range op.baseInfo {
 		if err := s.getKnownChunk(i.loc, baseData[p:p+i.size]); err != nil {
-			return err
+			return fmt.Errorf("getKnownChunk error: %w", err)
 		}
 		p += i.size
 	}
@@ -359,7 +359,7 @@ func (s *server) doDiffOp(ctx context.Context, op *diffOp) error {
 	// decompress from diff
 	reqData, err := s.expandChunkDiff(ctx, baseData, diff)
 	if err != nil {
-		return err
+		return fmt.Errorf("expandChunkDiff error: %w", err)
 	}
 	if len(reqData) < int(op.reqTotalSize) {
 		return fmt.Errorf("decompressed data is too short: %d < %d", len(reqData), op.reqTotalSize)
@@ -372,7 +372,7 @@ func (s *server) doDiffOp(ctx context.Context, op *diffOp) error {
 		b := reqData[p : p+i.size : p+i.size]
 		digest := op.reqDigests[idx*s.digestBytes : (idx+1)*s.digestBytes]
 		if err := s.gotNewChunk(i.loc, digest, b); err != nil {
-			return err
+			return fmt.Errorf("gotNewChunk error: %w", err)
 		}
 		p += i.size
 	}
@@ -395,7 +395,7 @@ func (s *server) expandChunkDiff(ctx context.Context, baseData []byte, diff io.R
 
 	baseFile, err := writeToTempFile(baseData)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("writeToTempFile error: %w", err)
 	}
 	defer os.Remove(baseFile)
 
@@ -449,7 +449,7 @@ func (s *server) gotNewChunk(loc erofs.SlabLoc, digest []byte, b []byte) error {
 	}
 	s.lock.Unlock()
 	if writeFd == 0 {
-		return errors.New("slab not loaded or missing write fd")
+		return errors.New("gotNewChunk: slab not loaded or missing write fd")
 	}
 
 	// we can only write full blocks
@@ -472,7 +472,7 @@ func (s *server) gotNewChunk(loc erofs.SlabLoc, digest []byte, b []byte) error {
 
 	off := int64(loc.Addr) << s.blockShift
 	if n, err := unix.Pwrite(writeFd, b, off); err != nil {
-		return err
+		return fmt.Errorf("pwrite error: %w", err)
 	} else if n != len(b) {
 		return fmt.Errorf("short write %d != %d", n, len(b))
 	}
@@ -506,6 +506,7 @@ func (s *server) getChunkDiff(ctx context.Context, bases, reqs []byte) (io.ReadC
 		return nil, err
 	}
 	u := strings.TrimSuffix(s.cfg.Params.ChunkDiffUrl, "/") + manifester.ChunkDiffPath
+	// TODO: retries here
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, bytes.NewReader(reqBytes))
 	if err != nil {
 		return nil, err
@@ -515,6 +516,7 @@ func (s *server) getChunkDiff(ctx context.Context, bases, reqs []byte) (io.ReadC
 	if err != nil {
 		return nil, err
 	} else if res.StatusCode != http.StatusOK {
+		io.Copy(io.Discard, res.Body)
 		res.Body.Close()
 		return nil, fmt.Errorf("chunk diff http status: %s", res.Status)
 	}
