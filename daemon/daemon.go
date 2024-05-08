@@ -21,6 +21,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/avast/retry-go/v4"
 	"github.com/klauspost/compress/zstd"
 	"github.com/lunixbochs/struc"
 	"github.com/nix-community/go-nix/pkg/narinfo/signature"
@@ -960,16 +961,32 @@ func (s *server) handleOpenImage(msgId, objectId, fd, flags uint32, cookie strin
 			return 0, err
 		}
 		s.stats.manifestReqs.Add(1)
-		res, err := http.Post(u, "application/json", bytes.NewReader(reqBytes))
+		res, err := retry.DoWithData(func() (*http.Response, error) {
+			res, err := http.Post(u, "application/json", bytes.NewReader(reqBytes))
+			if err == nil && res.StatusCode != http.StatusOK {
+				err = common.HttpError(res.StatusCode)
+				io.Copy(io.Discard, res.Body)
+				res.Body.Close()
+			}
+			return common.ValOrErr(res, err)
+		}, retry.Delay(time.Second), retry.RetryIf(func(err error) bool {
+			// retry on err or code 502, but not other codes
+			if status, ok := err.(common.HttpError); ok {
+				if status == http.StatusBadGateway {
+					return true
+				}
+				return false
+			}
+			return true
+		}), retry.OnRetry(func(n uint, err error) {
+			log.Printf("manifester http attempt %d: %v, retrying", n, err)
+		}))
 		if err != nil {
 			s.stats.manifestErrs.Add(1)
 			return 0, fmt.Errorf("manifester http error: %w", err)
 		}
 		defer res.Body.Close()
-		if res.StatusCode != http.StatusOK {
-			s.stats.manifestErrs.Add(1)
-			return 0, fmt.Errorf("manifester http status: %s", res.Status)
-		} else if zr, err := zstd.NewReader(res.Body); err != nil {
+		if zr, err := zstd.NewReader(res.Body); err != nil {
 			s.stats.manifestErrs.Add(1)
 			return 0, err
 		} else if envelopeBytes, err = io.ReadAll(zr); err != nil {
@@ -996,7 +1013,7 @@ func (s *server) handleOpenImage(msgId, objectId, fd, flags uint32, cookie strin
 	// check entry path to get storepath
 	storePath := strings.TrimPrefix(entry.Path, common.ManifestContext+"/")
 	if storePath != img.StorePath {
-		return 0, fmt.Errorf("envelope storepath != requested storepath: %q != %q", storePath != img.StorePath)
+		return 0, fmt.Errorf("envelope storepath != requested storepath: %q != %q", storePath, img.StorePath)
 	}
 	spHash, spName, _ := strings.Cut(storePath, "-")
 	if spHash != cookie || len(spName) == 0 {
@@ -1045,7 +1062,7 @@ func (s *server) handleOpenImage(msgId, objectId, fd, flags uint32, cookie strin
 
 	// make sure this matches the name in the envelope and original request
 	if niStorePath := path.Base(m.Meta.GetNarinfo().GetStorePath()); niStorePath != storePath {
-		return 0, fmt.Errorf("narinfo storepath != envelope storepath: %q != %q", niStorePath != storePath)
+		return 0, fmt.Errorf("narinfo storepath != envelope storepath: %q != %q", niStorePath, storePath)
 	}
 
 	// transform manifest into image (allocate chunks)
