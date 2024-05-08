@@ -245,7 +245,7 @@ func (s *server) initCatalog() (err error) {
 }
 
 func (s *server) setupEnv() error {
-	err := exec.Command("modprobe", "cachefiles").Run()
+	err := exec.Command(common.ModprobeBin, "cachefiles").Run()
 	if err != nil {
 		return err
 	}

@@ -14,6 +14,7 @@ rec {
       "-X github.com/dnr/styx/common.NixBin=${nix}/bin/nix"
       "-X github.com/dnr/styx/common.XzBin=${xz}/bin/xz"
       "-X github.com/dnr/styx/common.ZstdBin=${zstd}/bin/zstd"
+      "-X github.com/dnr/styx/common.ModprobeBin=${kmod}/bin/modprobe"
       "-X github.com/dnr/styx/common.Version=${base.version}"
     ];
   };
