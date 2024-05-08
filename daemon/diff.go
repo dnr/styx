@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"unsafe"
 
 	"go.etcd.io/bbolt"
 	"golang.org/x/sys/unix"
@@ -82,8 +83,8 @@ func (s *server) requestChunk(loc erofs.SlabLoc, digest []byte, sphs []Sph, forc
 		op = haveOp
 	} else if forceSingle {
 		op, _ = s.buildSingleOp(ctx, loc, digest)
+		go s.startOp(ctx, op)
 	} else {
-		// build it
 		var err error
 		op, err = s.buildDiffOp(ctx, digest, sphs)
 		if err != nil {
@@ -93,7 +94,6 @@ func (s *server) requestChunk(loc erofs.SlabLoc, digest []byte, sphs []Sph, forc
 			log.Print("buildDiffOp did not include requested chunk")
 			op, err = s.buildSingleOp(ctx, loc, digest)
 		}
-		// start it
 		go s.startOp(ctx, op)
 	}
 	s.diffLock.Unlock()
@@ -180,7 +180,10 @@ func (s *server) readSingle(ctx context.Context, loc erofs.SlabLoc, digest []byt
 		return fmt.Errorf("chunk overflowed chunk size: %d > %d", len(chunk), len(buf))
 	}
 
-	return s.gotNewChunk(loc, digest, chunk)
+	if err = s.gotNewChunk(loc, digest, chunk); err != nil {
+		return fmt.Errorf("gotNewChunk error (single): %w", err)
+	}
+	return nil
 }
 
 // call with diffLock held
@@ -248,7 +251,7 @@ func (s *server) buildDiffOp(
 			}
 		}
 		if reqOk && len(op.reqDigests) < maxDigestLen {
-			if reqLoc, reqPresent := s.digestPresent(tx, reqDigest); !reqPresent && s.diffMap[reqLoc] == nil {
+			if reqLoc, reqPresent := s.digestPresent(tx, reqDigest); !reqPresent && reqLoc.Addr > 0 && s.diffMap[reqLoc] == nil {
 				op.addReq(reqDigest, reqSize, reqLoc)
 				// record we're diffing this one in the map
 				s.diffMap[reqLoc] = op
@@ -372,7 +375,7 @@ func (s *server) doDiffOp(ctx context.Context, op *diffOp) error {
 		b := reqData[p : p+i.size : p+i.size]
 		digest := op.reqDigests[idx*s.digestBytes : (idx+1)*s.digestBytes]
 		if err := s.gotNewChunk(i.loc, digest, b); err != nil {
-			return fmt.Errorf("gotNewChunk error: %w", err)
+			return fmt.Errorf("gotNewChunk error (diff): %w", err)
 		}
 		p += i.size
 	}
@@ -449,13 +452,14 @@ func (s *server) gotNewChunk(loc erofs.SlabLoc, digest []byte, b []byte) error {
 	}
 	s.lock.Unlock()
 	if writeFd == 0 {
-		return errors.New("gotNewChunk: slab not loaded or missing write fd")
+		return errors.New("slab not loaded or missing write fd")
 	}
 
-	// we can only write full blocks
+	// we can only write full + aligned blocks
 	prevLen := len(b)
 	rounded := int(s.blockShift.Roundup(int64(prevLen)))
-	if rounded > cap(b) {
+	bp := int64(uintptr(unsafe.Pointer(&b[0])))
+	if rounded > cap(b) || s.blockShift.Leftover(bp) != 0 {
 		// need to copy
 		buf := s.chunkPool.Get(rounded)
 		defer s.chunkPool.Put(buf)
