@@ -74,27 +74,24 @@ type (
 		devnode     atomic.Int32
 		stats       daemonStats
 
-		lock        sync.Mutex
+		stateLock   sync.Mutex
 		cacheState  map[uint32]*openFileState // object id -> state
 		stateBySlab map[uint16]*openFileState // slab id -> state
 
 		// keeps track of locs that we know are present before we persist them
-		presentLock sync.Mutex
-		presentMap  map[erofs.SlabLoc]struct{}
+		presentMap common.SimpleSyncMap[erofs.SlabLoc, struct{}]
 
 		// tracks reads for chunks that we should have, to detect bugs
-		readKnownLock sync.Mutex
-		readKnownMap  map[erofs.SlabLoc]struct{}
+		readKnownMap common.SimpleSyncMap[erofs.SlabLoc, struct{}]
+
+		// connect context for mount request to cachefiles request
+		mountCtxMap common.SimpleSyncMap[string, context.Context]
 
 		// keeps track of pending diff/fetch state
 		// note: we open a read-only transaction inside of diffLock.
 		// therefore we must not try to lock diffLock while in a read or write tx.
 		diffLock sync.Mutex
 		diffMap  map[erofs.SlabLoc]*diffOp
-
-		// connect context for mount request to cachefiles request
-		mountCtxLock sync.Mutex
-		mountCtxMap  map[string]context.Context
 
 		shutdownChan chan struct{}
 		shutdownWait sync.WaitGroup
@@ -151,8 +148,9 @@ func CachefilesServer(cfg Config) *server {
 		builder:      erofs.NewBuilder(erofs.BuilderConfig{BlockShift: cfg.ErofsBlockShift}),
 		cacheState:   make(map[uint32]*openFileState),
 		stateBySlab:  make(map[uint16]*openFileState),
-		presentMap:   make(map[erofs.SlabLoc]struct{}),
-		readKnownMap: make(map[erofs.SlabLoc]struct{}),
+		presentMap:   *common.NewSimpleSyncMap[erofs.SlabLoc, struct{}](),
+		readKnownMap: *common.NewSimpleSyncMap[erofs.SlabLoc, struct{}](),
+		mountCtxMap:  *common.NewSimpleSyncMap[string, context.Context](),
 		diffMap:      make(map[erofs.SlabLoc]*diffOp),
 		shutdownChan: make(chan struct{}),
 	}
@@ -266,8 +264,8 @@ func (s *server) setupManifestSlab() error {
 		return err
 	}
 
-	s.lock.Lock()
-	defer s.lock.Unlock()
+	s.stateLock.Lock()
+	defer s.stateLock.Unlock()
 	state := &openFileState{
 		writeFd: common.TruncU32(fd), // write and read to same fd
 		tp:      typeManifestSlab,
@@ -559,17 +557,12 @@ func (s *server) tryMount(ctx context.Context, storePath, mountPoint string) err
 
 	// TODO: maybe we should move more work before the mount, e.g. get the manifest, even build
 	// the image.
-	s.mountCtxLock.Lock()
-	s.mountCtxMap[sph] = ctx
-	s.mountCtxLock.Unlock()
+	s.mountCtxMap.Put(sph, ctx)
+	defer s.mountCtxMap.Del(sph)
 
 	_ = os.MkdirAll(mountPoint, 0o755)
 	opts := fmt.Sprintf("domain_id=%s,fsid=%s", s.cfg.CacheDomain, sph)
 	mountErr := unix.Mount("none", mountPoint, "erofs", 0, opts)
-
-	s.mountCtxLock.Lock()
-	delete(s.mountCtxMap, sph)
-	s.mountCtxLock.Unlock()
 
 	_ = s.imageTx(sph, func(img *pb.DbImage) error {
 		if mountErr == nil {
@@ -698,8 +691,8 @@ func (s *server) Stop() {
 }
 
 func (s *server) closeAllFds() {
-	s.lock.Lock()
-	defer s.lock.Unlock()
+	s.stateLock.Lock()
+	defer s.stateLock.Unlock()
 	for _, state := range s.cacheState {
 		s.closeState(state)
 	}
@@ -890,8 +883,8 @@ func (s *server) handleOpenSlab(msgId, objectId, fd, flags uint32, id uint16) (i
 	*/
 
 	// record open state
-	s.lock.Lock()
-	defer s.lock.Unlock()
+	s.stateLock.Lock()
+	defer s.stateLock.Unlock()
 	state := &openFileState{
 		writeFd: fd,
 		tp:      typeSlab,
@@ -905,8 +898,8 @@ func (s *server) handleOpenSlab(msgId, objectId, fd, flags uint32, id uint16) (i
 
 func (s *server) handleOpenSlabImage(msgId, objectId, fd, flags uint32, id uint16) (int64, error) {
 	// record open state
-	s.lock.Lock()
-	defer s.lock.Unlock()
+	s.stateLock.Lock()
+	defer s.stateLock.Unlock()
 	state := &openFileState{
 		writeFd: fd,
 		tp:      typeSlabImage,
@@ -918,9 +911,7 @@ func (s *server) handleOpenSlabImage(msgId, objectId, fd, flags uint32, id uint1
 }
 
 func (s *server) handleOpenImage(msgId, objectId, fd, flags uint32, cookie string) (int64, error) {
-	s.mountCtxLock.Lock()
-	ctx := s.mountCtxMap[cookie]
-	s.mountCtxLock.Unlock()
+	ctx, _ := s.mountCtxMap.Get(cookie)
 	if ctx == nil {
 		log.Println("missing context in handleOpenImage for", cookie)
 		ctx = context.Background()
@@ -939,8 +930,8 @@ func (s *server) handleOpenImage(msgId, objectId, fd, flags uint32, cookie strin
 	}
 	if img.ImageSize > 0 {
 		// we have it already
-		s.lock.Lock()
-		defer s.lock.Unlock()
+		s.stateLock.Lock()
+		defer s.stateLock.Unlock()
 		state := &openFileState{
 			writeFd: fd,
 			tp:      typeImage,
@@ -1092,8 +1083,8 @@ func (s *server) handleOpenImage(msgId, objectId, fd, flags uint32, cookie strin
 	}
 
 	// record open state
-	s.lock.Lock()
-	defer s.lock.Unlock()
+	s.stateLock.Lock()
+	defer s.stateLock.Unlock()
 	state := &openFileState{
 		writeFd:   fd,
 		tp:        typeImage,
@@ -1106,10 +1097,10 @@ func (s *server) handleOpenImage(msgId, objectId, fd, flags uint32, cookie strin
 
 func (s *server) handleClose(msgId, objectId uint32) error {
 	log.Println("close", objectId)
-	s.lock.Lock()
+	s.stateLock.Lock()
 	state := s.cacheState[objectId]
 	if state == nil {
-		s.lock.Unlock()
+		s.stateLock.Unlock()
 		log.Println("missing state for close")
 		return nil
 	}
@@ -1117,7 +1108,7 @@ func (s *server) handleClose(msgId, objectId uint32) error {
 		delete(s.stateBySlab, state.slabId)
 	}
 	delete(s.cacheState, objectId)
-	s.lock.Unlock()
+	s.stateLock.Unlock()
 
 	// do rest of cleanup outside lock
 	s.closeState(state)
@@ -1138,9 +1129,9 @@ func (s *server) closeState(state *openFileState) {
 }
 
 func (s *server) handleRead(msgId, objectId uint32, ln, off uint64) (retErr error) {
-	s.lock.Lock()
+	s.stateLock.Lock()
 	state := s.cacheState[objectId]
-	s.lock.Unlock()
+	s.stateLock.Unlock()
 
 	if state == nil {
 		panic("missing state")
@@ -1244,7 +1235,8 @@ func (s *server) handleReadSlab(state *openFileState, ln, off uint64) (retErr er
 		return err
 	}
 
-	return s.requestChunk(erofs.SlabLoc{slabId, addr}, digest, splitSphs(sphs), false)
+	ctx := context.Background()
+	return s.requestChunk(ctx, erofs.SlabLoc{slabId, addr}, digest, splitSphs(sphs), false)
 }
 
 func (s *server) mountSlabImage(slabId int) {
@@ -1275,16 +1267,16 @@ func (s *server) mountSlabImage(slabId int) {
 		return
 	}
 
-	s.lock.Lock()
+	s.stateLock.Lock()
 	if state := s.stateBySlab[common.TruncU16(slabId)]; state == nil {
-		s.lock.Unlock()
+		s.stateLock.Unlock()
 		log.Print("state not found in mountSlabImage")
 		_ = unix.Close(slabFd)
 		_ = unix.Unmount(mountPoint, 0)
 		return
 	} else {
 		state.readFd = common.TruncU32(slabFd)
-		s.lock.Unlock()
+		s.stateLock.Unlock()
 	}
 }
 

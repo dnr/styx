@@ -63,18 +63,14 @@ const (
 	opTypeSingle
 )
 
-func (s *server) requestChunk(loc erofs.SlabLoc, digest []byte, sphs []Sph, forceSingle bool) error {
-	ctx := context.Background()
-
-	s.readKnownLock.Lock()
-	if _, ok := s.readKnownMap[loc]; ok {
+func (s *server) requestChunk(ctx context.Context, loc erofs.SlabLoc, digest []byte, sphs []Sph, forceSingle bool) error {
+	if _, ok := s.readKnownMap.Get(loc); ok {
 		// We think we have this chunk and are trying to use it as a base, but we got asked for
 		// it again. This shouldn't happen, but at least try to recover by doing a single read
 		// instead of diffing more.
 		log.Printf("bug: got request for supposedly-known chunk %s at %v", common.DigestStr(digest), loc)
 		forceSingle = true
 	}
-	s.readKnownLock.Unlock()
 
 	var op *diffOp
 
@@ -105,7 +101,7 @@ func (s *server) requestChunk(loc erofs.SlabLoc, digest []byte, sphs []Sph, forc
 
 	if op.err != nil && op.tp != opTypeSingle {
 		log.Printf("diff failed (%v), doing plain read", op.err)
-		return s.requestChunk(loc, digest, sphs, true)
+		return s.requestChunk(ctx, loc, digest, sphs, true)
 	}
 
 	return op.err
@@ -148,7 +144,7 @@ func (s *server) readChunks(
 
 		// request first missing one. the differ will do some readahead.
 		digest := digests[firstMissing*s.digestBytes : (firstMissing+1)*s.digestBytes]
-		err := s.requestChunk(locs[firstMissing], digest, sphs, false)
+		err := s.requestChunk(ctx, locs[firstMissing], digest, sphs, false)
 		if err != nil {
 			return nil, err
 		}
@@ -447,11 +443,11 @@ func (s *server) gotNewChunk(loc erofs.SlabLoc, digest []byte, b []byte) error {
 	}
 
 	var writeFd int
-	s.lock.Lock()
+	s.stateLock.Lock()
 	if state := s.stateBySlab[loc.SlabId]; state != nil {
 		writeFd = int(state.writeFd)
 	}
-	s.lock.Unlock()
+	s.stateLock.Unlock()
 	if writeFd == 0 {
 		return errors.New("slab not loaded or missing write fd")
 	}
@@ -483,9 +479,7 @@ func (s *server) gotNewChunk(loc erofs.SlabLoc, digest []byte, b []byte) error {
 	}
 
 	// record async
-	s.presentLock.Lock()
-	s.presentMap[loc] = struct{}{}
-	s.presentLock.Unlock()
+	s.presentMap.Put(loc, struct{}{})
 
 	go func() {
 		err := s.db.Batch(func(tx *bbolt.Tx) error {
@@ -496,9 +490,7 @@ func (s *server) gotNewChunk(loc erofs.SlabLoc, digest []byte, b []byte) error {
 			return sb.Put(addrKey(presentMask|loc.Addr), []byte{})
 		})
 		if err == nil {
-			s.presentLock.Lock()
-			delete(s.presentMap, loc)
-			s.presentLock.Unlock()
+			s.presentMap.Del(loc)
 		}
 	}()
 
@@ -593,37 +585,27 @@ func (s *server) getManifest(ctx context.Context, tx *bbolt.Tx, key []byte) (*pb
 
 func (s *server) getKnownChunk(loc erofs.SlabLoc, buf []byte) error {
 	var readFd int
-	s.lock.Lock()
+	s.stateLock.Lock()
 	if state := s.stateBySlab[loc.SlabId]; state != nil {
 		readFd = int(state.readFd)
 	}
-	s.lock.Unlock()
+	s.stateLock.Unlock()
 	if readFd == 0 {
 		return errors.New("slab not loaded or missing read fd")
 	}
 
 	// record that we're reading this out of the slab
-	s.readKnownLock.Lock()
-	s.readKnownMap[loc] = struct{}{}
-	s.readKnownLock.Unlock()
+	s.readKnownMap.Put(loc, struct{}{})
+	defer s.readKnownMap.Del(loc)
 
 	_, err := unix.Pread(readFd, buf, int64(loc.Addr)<<s.blockShift)
-
-	s.readKnownLock.Lock()
-	delete(s.readKnownMap, loc)
-	s.readKnownLock.Unlock()
-
 	return err
 }
 
 func (s *server) locPresent(tx *bbolt.Tx, loc erofs.SlabLoc) bool {
-	s.presentLock.Lock()
-	if _, ok := s.presentMap[loc]; ok {
-		s.presentLock.Unlock()
+	if _, ok := s.presentMap.Get(loc); ok {
 		return true
 	}
-	s.presentLock.Unlock()
-
 	sb := tx.Bucket(slabBucket)
 	db := sb.Bucket(slabKey(loc.SlabId))
 	return db.Get(addrKey(loc.Addr|presentMask)) != nil
