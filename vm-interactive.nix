@@ -12,6 +12,9 @@
   # let styx handle everything
   nix.settings.styx-include = [ ".*" ];
 
+  # use shared nixpkgs
+  nix.nixPath = [ "nixpkgs=/tmp/nixpkgs" ];
+
   # provide nixpkgs and this dir for convenience
   virtualisation.sharedDirectories = {
     nixpkgs = { source = toString <nixpkgs>; target = "/tmp/nixpkgs"; };

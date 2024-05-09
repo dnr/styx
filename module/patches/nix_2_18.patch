@@ -356,7 +356,7 @@ index 000000000..908e1c6a7
 +    curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, postData.size());
 +    // TODO: this doesn't seem to work for unix sockets?
 +    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 1);
-+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30);
++    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 300);
 +
 +    std::string resData;
 +    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, writeCallback);

@@ -67,6 +67,8 @@ in with lib; {
     })
 
     (mkIf cfg.enable {
+      environment.systemPackages = [ cfg.package ];
+
       systemd.services.styx = {
         description = "Nix storage manager";
         wantedBy = [ "multi-user.target" ];
