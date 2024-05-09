@@ -21,7 +21,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/avast/retry-go/v4"
 	"github.com/klauspost/compress/zstd"
 	"github.com/lunixbochs/struc"
 	"github.com/nix-community/go-nix/pkg/narinfo/signature"
@@ -93,6 +92,10 @@ type (
 		diffLock sync.Mutex
 		diffMap  map[erofs.SlabLoc]*diffOp
 
+		// connect context for mount request to cachefiles request
+		mountCtxLock sync.Mutex
+		mountCtxMap  map[string]context.Context
+
 		shutdownChan chan struct{}
 		shutdownWait sync.WaitGroup
 	}
@@ -130,6 +133,7 @@ type (
 )
 
 var _ erofs.SlabManager = (*server)(nil)
+var errAlreadyMounted = errors.New("already mounted")
 
 // init stuff
 
@@ -462,7 +466,7 @@ func mwErrE(status int, e error) error {
 	}
 }
 
-func jsonmw[reqT, resT any](f func(*reqT) (*resT, error)) func(w http.ResponseWriter, r *http.Request) {
+func jsonmw[reqT, resT any](f func(context.Context, *reqT) (*resT, error)) func(w http.ResponseWriter, r *http.Request) {
 	return func(w http.ResponseWriter, r *http.Request) {
 		defer func() {
 			if r := recover(); r != nil {
@@ -488,7 +492,7 @@ func jsonmw[reqT, resT any](f func(*reqT) (*resT, error)) func(w http.ResponseWr
 			parts = append(parts, string(encReq))
 		}
 
-		res, err := f(&req)
+		res, err := f(r.Context(), &req)
 
 		if err == nil {
 			w.WriteHeader(http.StatusOK)
@@ -518,7 +522,7 @@ func jsonmw[reqT, resT any](f func(*reqT) (*resT, error)) func(w http.ResponseWr
 	}
 }
 
-func (s *server) handleMountReq(r *MountReq) (*Status, error) {
+func (s *server) handleMountReq(ctx context.Context, r *MountReq) (*Status, error) {
 	if !reStorePath.MatchString(r.StorePath) {
 		return nil, mwErr(http.StatusBadRequest, "invalid store path or missing name")
 	} else if r.Upstream == "" {
@@ -530,8 +534,8 @@ func (s *server) handleMountReq(r *MountReq) (*Status, error) {
 
 	err := s.imageTx(sph, func(img *pb.DbImage) error {
 		if img.MountState == pb.MountState_Mounted {
-			// TODO: check if actually mounted in fs. if not, repair.
-			return mwErr(http.StatusConflict, "already mounted")
+			// nix thinks it's not mounted but it is. return success so nix can enter in db.
+			return errAlreadyMounted
 		}
 		img.StorePath = r.StorePath
 		img.Upstream = r.Upstream
@@ -541,18 +545,31 @@ func (s *server) handleMountReq(r *MountReq) (*Status, error) {
 		return nil
 	})
 	if err != nil {
+		if err == errAlreadyMounted {
+			err = nil
+		}
 		return nil, err
 	}
 
-	return nil, s.tryMount(r.StorePath, r.MountPoint)
+	return nil, s.tryMount(ctx, r.StorePath, r.MountPoint)
 }
 
-func (s *server) tryMount(storePath, mountPoint string) error {
+func (s *server) tryMount(ctx context.Context, storePath, mountPoint string) error {
 	sph, _, _ := strings.Cut(storePath, "-")
+
+	// TODO: maybe we should move more work before the mount, e.g. get the manifest, even build
+	// the image.
+	s.mountCtxLock.Lock()
+	s.mountCtxMap[sph] = ctx
+	s.mountCtxLock.Unlock()
 
 	_ = os.MkdirAll(mountPoint, 0o755)
 	opts := fmt.Sprintf("domain_id=%s,fsid=%s", s.cfg.CacheDomain, sph)
 	mountErr := unix.Mount("none", mountPoint, "erofs", 0, opts)
+
+	s.mountCtxLock.Lock()
+	delete(s.mountCtxMap, sph)
+	s.mountCtxLock.Unlock()
 
 	_ = s.imageTx(sph, func(img *pb.DbImage) error {
 		if mountErr == nil {
@@ -568,7 +585,7 @@ func (s *server) tryMount(storePath, mountPoint string) error {
 	return mountErr
 }
 
-func (s *server) handleUmountReq(r *UmountReq) (*Status, error) {
+func (s *server) handleUmountReq(ctx context.Context, r *UmountReq) (*Status, error) {
 	// allowed to leave out the name part here
 	sph, _, _ := strings.Cut(r.StorePath, "-")
 
@@ -599,7 +616,7 @@ func (s *server) handleUmountReq(r *UmountReq) (*Status, error) {
 	return nil, umountErr
 }
 
-func (s *server) handleGcReq(r *GcReq) (*Status, error) {
+func (s *server) handleGcReq(ctx context.Context, r *GcReq) (*Status, error) {
 	// TODO
 	return nil, errors.New("unimplemented")
 }
@@ -627,7 +644,7 @@ func (s *server) restoreMounts() {
 			// log.Print("restoring: ", img.StorePath, " already mounted on ", img.MountPoint)
 			continue
 		}
-		err = s.tryMount(img.StorePath, img.MountPoint)
+		err = s.tryMount(context.Background(), img.StorePath, img.MountPoint)
 		if err == nil {
 			log.Print("restoring: ", img.StorePath, " restored to ", img.MountPoint)
 		} else {
@@ -901,6 +918,14 @@ func (s *server) handleOpenSlabImage(msgId, objectId, fd, flags uint32, id uint1
 }
 
 func (s *server) handleOpenImage(msgId, objectId, fd, flags uint32, cookie string) (int64, error) {
+	s.mountCtxLock.Lock()
+	ctx := s.mountCtxMap[cookie]
+	s.mountCtxLock.Unlock()
+	if ctx == nil {
+		log.Println("missing context in handleOpenImage for", cookie)
+		ctx = context.Background()
+	}
+
 	// check if we have this image
 	img, err := s.readImageRecord(cookie)
 	if err != nil {
@@ -932,7 +957,6 @@ func (s *server) handleOpenImage(msgId, objectId, fd, flags uint32, cookie strin
 	// use a separate "sph" for the manifest itself (a single entry). only used if manifest is chunked.
 	manifestSph := makeManifestSph(sph)
 
-	ctx := context.Background()
 	ctx = context.WithValue(ctx, "sph", sph)
 
 	// get manifest
@@ -952,6 +976,8 @@ func (s *server) handleOpenImage(msgId, objectId, fd, flags uint32, cookie strin
 	if err == nil {
 		log.Printf("got manifest for %s from cache", cookie)
 		s.stats.manifestCacheHits.Add(1)
+	} else if common.IsContextError(err) {
+		return 0, err
 	} else {
 		// not found cached, request it
 		log.Printf("requesting manifest for %s", cookie)
@@ -961,26 +987,7 @@ func (s *server) handleOpenImage(msgId, objectId, fd, flags uint32, cookie strin
 			return 0, err
 		}
 		s.stats.manifestReqs.Add(1)
-		res, err := retry.DoWithData(func() (*http.Response, error) {
-			res, err := http.Post(u, "application/json", bytes.NewReader(reqBytes))
-			if err == nil && res.StatusCode != http.StatusOK {
-				err = common.HttpError(res.StatusCode)
-				io.Copy(io.Discard, res.Body)
-				res.Body.Close()
-			}
-			return common.ValOrErr(res, err)
-		}, retry.Delay(time.Second), retry.RetryIf(func(err error) bool {
-			// retry on err or code 502, but not other codes
-			if status, ok := err.(common.HttpError); ok {
-				if status == http.StatusBadGateway {
-					return true
-				}
-				return false
-			}
-			return true
-		}), retry.OnRetry(func(n uint, err error) {
-			log.Printf("manifester http attempt %d: %v, retrying", n, err)
-		}))
+		res, err := retryHttpRequest(ctx, http.MethodPost, u, "application/json", reqBytes)
 		if err != nil {
 			s.stats.manifestErrs.Add(1)
 			return 0, fmt.Errorf("manifester http error: %w", err)
@@ -1047,7 +1054,7 @@ func (s *server) handleOpenImage(msgId, objectId, fd, flags uint32, cookie strin
 		}
 
 		// read them out
-		data, err = s.readChunks(nil, entry.Size, locs, entry.Digests, []Sph{manifestSph}, true)
+		data, err = s.readChunks(ctx, nil, entry.Size, locs, entry.Digests, []Sph{manifestSph}, true)
 		if err != nil {
 			return 0, err
 		}

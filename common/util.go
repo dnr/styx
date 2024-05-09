@@ -1,6 +1,10 @@
 package common
 
-import "encoding/base64"
+import (
+	"context"
+	"encoding/base64"
+	"errors"
+)
 
 func DigestStr(digest []byte) string {
 	return base64.RawURLEncoding.EncodeToString(digest)
@@ -12,6 +16,10 @@ func ValOrErr[T any](v T, err error) (T, error) {
 		return zero, err
 	}
 	return v, nil
+}
+
+func IsContextError(err error) bool {
+	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 }
 
 // TODO: replace with cmp.Or after go1.22

@@ -113,6 +113,7 @@ func (s *server) requestChunk(loc erofs.SlabLoc, digest []byte, sphs []Sph, forc
 
 // currently this is only used to read manifest chunks
 func (s *server) readChunks(
+	ctx context.Context,
 	useTx *bbolt.Tx, // optional
 	totalSize int64,
 	locs []erofs.SlabLoc,
@@ -211,14 +212,14 @@ func (s *server) buildDiffOp(
 
 	var baseIter digestIterator
 	if usingBase {
-		baseEntries, err := s.getDigestsFromImage(tx, res.baseHash, isManifest)
+		baseEntries, err := s.getDigestsFromImage(ctx, tx, res.baseHash, isManifest)
 		if err != nil {
 			log.Println("failed to get digests for", res.baseHash, res.baseName)
 			return nil, err
 		}
 		baseIter = s.newDigestIterator(baseEntries)
 	}
-	reqEntries, err := s.getDigestsFromImage(tx, reqHash, isManifest)
+	reqEntries, err := s.getDigestsFromImage(ctx, tx, reqHash, isManifest)
 	if err != nil {
 		log.Println("failed to get digests for", reqHash, res.reqName)
 		return nil, err
@@ -510,25 +511,15 @@ func (s *server) getChunkDiff(ctx context.Context, bases, reqs []byte) (io.ReadC
 		return nil, err
 	}
 	u := strings.TrimSuffix(s.cfg.Params.ChunkDiffUrl, "/") + manifester.ChunkDiffPath
-	// TODO: retries here
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, bytes.NewReader(reqBytes))
+	res, err := retryHttpRequest(ctx, http.MethodPost, u, "application/json", reqBytes)
 	if err != nil {
 		return nil, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	res, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return nil, err
-	} else if res.StatusCode != http.StatusOK {
-		io.Copy(io.Discard, res.Body)
-		res.Body.Close()
-		return nil, fmt.Errorf("chunk diff http status: %s", res.Status)
 	}
 	return res.Body, nil
 }
 
 // note: called with diffLock and read-only tx
-func (s *server) getDigestsFromImage(tx *bbolt.Tx, sph Sph, isManifest bool) ([]*pb.Entry, error) {
+func (s *server) getDigestsFromImage(ctx context.Context, tx *bbolt.Tx, sph Sph, isManifest bool) ([]*pb.Entry, error) {
 	if isManifest {
 		// get the image sph back. makeManifestSph is its own inverse.
 		sph = makeManifestSph(sph)
@@ -556,7 +547,7 @@ func (s *server) getDigestsFromImage(tx *bbolt.Tx, sph Sph, isManifest bool) ([]
 		if err != nil {
 			return nil, err
 		}
-		data, err = s.readChunks(tx, entry.Size, locs, nil, nil, false)
+		data, err = s.readChunks(ctx, tx, entry.Size, locs, nil, nil, false)
 		if err != nil {
 			return nil, err
 		}
@@ -569,7 +560,7 @@ func (s *server) getDigestsFromImage(tx *bbolt.Tx, sph Sph, isManifest bool) ([]
 }
 
 // simplied form of getDigestsFromImage (TODO: consolidate)
-func (s *server) getManifest(tx *bbolt.Tx, key []byte) (*pb.Manifest, error) {
+func (s *server) getManifest(ctx context.Context, tx *bbolt.Tx, key []byte) (*pb.Manifest, error) {
 	v := tx.Bucket(manifestBucket).Get(key)
 	if v == nil {
 		return nil, errors.New("manifest not found")
@@ -588,7 +579,7 @@ func (s *server) getManifest(tx *bbolt.Tx, key []byte) (*pb.Manifest, error) {
 		if err != nil {
 			return nil, err
 		}
-		data, err = s.readChunks(tx, entry.Size, locs, nil, nil, false)
+		data, err = s.readChunks(ctx, tx, entry.Size, locs, nil, nil, false)
 		if err != nil {
 			return nil, err
 		}

@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"context"
 	"encoding/binary"
 	"log"
 
@@ -13,7 +14,7 @@ import (
 	"github.com/dnr/styx/pb"
 )
 
-func (s *server) handleDebugReq(r *DebugReq) (*DebugResp, error) {
+func (s *server) handleDebugReq(ctx context.Context, r *DebugReq) (*DebugResp, error) {
 	res := &DebugResp{
 		DbStats: s.db.Stats(),
 	}
@@ -37,7 +38,7 @@ func (s *server) handleDebugReq(r *DebugReq) (*DebugResp, error) {
 					return
 				}
 
-				m, err := s.getManifest(tx, k)
+				m, err := s.getManifest(ctx, tx, k)
 				if err != nil {
 					log.Print("unmarshal getting manifest iterating images", err)
 					return
