@@ -552,7 +552,7 @@ func (s *server) getDigestsFromImage(ctx context.Context, tx *bbolt.Tx, sph Sph,
 }
 
 // simplied form of getDigestsFromImage (TODO: consolidate)
-func (s *server) getManifest(ctx context.Context, tx *bbolt.Tx, key []byte) (*pb.Manifest, error) {
+func (s *server) getManifestLocal(ctx context.Context, tx *bbolt.Tx, key []byte) (*pb.Manifest, error) {
 	v := tx.Bucket(manifestBucket).Get(key)
 	if v == nil {
 		return nil, errors.New("manifest not found")

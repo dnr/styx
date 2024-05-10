@@ -22,6 +22,7 @@ type (
 		Upstream   string
 		StorePath  string
 		MountPoint string
+		NarSize    int64 // optional
 	}
 	// returns Status
 

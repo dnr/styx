@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log"
 	"net"
 	"net/http"
@@ -21,7 +20,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/klauspost/compress/zstd"
 	"github.com/lunixbochs/struc"
 	"github.com/nix-community/go-nix/pkg/narinfo/signature"
 	"github.com/nix-community/go-nix/pkg/nixbase32"
@@ -951,47 +949,9 @@ func (s *server) handleOpenImage(msgId, objectId, fd, flags uint32, cookie strin
 	ctx = context.WithValue(ctx, "sph", sph)
 
 	// get manifest
-
-	// check cached first
-	gParams := s.cfg.Params.Params
-	mReq := manifester.ManifestReq{
-		Upstream:      img.Upstream,
-		StorePathHash: cookie,
-		ChunkShift:    int(gParams.ChunkShift),
-		DigestAlgo:    gParams.DigestAlgo,
-		DigestBits:    int(gParams.DigestBits),
-		// SmallFileCutoff: s.cfg.SmallFileCutoff,
-	}
-	s.stats.manifestCacheReqs.Add(1)
-	envelopeBytes, err := s.mcread.Get(ctx, mReq.CacheKey(), nil)
-	if err == nil {
-		log.Printf("got manifest for %s from cache", cookie)
-		s.stats.manifestCacheHits.Add(1)
-	} else if common.IsContextError(err) {
+	envelopeBytes, err := s.getManifestFromManifester(ctx, img.Upstream, cookie)
+	if err != nil {
 		return 0, err
-	} else {
-		// not found cached, request it
-		log.Printf("requesting manifest for %s", cookie)
-		u := strings.TrimSuffix(s.cfg.Params.ManifesterUrl, "/") + manifester.ManifestPath
-		reqBytes, err := json.Marshal(mReq)
-		if err != nil {
-			return 0, err
-		}
-		s.stats.manifestReqs.Add(1)
-		res, err := retryHttpRequest(ctx, http.MethodPost, u, "application/json", reqBytes)
-		if err != nil {
-			s.stats.manifestErrs.Add(1)
-			return 0, fmt.Errorf("manifester http error: %w", err)
-		}
-		defer res.Body.Close()
-		if zr, err := zstd.NewReader(res.Body); err != nil {
-			s.stats.manifestErrs.Add(1)
-			return 0, err
-		} else if envelopeBytes, err = io.ReadAll(zr); err != nil {
-			s.stats.manifestErrs.Add(1)
-			return 0, err
-		}
-		log.Printf("got manifest for %s", cookie)
 	}
 
 	// verify signature and params
@@ -1000,6 +960,7 @@ func (s *server) handleOpenImage(msgId, objectId, fd, flags uint32, cookie strin
 		return 0, err
 	}
 	if smParams != nil {
+		gParams := s.cfg.Params.Params
 		match := smParams.ChunkShift == gParams.ChunkShift &&
 			smParams.DigestBits == gParams.DigestBits &&
 			smParams.DigestAlgo == gParams.DigestAlgo

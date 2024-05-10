@@ -29,6 +29,10 @@ type (
 		ChunkShift int
 		DigestAlgo string
 		DigestBits int
+
+		// sharded manifesting
+		ShardTotal int
+		ShardIndex int
 	}
 	// response is SignedManifest
 
