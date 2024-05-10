@@ -1,4 +1,4 @@
-commit 6ca702885f7a455f5b2413e838cfd58a4755a1b7
+commit d2b2ed4ede70a48a43307608376d861d9cf666f6
 Author: David Reiss <dnr@dnr.im>
 Date:   Sat Mar 30 17:03:51 2024 -0700
 
@@ -55,7 +55,7 @@ index b7a56e791..ae5469250 100644
              };
          }();
 diff --git a/src/libstore/build/substitution-goal.cc b/src/libstore/build/substitution-goal.cc
-index 93867007d..8dd268bb9 100644
+index 93867007d..24271c3f1 100644
 --- a/src/libstore/build/substitution-goal.cc
 +++ b/src/libstore/build/substitution-goal.cc
 @@ -2,6 +2,8 @@
@@ -67,7 +67,7 @@ index 93867007d..8dd268bb9 100644
  
  namespace nix {
  
-@@ -191,8 +193,90 @@ void PathSubstitutionGoal::referencesValid()
+@@ -191,11 +193,82 @@ void PathSubstitutionGoal::referencesValid()
          if (i != storePath) /* ignore self-references */
              assert(worker.store.isValidPath(i));
  
@@ -100,38 +100,30 @@ index 93867007d..8dd268bb9 100644
 +        try {
 +            ReceiveInterrupts receiveInterrupts;
 +
-+            // TODO: better log line
++            // TODO: use a better log line
 +            Activity act(*logger, actSubstitute, Logger::Fields{
 +                    worker.store.printStorePath(storePath), "STYX:"+sub->getUri()});
 +            PushActivity pact(act.id);
 +
 +            auto local = dynamic_cast<LocalStore *>(&worker.store);
-+            //printMsg(lvlNotice, "calling mountStyx");
 +            local->mountStyx(sub->getUri(), *info, sub->isTrusted ? NoCheckSigs : CheckSigs);
-+            //printMsg(lvlNotice, "mountStyx returned");
 +
 +            promise.set_value();
 +        } catch (...) {
-+            //printMsg(lvlNotice, "got exc from styx");
 +            promise.set_exception(std::current_exception());
 +        }
 +    });
 +
-+    //printMsg(lvlNotice, "calling childStarted");
-+    //worker.childStarted(shared_from_this(), {}, true, false);
-+
 +    state = &PathSubstitutionGoal::styxFinished;
      worker.wakeUp(shared_from_this());
-+    //printMsg(lvlNotice, "returning from tryStyx");
-+}
-+
-+
+ }
+ 
+ 
 +void PathSubstitutionGoal::styxFinished()
 +{
 +    trace("substitute with styx finished");
 +
 +    thr.join();
-+    //worker.childTerminated(this);
 +
 +    try {
 +        promise.get_future().get();
@@ -139,16 +131,13 @@ index 93867007d..8dd268bb9 100644
 +        printMsg(lvlError, "styx failed for '%s', falling back to substitution: %s",
 +                worker.store.printStorePath(storePath), e.what());
 +        // try regular substitution
-+        // state = &PathSubstitutionGoal::tryToRun;
-+        state = &PathSubstitutionGoal::tryNext; // FIXME: fail instead
++        state = &PathSubstitutionGoal::tryToRun;
 +        worker.wakeUp(shared_from_this());
 +        return;
 +    }
 +
-+    printMsg(lvlNotice, "styx success!");
++    printMsg(lvlNotice, "mounted '%s' with styx", worker.store.printStorePath(storePath));
 +    worker.markContentsGood(storePath);
-+
-+    printMsg(lvlChatty, "substitution of path '%s' succeeded with styx", worker.store.printStorePath(storePath));
 +
 +    maintainRunningSubstitutions.reset();
 +    maintainExpectedSubstitutions.reset();
@@ -156,9 +145,12 @@ index 93867007d..8dd268bb9 100644
 +    worker.updateProgress();
 +
 +    done(ecSuccess, BuildResult::StyxMounted);
- }
- 
- 
++}
++
++
+ void PathSubstitutionGoal::tryToRun()
+ {
+     trace("trying to run");
 diff --git a/src/libstore/build/substitution-goal.hh b/src/libstore/build/substitution-goal.hh
 index 1d389d328..a8259b247 100644
 --- a/src/libstore/build/substitution-goal.hh
@@ -195,7 +187,7 @@ index 516cbef83..8ab2b0ab7 100644
  
          uint64_t bytesFreed;
 diff --git a/src/libstore/globals.hh b/src/libstore/globals.hh
-index dba7d78ef..b5091830e 100644
+index dba7d78ef..7f8361788 100644
 --- a/src/libstore/globals.hh
 +++ b/src/libstore/globals.hh
 @@ -1032,6 +1032,15 @@ public:
@@ -208,7 +200,7 @@ index dba7d78ef..b5091830e 100644
 +    Setting<Strings> styxInclude{this, Strings{}, "styx-include",
 +        "List of regular expressions to allow using styx (empty means never use)"};
 +    Setting<Strings> styxExclude{this, Strings{}, "styx-exclude",
-+        "List of regular expressions to deny using styx (overrides include)"};
++        "List of regular expressions to deny using styx (overrides styx-include)"};
 +    Setting<std::string> styxSockPath{this, "/var/cache/styx/styx.sock", "styx-sock-path",
 +        "Path to styx socket."};
  };
@@ -257,7 +249,7 @@ index 85c5eed4c..f39a99804 100644
  
      void maybeDisable()
 diff --git a/src/libstore/local-store.cc b/src/libstore/local-store.cc
-index 17b4ecc73..2c6c41fc8 100644
+index 17b4ecc73..b5f1d69c5 100644
 --- a/src/libstore/local-store.cc
 +++ b/src/libstore/local-store.cc
 @@ -10,6 +10,7 @@
@@ -291,7 +283,7 @@ index 17b4ecc73..2c6c41fc8 100644
 +            outputLock.lockPaths({realPath});
 +
 +        if (!isValidPath(info.path)) {
-+            makeStyxMount(sourceUri, std::string(info.path.to_string()), realPath);
++            makeStyxMount(sourceUri, std::string(info.path.to_string()), realPath, info.narSize);
 +            registerValidPath(info);
 +        }
 +
@@ -318,10 +310,10 @@ index e97195f5b..3b31cbfc6 100644
      void createTempRootsFile();
 diff --git a/src/libstore/styx.cc b/src/libstore/styx.cc
 new file mode 100644
-index 000000000..908e1c6a7
+index 000000000..73d5dc9d3
 --- /dev/null
 +++ b/src/libstore/styx.cc
-@@ -0,0 +1,99 @@
+@@ -0,0 +1,98 @@
 +
 +#include "error.hh"
 +#include "globals.hh"
@@ -362,22 +354,20 @@ index 000000000..908e1c6a7
 +    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, writeCallback);
 +    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &resData);
 +
-+    //printMsg(lvlNotice, "asking styx to do '%s'", postData);
 +    CURLcode curlRes = curl_easy_perform(curl);
 +    curl_easy_cleanup(curl);
 +    if (curlRes != CURLE_OK) {
-+        throw Error("request to styx failed: curl code %d", curlRes);
++        throw Error("styx error: curl: %d", curlRes);
 +    }
-+    //printMsg(lvlNotice, "styx response '%s'", trim(resData));
 +    nlohmann::json res = nlohmann::json::parse(resData);
 +    if (res.at("Success") != true) {
 +        std::string error = res.at("Error");
-+        throw Error("request to styx failed: %s", error);
++        throw Error("styx error: %s", error);
 +    }
 +}
 +
 +
-+void makeStyxMount(const std::string upstream, const std::string storePath, const std::string mountPoint)
++void makeStyxMount(const std::string upstream, const std::string storePath, const std::string mountPoint, int narSize)
 +{
 +    deletePath(mountPoint);
 +    createDirs(mountPoint);
@@ -386,6 +376,7 @@ index 000000000..908e1c6a7
 +        {"Upstream", upstream},
 +        {"StorePath", storePath},
 +        {"MountPoint", mountPoint},
++        {"NarSize", narSize},
 +    };
 +    styxRequest("/mount", req);
 +}
@@ -423,7 +414,7 @@ index 000000000..908e1c6a7
 +}  // namespace nix
 diff --git a/src/libstore/styx.hh b/src/libstore/styx.hh
 new file mode 100644
-index 000000000..ef0a5ca86
+index 000000000..52272e80f
 --- /dev/null
 +++ b/src/libstore/styx.hh
 @@ -0,0 +1,13 @@
@@ -434,7 +425,7 @@ index 000000000..ef0a5ca86
 +
 +namespace nix {
 +
-+void makeStyxMount(const std::string upstream, const std::string storePath, const std::string mountPoint);
++void makeStyxMount(const std::string upstream, const std::string storePath, const std::string mountPoint, int narSize);
 +bool isStyxMount(const std::string path);
 +void deleteStyxMount(const std::string path);
 +void tryStyxGC();
