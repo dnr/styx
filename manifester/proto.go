@@ -30,7 +30,7 @@ type (
 		DigestAlgo string
 		DigestBits int
 
-		// sharded manifesting
+		// sharded manifesting (not in cache key, only shard 0 writes to cache)
 		ShardTotal int
 		ShardIndex int
 	}

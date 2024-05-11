@@ -23,6 +23,9 @@ message DaemonParams {
   string manifest_cache_url = 5;
   string chunk_read_url = 3;
   string chunk_diff_url = 4;
+
+  // Size to shard manifest. If missing, daemon uses a default.
+  int64 shard_manifest_bytes = 6;
 }
 
 message SignedMessage {

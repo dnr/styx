@@ -23,6 +23,11 @@ type (
 	BuildArgs struct {
 		SmallFileCutoff int
 		ExpandManFiles  bool
+
+		ShardTotal int
+		ShardIndex int
+
+		chunkIndex int
 	}
 
 	ManifestBuilder struct {
@@ -31,6 +36,7 @@ type (
 		params      *pb.GlobalParams
 		chunk       common.BlkShift
 		digestBytes int
+		chunkPool   *common.ChunkPool
 	}
 
 	ManifestBuilderConfig struct {
@@ -54,10 +60,11 @@ func NewManifestBuilder(cfg ManifestBuilderConfig, cs ChunkStoreWrite) (*Manifes
 		},
 		chunk:       common.BlkShift(cfg.ChunkShift),
 		digestBytes: cfg.DigestBits >> 3,
+		chunkPool:   common.NewChunkPool(cfg.ChunkShift),
 	}, nil
 }
 
-func (b *ManifestBuilder) Build(ctx context.Context, args BuildArgs, r io.Reader) (*pb.Manifest, error) {
+func (b *ManifestBuilder) Build(ctx context.Context, args *BuildArgs, r io.Reader) (*pb.Manifest, error) {
 	m := &pb.Manifest{
 		Params:          b.params,
 		SmallFileCutoff: int32(args.SmallFileCutoff),
@@ -80,7 +87,7 @@ func (b *ManifestBuilder) Build(ctx context.Context, args BuildArgs, r io.Reader
 	return common.ValOrErr(m, common.Or(err, eg.Wait()))
 }
 
-func (b *ManifestBuilder) ManifestAsEntry(ctx context.Context, args BuildArgs, path string, manifest *pb.Manifest) (*pb.Entry, error) {
+func (b *ManifestBuilder) ManifestAsEntry(ctx context.Context, args *BuildArgs, path string, manifest *pb.Manifest) (*pb.Entry, error) {
 	mb, err := proto.Marshal(manifest)
 	if err != nil {
 		return nil, err
@@ -98,12 +105,12 @@ func (b *ManifestBuilder) ManifestAsEntry(ctx context.Context, args BuildArgs, p
 	}
 
 	eg, gCtx := errgroup.WithContext(ctx)
-	entry.Digests, err = b.chunkData(gCtx, int64(len(mb)), bytes.NewReader(mb), eg)
+	entry.Digests, err = b.chunkData(gCtx, args, int64(len(mb)), bytes.NewReader(mb), eg)
 
 	return common.ValOrErr(entry, common.Or(err, eg.Wait()))
 }
 
-func (b *ManifestBuilder) entry(ctx context.Context, args BuildArgs, m *pb.Manifest, nr *nar.Reader, eg *errgroup.Group) error {
+func (b *ManifestBuilder) entry(ctx context.Context, args *BuildArgs, m *pb.Manifest, nr *nar.Reader, eg *errgroup.Group) error {
 	h, err := nr.Next()
 	if err != nil { // including io.EOF
 		return err
@@ -150,7 +157,7 @@ func (b *ManifestBuilder) entry(ctx context.Context, args BuildArgs, m *pb.Manif
 			}
 		} else {
 			var err error
-			e.Digests, err = b.chunkData(ctx, e.Size, dataR, eg)
+			e.Digests, err = b.chunkData(ctx, args, e.Size, dataR, eg)
 			if err != nil {
 				return err
 			}
@@ -167,29 +174,45 @@ func (b *ManifestBuilder) entry(ctx context.Context, args BuildArgs, m *pb.Manif
 	return nil
 }
 
-func (b *ManifestBuilder) chunkData(ctx context.Context, size int64, r io.Reader, eg *errgroup.Group) ([]byte, error) {
-	nChunks := int((size + b.chunk.Size() - 1) >> b.chunk)
+func (b *ManifestBuilder) chunkData(ctx context.Context, args *BuildArgs, dataSize int64, r io.Reader, eg *errgroup.Group) ([]byte, error) {
+	nChunks := int((dataSize + b.chunk.Size() - 1) >> b.chunk)
 	fullDigests := make([]byte, nChunks*b.digestBytes)
 	digests := fullDigests
-	remaining := size
+	remaining := dataSize
 	for remaining > 0 {
 		b.chunksem.Acquire(ctx, 1)
-		data := make([]byte, min(remaining, b.chunk.Size()))
-		remaining -= int64(len(data))
+
+		size := min(remaining, b.chunk.Size())
+		remaining -= size
+		_data := b.chunkPool.Get(int(size))
+		data := _data[:size]
+
 		if _, err := io.ReadFull(r, data); err != nil {
+			b.chunkPool.Put(_data)
 			b.chunksem.Release(1)
 			return nil, err
 		}
 		digest := digests[:b.digestBytes]
 		digests = digests[b.digestBytes:]
+
+		// check shard
+		putChunk := true
+		if args.ShardTotal > 1 {
+			putChunk = args.chunkIndex%args.ShardTotal == args.ShardIndex
+			args.chunkIndex++
+		}
+
 		eg.Go(func() error {
 			defer b.chunksem.Release(1)
+			defer b.chunkPool.Put(_data)
 			h := sha256.New()
 			h.Write(data)
 			var out [sha256.Size]byte
 			copy(digest, h.Sum(out[0:0]))
-			digeststr := common.DigestStr(digest)
-			_, err := b.cs.PutIfNotExists(ctx, ChunkReadPath, digeststr, data)
+			if !putChunk {
+				return nil
+			}
+			_, err := b.cs.PutIfNotExists(ctx, ChunkReadPath, common.DigestStr(digest), data)
 			return err
 		})
 	}

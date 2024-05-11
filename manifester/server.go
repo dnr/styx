@@ -208,9 +208,11 @@ func (s *server) handleManifest(w http.ResponseWriter, req *http.Request) {
 	}
 
 	// TODO: make args configurable again (hashed in manifest cache key)
-	args := BuildArgs{
+	args := &BuildArgs{
 		SmallFileCutoff: defaultSmallFileCutoff,
 		ExpandManFiles:  defaultExpandManFiles,
+		ShardTotal:      r.ShardTotal,
+		ShardIndex:      r.ShardIndex,
 	}
 	manifest, err := s.mb.Build(req.Context(), args, io.TeeReader(narOut, narHasher))
 	if err != nil {
@@ -238,6 +240,13 @@ func (s *server) handleManifest(w http.ResponseWriter, req *http.Request) {
 		// log.Printf("downloaded %s [%d bytes] in %s [decmp %s user, %s sys]: %.3f MB/s",
 		// 	ni.URL, size, elapsed, ps.UserTime(), ps.SystemTime(),
 		// 	float64(size)/elapsed.Seconds()/1e6)
+	}
+
+	// if we're not shard 0, we're done
+	if r.ShardIndex != 0 {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("ok"))
+		return
 	}
 
 	// add metadata
@@ -270,7 +279,7 @@ func (s *server) handleManifest(w http.ResponseWriter, req *http.Request) {
 
 	manifestArgs := BuildArgs{SmallFileCutoff: smallManifestCutoff}
 	path := common.ManifestContext + "/" + path.Base(ni.StorePath)
-	entry, err := s.mb.ManifestAsEntry(req.Context(), manifestArgs, path, manifest)
+	entry, err := s.mb.ManifestAsEntry(req.Context(), &manifestArgs, path, manifest)
 	if err != nil {
 		log.Println("make manifest entry error:", err)
 		w.WriteHeader(http.StatusInternalServerError)
@@ -286,6 +295,8 @@ func (s *server) handleManifest(w http.ResponseWriter, req *http.Request) {
 
 	// write to cache (it'd be nice to return and do this in the background, but that doesn't
 	// work on lambda)
+	// TODO: we shouldn't write to cache unless we know for sure that other shards are done.
+	// (or else change client to re-request manifest on missing)
 	cmpSb, err := s.mb.cs.PutIfNotExists(req.Context(), ManifestCachePath, r.CacheKey(), sb)
 	if err != nil {
 		log.Println("error writing signed manifest cache:", err)

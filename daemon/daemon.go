@@ -66,7 +66,7 @@ type (
 		catalog     *catalog
 		db          *bbolt.DB
 		msgPool     *sync.Pool
-		chunkPool   *chunkPool
+		chunkPool   *common.ChunkPool
 		builder     *erofs.Builder
 		devnode     atomic.Int32
 		stats       daemonStats
@@ -146,7 +146,7 @@ func CachefilesServer(cfg Config) *server {
 		mcread:       manifester.NewChunkStoreReadUrl(cfg.Params.ManifestCacheUrl, manifester.ManifestCachePath),
 		catalog:      newCatalog(),
 		msgPool:      &sync.Pool{New: func() any { return make([]byte, CACHEFILES_MSG_MAX_SIZE) }},
-		chunkPool:    newChunkPool(int(cfg.Params.Params.ChunkShift)),
+		chunkPool:    common.NewChunkPool(int(cfg.Params.Params.ChunkShift)),
 		builder:      erofs.NewBuilder(erofs.BuilderConfig{BlockShift: cfg.ErofsBlockShift}),
 		cacheState:   make(map[uint32]*openFileState),
 		stateBySlab:  make(map[uint16]*openFileState),

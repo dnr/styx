@@ -1,20 +1,20 @@
-package daemon
+package common
 
 import "sync"
 
-type chunkPool struct {
+type ChunkPool struct {
 	p12, p14, pch *sync.Pool
 }
 
-func newChunkPool(chunkShift int) *chunkPool {
-	return &chunkPool{
+func NewChunkPool(chunkShift int) *ChunkPool {
+	return &ChunkPool{
 		p12: &sync.Pool{New: func() any { return make([]byte, 1<<12) }},
 		p14: &sync.Pool{New: func() any { return make([]byte, 1<<14) }},
 		pch: &sync.Pool{New: func() any { return make([]byte, 1<<chunkShift) }},
 	}
 }
 
-func (cp *chunkPool) Get(size int) []byte {
+func (cp *ChunkPool) Get(size int) []byte {
 	switch {
 	case size <= 1<<12:
 		return cp.p12.Get().([]byte)
@@ -25,7 +25,7 @@ func (cp *chunkPool) Get(size int) []byte {
 	}
 }
 
-func (cp *chunkPool) Put(b []byte) {
+func (cp *ChunkPool) Put(b []byte) {
 	size := cap(b)
 	switch {
 	case size <= 1<<12:

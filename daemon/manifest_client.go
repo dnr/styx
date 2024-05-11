@@ -10,10 +10,12 @@ import (
 	"net/http"
 	"path"
 	"strings"
+	"time"
 
 	"github.com/klauspost/compress/zstd"
 	"github.com/nix-community/go-nix/pkg/nixbase32"
 	"go.etcd.io/bbolt"
+	"golang.org/x/sync/errgroup"
 	"google.golang.org/protobuf/proto"
 
 	"github.com/dnr/styx/common"
@@ -35,7 +37,7 @@ func (s *server) getManifestAndBuildImage(ctx context.Context, req *MountReq) ([
 	ctx = context.WithValue(ctx, "sph", sph)
 
 	// get manifest
-	envelopeBytes, err := s.getManifestFromManifester(ctx, req.Upstream, cookie)
+	envelopeBytes, err := s.getManifestFromManifester(ctx, req.Upstream, cookie, req.NarSize)
 	if err != nil {
 		return nil, err
 	}
@@ -121,7 +123,7 @@ func (s *server) getManifestAndBuildImage(ctx context.Context, req *MountReq) ([
 	return image.Bytes(), nil
 }
 
-func (s *server) getManifestFromManifester(ctx context.Context, upstream, sph string) ([]byte, error) {
+func (s *server) getManifestFromManifester(ctx context.Context, upstream, sph string, narSize int64) ([]byte, error) {
 	// check cached first
 	gParams := s.cfg.Params.Params
 	mReq := manifester.ManifestReq{
@@ -143,7 +145,7 @@ func (s *server) getManifestFromManifester(ctx context.Context, upstream, sph st
 	// not found cached, request it
 	u := strings.TrimSuffix(s.cfg.Params.ManifesterUrl, "/") + manifester.ManifestPath
 	s.stats.manifestReqs.Add(1)
-	b, err := getNewManifest(ctx, u, mReq)
+	b, err := s.getNewManifest(ctx, u, mReq, narSize)
 	if err != nil {
 		s.stats.manifestErrs.Add(1)
 		return nil, err
@@ -151,23 +153,53 @@ func (s *server) getManifestFromManifester(ctx context.Context, upstream, sph st
 	return b, nil
 }
 
-func getNewManifest(ctx context.Context, url string, req manifester.ManifestReq) ([]byte, error) {
-	log.Print("requesting manifest for", req.StorePathHash)
-	reqBytes, err := json.Marshal(req)
+func (s *server) getNewManifest(ctx context.Context, url string, req manifester.ManifestReq, narSize int64) ([]byte, error) {
+	start := time.Now()
+
+	shardBy := s.cfg.Params.ShardManifestBytes
+	if shardBy == 0 {
+		// aim for max 10 seconds
+		shardBy = 20 << 20
+	}
+
+	shards := max(min(int((narSize+shardBy-1)/shardBy), 40), 1)
+	log.Printf("requesting manifest for %s with %d shards", req.StorePathHash, shards)
+	eg, ctx := errgroup.WithContext(ctx)
+
+	var shard0 []byte
+	for i := 0; i < shards; i++ {
+		i := i
+		eg.Go(func() error {
+			thisReq := req
+			thisReq.ShardTotal = shards
+			thisReq.ShardIndex = i
+			reqBytes, err := json.Marshal(thisReq)
+			if err != nil {
+				return err
+			}
+			res, err := retryHttpRequest(ctx, http.MethodPost, url, "application/json", reqBytes)
+			if err != nil {
+				return fmt.Errorf("manifester http error: %w", err)
+			}
+			defer res.Body.Close()
+			if zr, err := zstd.NewReader(res.Body); err != nil {
+				return err
+			} else if b, err := io.ReadAll(zr); err != nil {
+				return err
+			} else {
+				if i == 0 {
+					shard0 = b
+				}
+				return nil
+			}
+		})
+	}
+
+	err := eg.Wait()
 	if err != nil {
 		return nil, err
 	}
-	res, err := retryHttpRequest(ctx, http.MethodPost, url, "application/json", reqBytes)
-	if err != nil {
-		return nil, fmt.Errorf("manifester http error: %w", err)
-	}
-	defer res.Body.Close()
-	if zr, err := zstd.NewReader(res.Body); err != nil {
-		return nil, err
-	} else if b, err := io.ReadAll(zr); err != nil {
-		return nil, err
-	} else {
-		log.Print("got manifest for", req.StorePathHash)
-		return b, nil
-	}
+	elapsed := time.Since(start)
+	log.Printf("got manifest for %s in %.2fs with %d shards", req.StorePathHash, elapsed, shards)
+	return shard0, nil
 }

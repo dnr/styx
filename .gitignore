@@ -6,3 +6,4 @@
 /crap
 /keys/*.secret
 !/keys/styx-dev-1.secret
+/testvm.qcow2
