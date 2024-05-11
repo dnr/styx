@@ -24,6 +24,16 @@ func (ssm *SimpleSyncMap[K, V]) Put(k K, v V) {
 	ssm.m[k] = v
 }
 
+func (ssm *SimpleSyncMap[K, V]) PutIfNotPresent(k K, v V) bool {
+	ssm.lock.Lock()
+	defer ssm.lock.Unlock()
+	if _, ok := ssm.m[k]; ok {
+		return false
+	}
+	ssm.m[k] = v
+	return true
+}
+
 func (ssm *SimpleSyncMap[K, V]) Del(k K) {
 	ssm.lock.Lock()
 	defer ssm.lock.Unlock()

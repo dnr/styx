@@ -12,7 +12,6 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
-	"path"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -106,6 +105,11 @@ type (
 
 		// for store images
 		imageData []byte // data from manifester to be written
+	}
+
+	mountContext struct {
+		imageSize int64
+		imageData []byte
 	}
 
 	Config struct {
@@ -526,9 +530,10 @@ func (s *server) handleMountReq(ctx context.Context, r *MountReq) (*Status, erro
 	} else if !strings.HasPrefix(r.MountPoint, "/") {
 		return nil, mwErr(http.StatusBadRequest, "mount point must be absolute path")
 	}
-	sph, _, _ := strings.Cut(r.StorePath, "-")
+	cookie, _, _ := strings.Cut(r.StorePath, "-")
 
-	err := s.imageTx(sph, func(img *pb.DbImage) error {
+	var haveImageSize int64
+	err := s.imageTx(cookie, func(img *pb.DbImage) error {
 		if img.MountState == pb.MountState_Mounted {
 			// nix thinks it's not mounted but it is. return success so nix can enter in db.
 			return errAlreadyMounted
@@ -538,6 +543,7 @@ func (s *server) handleMountReq(ctx context.Context, r *MountReq) (*Status, erro
 		img.MountState = pb.MountState_Requested
 		img.MountPoint = r.MountPoint
 		img.LastMountError = ""
+		haveImageSize = img.ImageSize
 		return nil
 	})
 	if err != nil {
@@ -547,28 +553,49 @@ func (s *server) handleMountReq(ctx context.Context, r *MountReq) (*Status, erro
 		return nil, err
 	}
 
-	return nil, s.tryMount(ctx, r.StorePath, r.MountPoint)
+	return nil, s.tryMount(ctx, r, haveImageSize)
 }
 
-func (s *server) tryMount(ctx context.Context, storePath, mountPoint string) error {
-	sph, _, _ := strings.Cut(storePath, "-")
+func (s *server) tryMount(ctx context.Context, req *MountReq, haveImageSize int64) error {
+	cookie, _, _ := strings.Cut(req.StorePath, "-")
 
-	// TODO: maybe we should move more work before the mount, e.g. get the manifest, even build
-	// the image.
-	s.mountCtxMap.Put(sph, ctx)
-	defer s.mountCtxMap.Del(sph)
+	mountCtx := &mountContext{}
+	ctx = context.WithValue(ctx, "mountCtx", mountCtx)
 
-	_ = os.MkdirAll(mountPoint, 0o755)
-	opts := fmt.Sprintf("domain_id=%s,fsid=%s", s.cfg.CacheDomain, sph)
-	mountErr := unix.Mount("none", mountPoint, "erofs", 0, opts)
+	ok := s.mountCtxMap.PutIfNotPresent(cookie, ctx)
+	if !ok {
+		return errors.New("another mount is in progress for this store path")
+	}
+	defer s.mountCtxMap.Del(cookie)
 
-	_ = s.imageTx(sph, func(img *pb.DbImage) error {
+	if haveImageSize > 0 {
+		// if we have an image we can proceed right to mounting
+		mountCtx.imageSize = haveImageSize
+	} else {
+		// if no image yet, get the manifest and build it
+		image, err := s.getManifestAndBuildImage(ctx, req)
+		if err != nil {
+			return err
+		}
+		mountCtx.imageSize = int64(len(image))
+		mountCtx.imageData = image
+	}
+
+	_ = os.MkdirAll(req.MountPoint, 0o755)
+	opts := fmt.Sprintf("domain_id=%s,fsid=%s", s.cfg.CacheDomain, cookie)
+	mountErr := unix.Mount("none", req.MountPoint, "erofs", 0, opts)
+
+	_ = s.imageTx(cookie, func(img *pb.DbImage) error {
 		if mountErr == nil {
 			img.MountState = pb.MountState_Mounted
 			img.LastMountError = ""
+			// if the mount succeeded then we must have written the image.
+			// record size here so we skip it next time.
+			img.ImageSize = mountCtx.imageSize
 		} else {
 			img.MountState = pb.MountState_MountError
 			img.LastMountError = mountErr.Error()
+			img.ImageSize = 0 // force refetch/rebuild
 		}
 		return nil
 	})
@@ -619,10 +646,14 @@ func (s *server) restoreMounts() {
 		for k, v := cur.First(); k != nil; k, v = cur.Next() {
 			var img pb.DbImage
 			if err := proto.Unmarshal(v, &img); err != nil {
-				log.Print("unmarshal error iterating images", err)
+				log.Print("unmarshal error iterating images", string(k), err)
 				continue
 			}
 			if img.MountState == pb.MountState_Mounted {
+				if img.ImageSize == 0 {
+					log.Print("found mounted image without size", img.StorePath)
+					continue
+				}
 				toRestore = append(toRestore, &img)
 			}
 		}
@@ -635,7 +666,11 @@ func (s *server) restoreMounts() {
 			// log.Print("restoring: ", img.StorePath, " already mounted on ", img.MountPoint)
 			continue
 		}
-		err = s.tryMount(context.Background(), img.StorePath, img.MountPoint)
+		err = s.tryMount(context.Background(), &MountReq{
+			StorePath:  img.StorePath,
+			MountPoint: img.MountPoint,
+			// the image has been written so we don't need upstream/narsize
+		}, img.ImageSize)
 		if err == nil {
 			log.Print("restoring: ", img.StorePath, " restored to ", img.MountPoint)
 		} else {
@@ -911,149 +946,22 @@ func (s *server) handleOpenSlabImage(msgId, objectId, fd, flags uint32, id uint1
 func (s *server) handleOpenImage(msgId, objectId, fd, flags uint32, cookie string) (int64, error) {
 	ctx, _ := s.mountCtxMap.Get(cookie)
 	if ctx == nil {
-		log.Println("missing context in handleOpenImage for", cookie)
-		ctx = context.Background()
+		return 0, fmt.Errorf("missing context in handleOpenImage for %s", cookie)
+	}
+	mountCtx, _ := ctx.Value("mountCtx").(*mountContext)
+	if mountCtx == nil {
+		return 0, fmt.Errorf("missing context in handleOpenImage for %s", cookie)
 	}
 
-	// check if we have this image
-	img, err := s.readImageRecord(cookie)
-	if err != nil {
-		return 0, err
-	} else if img.Upstream == "" {
-		return 0, errors.New("missing upstream")
-	}
-	if img.MountState != pb.MountState_Requested && img.MountState != pb.MountState_Mounted {
-		log.Print("got open image request with bad mount state", img.String())
-		// try to proceed anyway
-	}
-	if img.ImageSize > 0 {
-		// we have it already
-		s.stateLock.Lock()
-		defer s.stateLock.Unlock()
-		state := &openFileState{
-			writeFd: fd,
-			tp:      typeImage,
-		}
-		s.cacheState[objectId] = state
-		return img.ImageSize, nil
-	}
-
-	// convert to binary
-	var sph Sph
-	if n, err := nixbase32.Decode(sph[:], []byte(cookie)); err != nil || n != len(sph) {
-		return 0, fmt.Errorf("cookie is not a valid nix store path hash")
-	}
-	// use a separate "sph" for the manifest itself (a single entry). only used if manifest is chunked.
-	manifestSph := makeManifestSph(sph)
-
-	ctx = context.WithValue(ctx, "sph", sph)
-
-	// get manifest
-	envelopeBytes, err := s.getManifestFromManifester(ctx, img.Upstream, cookie)
-	if err != nil {
-		return 0, err
-	}
-
-	// verify signature and params
-	entry, smParams, err := common.VerifyMessageAsEntry(s.cfg.StyxPubKeys, common.ManifestContext, envelopeBytes)
-	if err != nil {
-		return 0, err
-	}
-	if smParams != nil {
-		gParams := s.cfg.Params.Params
-		match := smParams.ChunkShift == gParams.ChunkShift &&
-			smParams.DigestBits == gParams.DigestBits &&
-			smParams.DigestAlgo == gParams.DigestAlgo
-		if !match {
-			return 0, fmt.Errorf("chunked manifest global params mismatch")
-		}
-	}
-
-	// check entry path to get storepath
-	storePath := strings.TrimPrefix(entry.Path, common.ManifestContext+"/")
-	if storePath != img.StorePath {
-		return 0, fmt.Errorf("envelope storepath != requested storepath: %q != %q", storePath, img.StorePath)
-	}
-	spHash, spName, _ := strings.Cut(storePath, "-")
-	if spHash != cookie || len(spName) == 0 {
-		return 0, fmt.Errorf("invalid or mismatched name in manifest %q", storePath)
-	}
-
-	// record signed manifest message in db
-	if err = s.db.Update(func(tx *bbolt.Tx) error {
-		return tx.Bucket(manifestBucket).Put([]byte(cookie), envelopeBytes)
-	}); err != nil {
-		return 0, err
-	}
-	// update catalog with this envelope (and manifest entry). should match code in initCatalog.
-	s.catalog.add(storePath)
-
-	// get payload or load from chunks
-	data := entry.InlineData
-	if len(data) == 0 {
-		s.catalog.add(manifestSph.String() + "-" + isManifestPrefix + spName)
-
-		log.Printf("loading chunked manifest for %s", storePath)
-
-		// allocate space for manifest chunks in slab
-		blocks := make([]uint16, 0, len(entry.Digests)/s.digestBytes)
-		blocks = common.AppendBlocksList(blocks, entry.Size, s.chunkShift, s.blockShift)
-
-		ctxForManifestChunks := context.WithValue(ctx, "sph", manifestSph)
-		locs, err := s.AllocateBatch(ctxForManifestChunks, blocks, entry.Digests, true)
-		if err != nil {
-			return 0, err
-		}
-
-		// read them out
-		data, err = s.readChunks(ctx, nil, entry.Size, locs, entry.Digests, []Sph{manifestSph}, true)
-		if err != nil {
-			return 0, err
-		}
-	}
-
-	// unmarshal into manifest
-	var m pb.Manifest
-	err = proto.Unmarshal(data, &m)
-	if err != nil {
-		return 0, fmt.Errorf("manifest unmarshal error: %w", err)
-	}
-
-	// make sure this matches the name in the envelope and original request
-	if niStorePath := path.Base(m.Meta.GetNarinfo().GetStorePath()); niStorePath != storePath {
-		return 0, fmt.Errorf("narinfo storepath != envelope storepath: %q != %q", niStorePath, storePath)
-	}
-
-	// transform manifest into image (allocate chunks)
-	var image bytes.Buffer
-	err = s.builder.BuildFromManifestWithSlab(ctx, &m, &image, s)
-	if err != nil {
-		return 0, fmt.Errorf("build image error: %w", err)
-	}
-	size := int64(image.Len())
-
-	log.Printf("new image %s: %d envelope, %d manifest, %d erofs", storePath, len(envelopeBytes), entry.Size, size)
-
-	// record in db
-	err = s.imageTx(cookie, func(img *pb.DbImage) error {
-		img.ImageSize = size
-		return nil
-	})
-	if err != nil {
-		return 0, err
-	}
-
-	// record open state
 	s.stateLock.Lock()
 	defer s.stateLock.Unlock()
 	state := &openFileState{
 		writeFd:   fd,
 		tp:        typeImage,
-		imageData: image.Bytes(),
+		imageData: mountCtx.imageData,
 	}
 	s.cacheState[objectId] = state
-
-	return size, nil
+	return mountCtx.imageSize, nil
 }
 
 func (s *server) handleClose(msgId, objectId uint32) error {
@@ -1125,6 +1033,7 @@ func (s *server) handleReadImage(state *openFileState, _, _ uint64) error {
 		return errors.New("got read request when already written image")
 	}
 	// always write whole thing
+	// TODO: does this have to be page-aligned?
 	_, err := unix.Pwrite(int(state.writeFd), state.imageData, 0)
 	if err != nil {
 		return err
@@ -1297,6 +1206,7 @@ func (s *server) VerifyParams(hashBytes int, blockShift, chunkShift common.BlkSh
 }
 
 func (s *server) AllocateBatch(ctx context.Context, blocks []uint16, digests []byte, forManifest bool) ([]erofs.SlabLoc, error) {
+	// TODO: pass this through regular arg?
 	sph := ctx.Value("sph").(Sph)
 
 	n := len(blocks)

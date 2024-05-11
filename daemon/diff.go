@@ -595,8 +595,10 @@ func (s *server) getKnownChunk(loc erofs.SlabLoc, buf []byte) error {
 	}
 
 	// record that we're reading this out of the slab
-	s.readKnownMap.Put(loc, struct{}{})
-	defer s.readKnownMap.Del(loc)
+	// TODO: use a real refcount
+	if s.readKnownMap.PutIfNotPresent(loc, struct{}{}) {
+		defer s.readKnownMap.Del(loc)
+	}
 
 	_, err := unix.Pread(readFd, buf, int64(loc.Addr)<<s.blockShift)
 	return err
