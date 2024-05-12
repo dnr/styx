@@ -1015,13 +1015,13 @@ func (s *server) handleRead(msgId, objectId uint32, ln, off uint64) (retErr erro
 
 	switch state.tp {
 	case typeImage:
-		log.Printf("read image %5d: %2dk @ %#x", objectId, ln>>10, off)
+		// log.Printf("read image %5d: %2dk @ %#x", objectId, ln>>10, off)
 		return s.handleReadImage(state, ln, off)
 	case typeSlabImage:
-		log.Printf("read slab image %5d: %2dk @ %#x", objectId, ln>>10, off)
+		// log.Printf("read slab image %5d: %2dk @ %#x", objectId, ln>>10, off)
 		return s.handleReadSlabImage(state, ln, off)
 	case typeSlab:
-		log.Printf("read slab %5d: %2dk @ %#x", objectId, ln>>10, off)
+		// log.Printf("read slab %5d: %2dk @ %#x", objectId, ln>>10, off)
 		return s.handleReadSlab(state, ln, off)
 	default:
 		panic("bad state type")

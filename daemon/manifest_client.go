@@ -134,6 +134,8 @@ func (s *server) getManifestFromManifester(ctx context.Context, upstream, sph st
 		DigestBits:    int(gParams.DigestBits),
 		// SmallFileCutoff: s.cfg.SmallFileCutoff,
 	}
+
+	// check cache
 	s.stats.manifestCacheReqs.Add(1)
 	if b, err := s.mcread.Get(ctx, mReq.CacheKey(), nil); err == nil {
 		log.Printf("got manifest for %s from cache", sph)
@@ -142,6 +144,7 @@ func (s *server) getManifestFromManifester(ctx context.Context, upstream, sph st
 	} else if common.IsContextError(err) {
 		return nil, err
 	}
+
 	// not found cached, request it
 	u := strings.TrimSuffix(s.cfg.Params.ManifesterUrl, "/") + manifester.ManifestPath
 	s.stats.manifestReqs.Add(1)
@@ -182,16 +185,18 @@ func (s *server) getNewManifest(ctx context.Context, url string, req manifester.
 				return fmt.Errorf("manifester http error: %w", err)
 			}
 			defer res.Body.Close()
-			if zr, err := zstd.NewReader(res.Body); err != nil {
-				return err
-			} else if b, err := io.ReadAll(zr); err != nil {
-				return err
-			} else {
-				if i == 0 {
+			if i == 0 {
+				if zr, err := zstd.NewReader(res.Body); err != nil {
+					return err
+				} else if b, err := io.ReadAll(zr); err != nil {
+					return err
+				} else {
 					shard0 = b
 				}
-				return nil
+			} else {
+				io.Copy(io.Discard, res.Body)
 			}
+			return nil
 		})
 	}
 
@@ -200,6 +205,6 @@ func (s *server) getNewManifest(ctx context.Context, url string, req manifester.
 		return nil, err
 	}
 	elapsed := time.Since(start)
-	log.Printf("got manifest for %s in %.2fs with %d shards", req.StorePathHash, elapsed, shards)
+	log.Printf("got manifest for %s in %.2fs with %d shards", req.StorePathHash, elapsed.Seconds(), shards)
 	return shard0, nil
 }

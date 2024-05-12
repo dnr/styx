@@ -1,9 +1,3 @@
-commit d2b2ed4ede70a48a43307608376d861d9cf666f6
-Author: David Reiss <dnr@dnr.im>
-Date:   Sat Mar 30 17:03:51 2024 -0700
-
-    initial hacking (rebased)
-
 diff --git a/src/libstore/binary-cache-store.cc b/src/libstore/binary-cache-store.cc
 index b4fea693f..768d29739 100644
 --- a/src/libstore/binary-cache-store.cc
@@ -55,7 +49,7 @@ index b7a56e791..ae5469250 100644
              };
          }();
 diff --git a/src/libstore/build/substitution-goal.cc b/src/libstore/build/substitution-goal.cc
-index 93867007d..24271c3f1 100644
+index 93867007d..e868ba515 100644
 --- a/src/libstore/build/substitution-goal.cc
 +++ b/src/libstore/build/substitution-goal.cc
 @@ -2,6 +2,8 @@
@@ -67,7 +61,7 @@ index 93867007d..24271c3f1 100644
  
  namespace nix {
  
-@@ -191,11 +193,82 @@ void PathSubstitutionGoal::referencesValid()
+@@ -191,11 +193,88 @@ void PathSubstitutionGoal::referencesValid()
          if (i != storePath) /* ignore self-references */
              assert(worker.store.isValidPath(i));
  
@@ -77,10 +71,10 @@ index 93867007d..24271c3f1 100644
 +
 +    state = src && dst && src->canUseStyx(info->narSize, std::string(info->path.name())) ?
 +        &PathSubstitutionGoal::tryStyx : &PathSubstitutionGoal::tryToRun;
-+    worker.wakeUp(shared_from_this());
-+}
-+
-+
+     worker.wakeUp(shared_from_this());
+ }
+ 
+ 
 +void PathSubstitutionGoal::tryStyx()
 +{
 +    trace("trying styx");
@@ -94,11 +88,14 @@ index 93867007d..24271c3f1 100644
 +    maintainRunningSubstitutions = std::make_unique<MaintainCount<uint64_t>>(worker.runningSubstitutions);
 +    worker.updateProgress();
 +
++    outPipe.create();
++
 +    promise = std::promise<void>();
 +
 +    thr = std::thread([this]() {
 +        try {
-+            ReceiveInterrupts receiveInterrupts;
++            /* Wake up the worker loop when we're done. */
++            Finally updateStats([this]() { outPipe.writeSide.close(); });
 +
 +            // TODO: use a better log line
 +            Activity act(*logger, actSubstitute, Logger::Fields{
@@ -114,16 +111,18 @@ index 93867007d..24271c3f1 100644
 +        }
 +    });
 +
++    worker.childStarted(shared_from_this(), {outPipe.readSide.get()}, true, false);
++
 +    state = &PathSubstitutionGoal::styxFinished;
-     worker.wakeUp(shared_from_this());
- }
- 
- 
++}
++
++
 +void PathSubstitutionGoal::styxFinished()
 +{
 +    trace("substitute with styx finished");
 +
 +    thr.join();
++    worker.childTerminated(this);
 +
 +    try {
 +        promise.get_future().get();
@@ -136,8 +135,9 @@ index 93867007d..24271c3f1 100644
 +        return;
 +    }
 +
-+    printMsg(lvlNotice, "mounted '%s' with styx", worker.store.printStorePath(storePath));
 +    worker.markContentsGood(storePath);
++
++    printMsg(lvlNotice, "mounted '%s' with styx", worker.store.printStorePath(storePath));
 +
 +    maintainRunningSubstitutions.reset();
 +    maintainExpectedSubstitutions.reset();
