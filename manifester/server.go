@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -15,8 +16,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/DataDog/zstd"
 	"github.com/aws/aws-lambda-go/lambdaurl"
-	"github.com/klauspost/compress/zstd"
 	"github.com/nix-community/go-nix/pkg/hash"
 	"github.com/nix-community/go-nix/pkg/narinfo"
 	"github.com/nix-community/go-nix/pkg/narinfo/signature"
@@ -35,11 +36,15 @@ const (
 	smallManifestCutoff = 32 * 1024
 )
 
+var (
+	errClosed = errors.New("closed")
+)
+
 type (
 	server struct {
 		cfg *Config
 		mb  *ManifestBuilder
-		enc *zstd.Encoder
+		zp  *common.ZstdCtxPool
 
 		httpServer *http.Server
 	}
@@ -58,14 +63,10 @@ type (
 )
 
 func ManifestServer(cfg Config) (*server, error) {
-	enc, err := zstd.NewWriter(nil)
-	if err != nil {
-		return nil, err
-	}
 	return &server{
 		cfg: &cfg,
 		mb:  cfg.ManifestBuilder,
-		enc: enc,
+		zp:  common.NewZstdCtxPool(),
 	}, nil
 }
 
@@ -175,8 +176,9 @@ func (s *server) handleManifest(w http.ResponseWriter, req *http.Request) {
 		decompress = nil
 	case "xz":
 		decompress = exec.Command(common.XzBin, "-d")
-	case "zst":
-		decompress = exec.Command(common.ZstdBin, "-d")
+	// case "zst":
+	// TODO: use in-memory pipe?
+	// 	decompress = exec.Command(common.ZstdBin, "-d")
 	default:
 		log.Println("unknown compression:", ni.Compression, "for", narUrl)
 		w.WriteHeader(http.StatusExpectationFailed)
@@ -303,7 +305,14 @@ func (s *server) handleManifest(w http.ResponseWriter, req *http.Request) {
 	}
 	if cmpSb == nil {
 		// already exists in cache, need to compress ourselves
-		cmpSb = s.enc.EncodeAll(sb, nil)
+		z := s.zp.Get()
+		defer s.zp.Put(z)
+		cmpSb, err = z.Compress(nil, sb)
+		if err != nil {
+			log.Println("compress error:", err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
 	}
 
 	w.Header().Set("Content-Encoding", "zstd")
@@ -312,7 +321,7 @@ func (s *server) handleManifest(w http.ResponseWriter, req *http.Request) {
 
 func (s *server) handleChunkDiff(w http.ResponseWriter, req *http.Request) {
 	const level = 3             // TODO: configurable
-	const chunksInParallel = 50 // TODO: configurable
+	const chunksInParallel = 60 // TODO: configurable
 
 	var r ChunkDiffReq
 	if err := json.NewDecoder(req.Body).Decode(&r); err != nil {
@@ -323,89 +332,86 @@ func (s *server) handleChunkDiff(w http.ResponseWriter, req *http.Request) {
 
 	// load requested chunks
 	start := time.Now()
-	baseFile, baseFileLen, baseErr := s.fetchChunkSeries(req.Context(), r.Bases, chunksInParallel/2)
-	if baseErr != nil {
+
+	var baseData, reqData bytes.Buffer
+	baseErrCh := make(chan error)
+	reqErrCh := make(chan error)
+
+	// start fetching both
+	go func() {
+		baseErrCh <- s.fetchChunkSeries(req.Context(), r.Bases, chunksInParallel/2, &baseData)
+	}()
+	go func() {
+		reqErrCh <- s.fetchChunkSeries(req.Context(), r.Reqs, chunksInParallel/2, &reqData)
+	}()
+	// wait for both
+	if baseErr := <-baseErrCh; baseErr != nil {
 		log.Println("chunk read (base) error", baseErr)
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
-	defer os.Remove(baseFile)
-	reqFile, reqFileLen, reqErr := s.fetchChunkSeries(req.Context(), r.Reqs, chunksInParallel/2)
-	if reqErr != nil {
+	if reqErr := <-reqErrCh; reqErr != nil {
 		log.Println("chunk read (req) error", reqErr)
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
-	defer os.Remove(reqFile)
 	dlDone := time.Now()
 
 	w.Header().Set("Content-Type", "application/octet-stream")
 
-	zstd := exec.CommandContext(
-		req.Context(),
-		common.ZstdBin,
-		fmt.Sprintf("-%d", level), // level
-		"--single-thread",         // improve compression (sometimes?)
-		"-c",                      // stdout
-		"--patch-from", baseFile,  // base
-		reqFile,
-	)
-	cw := countWriter{w: w}
-	zstd.Stdout = &cw
-	zstdErrPipe, err := zstd.StderrPipe()
-	if err != nil {
-		log.Println("zstd pipe error", err)
-		w.WriteHeader(http.StatusInternalServerError)
-		return
-	}
-	if err = zstd.Start(); err != nil {
-		log.Println("zstd start error", err)
-		w.WriteHeader(http.StatusInternalServerError)
-		return
-	}
-	stderr, copyErr := io.ReadAll(zstdErrPipe)
+	// max size of json-encoded stats. if we add more stats, may need to increase this
+	const statsSpace = 256
 
-	if err = zstd.Wait(); err != nil {
-		log.Printf("zstd error %v %q", err, string(stderr))
-		w.WriteHeader(http.StatusInternalServerError)
+	cw := countWriter{w: w}
+	zw := zstd.NewWriterPatcher(&cw, level, baseData.Bytes(), int64(reqData.Len())+statsSpace)
+	if _, err := zw.Write(reqData.Bytes()); err != nil {
+		log.Printf("zstd write error %v", err)
+		w.WriteHeader(http.StatusInternalServerError) // this will fail if zstd wrote anything
 		return
-	} else if copyErr != nil {
-		log.Printf("zstd stderr copy error %v %q", err, string(stderr))
-		w.WriteHeader(http.StatusInternalServerError)
+	}
+
+	// flush to get accurate count in cw
+	if err := zw.Flush(); err != nil {
+		log.Printf("zstd flush error %v", err)
+		w.WriteHeader(http.StatusInternalServerError) // this will fail if zstd wrote anything
 		return
 	}
 
 	digestBytes := int(s.mb.params.DigestBits >> 3)
 	stats := ChunkDiffStats{
-		BaseChunks:  len(r.Bases) / digestBytes,
-		BaseBytes:   baseFileLen,
-		ReqChunks:   len(r.Reqs) / digestBytes,
-		ReqBytes:    reqFileLen,
-		DiffBytes:   cw.c,
-		DlTotalMs:   dlDone.Sub(start).Milliseconds(),
-		ZstdTotalMs: time.Now().Sub(dlDone).Milliseconds(),
-		ZstdUserMs:  zstd.ProcessState.UserTime().Milliseconds(),
-		ZstdSysMs:   zstd.ProcessState.SystemTime().Milliseconds(),
+		BaseChunks: len(r.Bases) / digestBytes,
+		BaseBytes:  baseData.Len(),
+		ReqChunks:  len(r.Reqs) / digestBytes,
+		ReqBytes:   reqData.Len(),
+		DiffBytes:  cw.c,
+		DlTotalMs:  dlDone.Sub(start).Milliseconds(),
+		ZstdMs:     time.Now().Sub(dlDone).Milliseconds(),
 	}
-	if statsEnc, err := json.Marshal(stats); err == nil {
-		// write json stats as new zstd stream. verified that zstd decodes this correctly as
-		// trailing data even with --patch-from.
-		w.Write(s.enc.EncodeAll(statsEnc, nil))
+	statsEnc, err := json.Marshal(stats)
+	if err != nil || len(statsEnc) > statsSpace {
+		statsEnc = []byte("{}")
+	}
+	if pad := statsSpace - len(statsEnc); pad > 0 {
+		statsEnc = append(statsEnc, bytes.Repeat([]byte{'\n'}, pad)...)
+	}
+	if _, err := zw.Write(statsEnc); err != nil {
+		log.Printf("zstd write stats error %v", err)
+		w.WriteHeader(http.StatusInternalServerError) // this will fail if zstd wrote anything
+		return
+	}
+	if err := zw.Close(); err != nil {
+		log.Printf("zstd close error %v", err)
+		w.WriteHeader(http.StatusInternalServerError) // this will fail if zstd wrote anything
+		return
 	}
 
 	log.Printf("diff done %#v", stats)
 }
 
-func (s *server) fetchChunkSeries(ctx context.Context, digests []byte, parallel int) (string, int, error) {
+func (s *server) fetchChunkSeries(ctx context.Context, digests []byte, parallel int, out io.Writer) error {
 	digestBytes := s.mb.params.DigestBits >> 3
 	// TODO: ew, use separate setting?
 	cs := s.cfg.ManifestBuilder.cs
-
-	f, err := os.CreateTemp("", "chunks")
-	if err != nil {
-		return "", 0, err
-	}
-	defer f.Close()
 
 	type res struct {
 		b   []byte
@@ -430,13 +436,12 @@ func (s *server) fetchChunkSeries(ctx context.Context, digests []byte, parallel 
 	for ch := range chs {
 		res := <-ch
 		if res.err != nil {
-			return "", 0, err
-		} else if _, err := f.Write(res.b); err != nil {
-			return "", 0, err
+			return res.err
+		} else if _, err := out.Write(res.b); err != nil {
+			return err
 		}
 	}
-	pos, _ := f.Seek(0, 1)
-	return f.Name(), int(pos), nil
+	return nil
 }
 
 func (s *server) handleChunk(w http.ResponseWriter, r *http.Request) {

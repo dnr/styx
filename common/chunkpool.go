@@ -3,14 +3,14 @@ package common
 import "sync"
 
 type ChunkPool struct {
-	p12, p14, pch *sync.Pool
+	p12, p14, pch sync.Pool
 }
 
 func NewChunkPool(chunkShift int) *ChunkPool {
 	return &ChunkPool{
-		p12: &sync.Pool{New: func() any { return make([]byte, 1<<12) }},
-		p14: &sync.Pool{New: func() any { return make([]byte, 1<<14) }},
-		pch: &sync.Pool{New: func() any { return make([]byte, 1<<chunkShift) }},
+		p12: sync.Pool{New: func() any { return make([]byte, 1<<12) }},
+		p14: sync.Pool{New: func() any { return make([]byte, 1<<14) }},
+		pch: sync.Pool{New: func() any { return make([]byte, 1<<chunkShift) }},
 	}
 }
 

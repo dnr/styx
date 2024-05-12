@@ -9,11 +9,10 @@ import (
 	"io"
 	"log"
 	"net/http"
-	"os"
-	"os/exec"
 	"strings"
 	"unsafe"
 
+	"github.com/DataDog/zstd"
 	"go.etcd.io/bbolt"
 	"golang.org/x/sys/unix"
 	"google.golang.org/protobuf/proto"
@@ -357,7 +356,7 @@ func (s *server) doDiffOp(ctx context.Context, op *diffOp) error {
 	// log.Println("read baseData", len(baseData))
 
 	// decompress from diff
-	reqData, err := s.expandChunkDiff(ctx, baseData, diff)
+	reqData, err := io.ReadAll(zstd.NewReaderPatcher(diff, baseData))
 	if err != nil {
 		return fmt.Errorf("expandChunkDiff error: %w", err)
 	}
@@ -386,37 +385,6 @@ func (s *server) doDiffOp(ctx context.Context, op *diffOp) error {
 	}
 
 	return nil
-}
-
-func (s *server) expandChunkDiff(ctx context.Context, baseData []byte, diff io.Reader) ([]byte, error) {
-	// run zstd
-	// requires file for base, but diff can be streaming
-	// TODO: this really should be in-process
-
-	baseFile, err := writeToTempFile(baseData)
-	if err != nil {
-		return nil, fmt.Errorf("writeToTempFile error: %w", err)
-	}
-	defer os.Remove(baseFile)
-
-	zstd := exec.CommandContext(
-		ctx,
-		common.ZstdBin,
-		"-c",                     // stdout
-		"-d",                     // decode
-		"--patch-from", baseFile, // base
-	)
-	zstd.Stdin = diff
-	out, err := zstd.Output()
-	if err != nil {
-		var stderr string
-		if ee, ok := err.(*exec.ExitError); ok {
-			stderr = string(ee.Stderr)
-		}
-		return nil, fmt.Errorf("zstd error: %w: %q", err, stderr)
-	}
-
-	return out, nil
 }
 
 func (s *server) findBase(sphs []Sph) (catalogResult, Sph) {

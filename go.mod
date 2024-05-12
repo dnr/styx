@@ -1,10 +1,11 @@
 module github.com/dnr/styx
 
-// break 1
-
 go 1.21.5
 
+replace github.com/DataDog/zstd => github.com/dnr/datadog-zstd-go v0.0.0-20240512084359-465ecf226843
+
 require (
+	github.com/DataDog/zstd v1.5.5
 	github.com/avast/retry-go/v4 v4.6.0
 	github.com/aws/aws-lambda-go v1.46.0
 	github.com/aws/aws-sdk-go-v2 v1.26.1
@@ -12,7 +13,6 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.51.0
 	github.com/aws/aws-sdk-go-v2/service/ssm v1.49.5
 	github.com/google/btree v1.1.2
-	github.com/klauspost/compress v1.17.7
 	github.com/lunixbochs/struc v0.0.0-20200707160740-784aaebc1d40
 	github.com/nix-community/go-nix v0.0.0-20231219074122-93cb24a86856
 	github.com/phayes/freeport v0.0.0-20220201140144-74d24b5ae9f5

@@ -47,15 +47,13 @@ type (
 	// (Caller must know the lengths of reqs ahead of time to be able to split the result.)
 	// Max number of digests in each is 256. With 64KiB chunks, that makes 16MiB total data.
 	ChunkDiffStats struct {
-		BaseChunks  int
-		BaseBytes   int
-		ReqChunks   int
-		ReqBytes    int
-		DiffBytes   int
-		DlTotalMs   int64
-		ZstdTotalMs int64
-		ZstdUserMs  int64
-		ZstdSysMs   int64
+		BaseChunks int   `json:"baseC"`
+		BaseBytes  int   `json:"baseB`
+		ReqChunks  int   `json:"reqC"`
+		ReqBytes   int   `json:"reqB"`
+		DiffBytes  int   `json:"diffB"`
+		DlTotalMs  int64 `json:"dlMs"`
+		ZstdMs     int64 `json:"zstdMs"`
 	}
 )
 

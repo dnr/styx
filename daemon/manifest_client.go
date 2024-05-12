@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/klauspost/compress/zstd"
+	"github.com/DataDog/zstd"
 	"github.com/nix-community/go-nix/pkg/nixbase32"
 	"go.etcd.io/bbolt"
 	"golang.org/x/sync/errgroup"
@@ -186,9 +186,7 @@ func (s *server) getNewManifest(ctx context.Context, url string, req manifester.
 			}
 			defer res.Body.Close()
 			if i == 0 {
-				if zr, err := zstd.NewReader(res.Body); err != nil {
-					return err
-				} else if b, err := io.ReadAll(zr); err != nil {
+				if b, err := io.ReadAll(zstd.NewReader(res.Body)); err != nil {
 					return err
 				} else {
 					shard0 = b

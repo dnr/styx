@@ -15,7 +15,8 @@ import (
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	s3 "github.com/aws/aws-sdk-go-v2/service/s3"
 	s3types "github.com/aws/aws-sdk-go-v2/service/s3/types"
-	"github.com/klauspost/compress/zstd"
+
+	"github.com/dnr/styx/common"
 )
 
 type (
@@ -25,7 +26,8 @@ type (
 	}
 
 	ChunkStoreRead interface {
-		// Data will be appended to dst and returned
+		// Data will be appended to dst and returned.
+		// If dst is given, it must be big enough to hold the full chunk!
 		Get(ctx context.Context, key string, dst []byte) ([]byte, error)
 	}
 
@@ -38,38 +40,39 @@ type (
 
 	localChunkStoreWrite struct {
 		dir string
-		enc *zstd.Encoder
-		dec *zstd.Decoder
+		zp  *common.ZstdCtxPool
 	}
 
 	s3ChunkStoreWrite struct {
 		bucket   string
 		s3client *s3.Client
-		enc      *zstd.Encoder
-		dec      *zstd.Decoder
+		zp       *common.ZstdCtxPool
+		zlevel   int
 	}
 
 	urlChunkStoreRead struct {
 		url string
-		dec *zstd.Decoder
+		zp  *common.ZstdCtxPool
 	}
 )
 
-func newLocalChunkStoreWrite(dir string, enc *zstd.Encoder, dec *zstd.Decoder) (*localChunkStoreWrite, error) {
+func newLocalChunkStoreWrite(dir string) (*localChunkStoreWrite, error) {
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return nil, err
 	}
-	return &localChunkStoreWrite{dir: dir, enc: enc, dec: dec}, nil
+	return &localChunkStoreWrite{dir: dir, zp: common.NewZstdCtxPool()}, nil
 }
 
 func (l *localChunkStoreWrite) PutIfNotExists(ctx context.Context, path_, key string, data []byte) ([]byte, error) {
 	// ignore path! mix chunks and manifests in same directory
+	z := l.zp.Get()
+	defer l.zp.Put(z)
 	fn := path.Join(l.dir, key)
 	if _, err := os.Stat(fn); err == nil {
 		return nil, nil
-	}
-	d := l.enc.EncodeAll(data, nil)
-	if out, err := os.CreateTemp(l.dir, key+".tmp*"); err != nil {
+	} else if d, err := z.CompressLevel(nil, data, 1); err != nil {
+		return nil, err
+	} else if out, err := os.CreateTemp(l.dir, key+".tmp*"); err != nil {
 		return nil, err
 	} else if n, err := out.Write(d); err != nil || n != len(d) {
 		_ = out.Close()
@@ -81,8 +84,9 @@ func (l *localChunkStoreWrite) PutIfNotExists(ctx context.Context, path_, key st
 	} else if err := os.Rename(out.Name(), fn); err != nil {
 		_ = os.Remove(out.Name())
 		return nil, err
+	} else {
+		return d, nil
 	}
-	return d, nil
 }
 
 func (l *localChunkStoreWrite) Get(ctx context.Context, path_, key string, data []byte) ([]byte, error) {
@@ -91,10 +95,12 @@ func (l *localChunkStoreWrite) Get(ctx context.Context, path_, key string, data 
 	if err != nil {
 		return nil, err
 	}
-	return l.dec.DecodeAll(b, data)
+	z := l.zp.Get()
+	defer l.zp.Put(z)
+	return z.Decompress(data, b)
 }
 
-func newS3ChunkStoreWrite(bucket string, enc *zstd.Encoder, dec *zstd.Decoder) (*s3ChunkStoreWrite, error) {
+func newS3ChunkStoreWrite(bucket string, zlevel int) (*s3ChunkStoreWrite, error) {
 	awscfg, err := awsconfig.LoadDefaultConfig(context.Background())
 	if err != nil {
 		return nil, err
@@ -105,8 +111,8 @@ func newS3ChunkStoreWrite(bucket string, enc *zstd.Encoder, dec *zstd.Decoder) (
 	return &s3ChunkStoreWrite{
 		bucket:   bucket,
 		s3client: s3client,
-		enc:      enc,
-		dec:      dec,
+		zp:       common.NewZstdCtxPool(),
+		zlevel:   zlevel,
 	}, nil
 }
 
@@ -123,8 +129,13 @@ func (s *s3ChunkStoreWrite) PutIfNotExists(ctx context.Context, path, key string
 	if err == nil || !errors.As(err, &notFound) {
 		return nil, err
 	}
+	z := s.zp.Get()
+	defer s.zp.Put(z)
 	// TODO: use buffer pool here (requires caller to return it?)
-	d := s.enc.EncodeAll(data, nil)
+	d, err := z.CompressLevel(nil, data, s.zlevel)
+	if err != nil {
+		return nil, err
+	}
 	_, err = s.s3client.PutObject(ctx, &s3.PutObjectInput{
 		Bucket:          &s.bucket,
 		Key:             &key,
@@ -150,27 +161,16 @@ func (s *s3ChunkStoreWrite) Get(ctx context.Context, path, key string, data []by
 	if err != nil {
 		return nil, err
 	}
-	return s.dec.DecodeAll(b, data)
+	z := s.zp.Get()
+	defer s.zp.Put(z)
+	return z.Decompress(data, b)
 }
 
 func NewChunkStoreWrite(cfg ChunkStoreWriteConfig) (ChunkStoreWrite, error) {
-	enc, err := zstd.NewWriter(nil,
-		zstd.WithEncoderLevel(zstd.EncoderLevelFromZstd(cfg.ZstdEncoderLevel)),
-		zstd.WithEncoderCRC(false),
-	)
-	if err != nil {
-		return nil, err
-	}
-	dec, err := zstd.NewReader(nil,
-		zstd.WithDecoderMaxMemory(1<<20), // chunks are small
-	)
-	if err != nil {
-		return nil, err
-	}
 	if len(cfg.ChunkLocalDir) > 0 {
-		return newLocalChunkStoreWrite(cfg.ChunkLocalDir, enc, dec)
+		return newLocalChunkStoreWrite(cfg.ChunkLocalDir)
 	} else if len(cfg.ChunkBucket) > 0 {
-		return newS3ChunkStoreWrite(cfg.ChunkBucket, enc, dec)
+		return newS3ChunkStoreWrite(cfg.ChunkBucket, cfg.ZstdEncoderLevel)
 	}
 	return nil, errors.New("chunk store configuration is missing")
 }
@@ -180,15 +180,9 @@ func NewChunkStoreReadUrl(url, path string) ChunkStoreRead {
 	if path != ChunkReadPath && path != ManifestCachePath {
 		panic("path must be ChunkReadPath or ManifestCachePath")
 	}
-	dec, err := zstd.NewReader(nil,
-		zstd.WithDecoderMaxMemory(1<<20), // chunks are small
-	)
-	if err != nil {
-		panic("can't create zstd decoder")
-	}
 	return &urlChunkStoreRead{
 		url: strings.TrimSuffix(url, "/") + path,
-		dec: dec,
+		zp:  common.NewZstdCtxPool(),
 	}
 }
 
@@ -207,7 +201,18 @@ func (s *urlChunkStoreRead) Get(ctx context.Context, key string, dst []byte) ([]
 		return nil, err
 	}
 	if res.Header.Get("Content-Encoding") == "zstd" {
-		return s.dec.DecodeAll(b, dst)
+		z := s.zp.Get()
+		defer s.zp.Put(z)
+		if dst == nil {
+			return z.Decompress(nil, b)
+		} else {
+			// fast path, assume buffer is big enough
+			n, err := z.DecompressInto(dst[len(dst):cap(dst)], b)
+			if err != nil {
+				return nil, err
+			}
+			return dst[:len(dst)+n], nil
+		}
 	} else {
 		return append(dst, b...), nil
 	}

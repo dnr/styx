@@ -33,7 +33,7 @@ func withChunkStoreWrite(c *cobra.Command) runE {
 
 	c.Flags().StringVar(&cscfg.ChunkBucket, "chunkbucket", "", "s3 bucket to put chunks")
 	c.Flags().StringVar(&cscfg.ChunkLocalDir, "chunklocaldir", "", "local directory to put chunks")
-	c.Flags().IntVar(&cscfg.ZstdEncoderLevel, "zstd_level", 3, "encoder level for zstd chunks")
+	c.Flags().IntVar(&cscfg.ZstdEncoderLevel, "zstd_level", 5, "encoder level for zstd chunks")
 
 	return func(c *cobra.Command, args []string) error {
 		cs, err := manifester.NewChunkStoreWrite(cscfg)
