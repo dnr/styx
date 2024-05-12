@@ -2,4 +2,12 @@
 set -eux
 vm=$(nix-build --no-out-link '<nixpkgs/nixos>' -A vm -I nixos-config=./vm-interactive.nix)
 export QEMU_KERNEL_PARAMS=console=ttyS0
+export NIX_DISK_IMAGE=/tmp/testvm-$UID.qcow2
+keep=''
+for arg; do
+  case $arg in
+    --keep) keep=1 ;;
+  esac
+done
+[[ $keep ]] || rm -f $NIX_DISK_IMAGE
 exec $vm/bin/run-testvm-vm -nographic

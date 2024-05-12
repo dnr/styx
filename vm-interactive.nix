@@ -20,4 +20,14 @@
     nixpkgs = { source = toString <nixpkgs>; target = "/tmp/nixpkgs"; };
     styxsrc = { source = toString ./.;       target = "/tmp/styxsrc"; };
   };
+
+  # more convenience
+  environment.shellAliases = {
+    l = "less";
+    ll = "ls -l";
+    g = "grep";
+  };
+  environment.variables = {
+    TMPDIR = "/tmp"; # tmpfs is too small to build stuff
+  };
 }
