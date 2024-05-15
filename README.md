@@ -85,6 +85,16 @@ like this: [EROFS][erofs] + [on-demand fscache][erofs_over_fscache] was created
 for the [container ecosystem][nydus], but there's a lot of similarities with
 what we want for Nix.
 
+EROFS is a read-only filesystem format and driver, similar to SquashFS and
+others, but much more flexible in where the "data" actually comes from. It can
+do things like mount tar files without moving or copying the data. Most
+importantly for us, it can mount filesystems where the data, and even the
+metadata, isn't present on the system in any form yet. Instead, the data can be
+requested from a userspace daemon on-demand using the fscache mechanism.
+
+Additionally, it can share data between different "filesystems" and present them
+while only storing one backing copy.
+
 Styx hooks up this EROFS + fscache stuff to a Nix binary cache and local store,
 plus an external service for on-demand differential compression, to get all the
 properties we're looking for.
@@ -96,17 +106,247 @@ served with one trip into the kernel. (Benchmarks TBD)
 
 ## Overall design
 
-TODO: image here
+Let's get the big complex diagram out there for reference:
 
-Pieces:
+```mermaid
+flowchart BT
+    subgraph localmachine[Local machine]
+        subgraph kernel[Kernel]
+            erofs
+            fscache
+            cachefiles
+            filesystem[(filesystem)]
+        end
+        subgraph sd[Styx daemon]
+            styxdaemon[Styx daemon]
+            boltdb[BoltDB]
+        end
+        userspace([userspace programs])
+        subgraph Nix daemon
+            nixdaemon[Nix local store]
+        end
+    end
 
-- Binary cache: Styx works with any existing Nix binary cache.
-- Manifester/differ: This sits near the binary cache.
-- Chunk store: Sits near the manifester/differ.
-- Styx daemon: Runs on your machine.
-- Nix daemon: Slightly modified Nix daemon to talk to Styx.
+    subgraph cloud[Cloud]
+        nixcache((&nbsp; Nix binary cache &nbsp;))
+        subgraph ssc[Styx server components]
+            subgraph lambda[AWS lambda]
+                manifester[Manifester]
+                chunkdiffer[Chunk differ]
+            end
+            subgraph s3[AWS S3]
+                chunkstore[(Chunk store)]
+                manifestcache[(Manifest cache)]
+            end
+        end
+    end
+
+    manifester-- gets nar from -->nixcache
+    manifester-- writes cached manifest -->manifestcache
+    manifester-- writes chunks -->chunkstore
+    chunkdiffer-- reads data -->chunkstore
+    erofs-- requests data -->fscache
+    cachefiles-- requests data -->styxdaemon
+    userspace-- reads+stats files -->erofs
+    userspace-- realizes store path -->nixdaemon
+    nixdaemon-- requests mount of store path -->styxdaemon
+    styxdaemon-- requests new manifest -->manifester
+    styxdaemon-- requests diff -->chunkdiffer
+    styxdaemon-- reads single chunks ----->chunkstore
+    styxdaemon-- gets manifest ----->manifestcache
+    nixdaemon-- gets narinfo -->nixcache
+    fscache-- requests data -->cachefiles
+    cachefiles-- stores data on -->filesystem
+    styxdaemon-- stores metadata in -->boltdb
+    boltdb-- stores data in -->filesystem
+    styxdaemon-- requests mount -->erofs
+
+    style nixcache stroke-width:6px
+```
+
+Then a few definitions:
+
+**Block**: EROFS filesystems have a block size, like all filesystems. Styx uses
+4KiB blocks. (I think currently the block size must match the system page size.)
+
+**Chunk**: To reduce metadata overhead, the unit of data sharing and data
+movement is larger than a single block. Styx currently uses 64KiB, 16 blocks.
+
+**Chunk digest**: Chunks are identified by a cryptographic digest. Currently we
+use a 192-bit prefix of SHA-256.
+
+**Manifest**: The goal is that we don't want to download a full nar file (which
+has metadata and file data), but we do need all the metadata to create an erofs
+image. So we need a thing that has just the metadata from the nar file. But, it
+also needs *digests* of the data, or actually the chunks of the data, so that we
+can figure out the sharing structure. We call this a "manifest". It's similar to
+a nar listing (supported by some binary caches), but with two addtions: For tiny
+files and symlinks, we do include the data inline. For larger files, we break
+them into chunks and include the digest of each chunk.
+
+**EROFS image**: Styx constructs one EROFS image per store path. The image has
+only metadata and small inline file data. The actual data is pointers to slab
+devices.
+
+**Slab**: A slab is a virtual device that contains all the chunks that we know
+about, concatenated together (padded to the block size). A slab can hold one TB
+and we can have many slabs. Even though it looks big, don't worry, disk space is
+allocated only on-demand.
+
+**Slab image**: Due to the design of cachefiles, we can only write data through
+its interface, we can't read it back out. We need to read chunks that we've
+written to construct the base for binary diffing. To do this, we mount a special
+image that exposes the entire slab device as a single large file. This also
+looks big but doesn't take any actual disk space.
+
+**Manifest slab**: Large manifests themselves are broken into chunks. These
+chunks aren't stored in a slab, though, they're stored in a manifest slab. This
+one is just a plain old file, no EROFS or cachefiles stuff going on.
+
+**Styx daemon**: This runs in your local machine, next to the Nix daemon.
+
+**Chunk store**: An object store with one object per chunk.
+
+**Manifest cache**: An object store with one object per constructed manifest.
+
+**Manifester**: Server that can convert nar files into manifests, storing chunks
+of data in a chunk store.
+
+**Chunk differ**: Server that can compute binary diffs between arbitrary
+sequences of chunks on demand.
 
 
+Now we can describe the pieces and flow:
+
+For requesting a new store path, it goes something like this:
+
+1. A user asks the Nix daemon to realize a store path.
+1. The Nix daemon queries a binary cache to see if it can substitute (requests narinfo).
+1. If if finds it, and if configured, it asks Styx to substitute it instead of
+   downloading the nar file.
+1. Styx checks if it has an EROFS image already built. If not:
+1. It checks the manifest cache to see if it can just download one. If not:
+1. It asks the manifester to create a manifest for the nar.
+    1. The manifester gets the narinfo and nar file.
+    1. It breaks the data into chunks and stores them in the chunk store.
+    1. It stores the completed manifest in the manifest cache for future requests.
+    1. It returns the manifest to the Styx daemon.
+1. Now the Styx daemon has a manifest. It creates an EROFS image from the
+   manifest and holds it in memory.
+1. It asks the kernel to mount an EROFS on the destination store path.
+1. The kernel calls into EROFS, which calls into fscache, which calls into
+   cachefiles, which makes a request to the userspace cachefiles daemon.
+1. Styx acts as the userspace cachefiles daemon and gets the request for the
+   contents of the EROFS image. It supplies the image that it kept in memory.
+1. Cachefiles writes the image to disk in its internal cache and supplies the
+   data to EROFS.
+1. The kernel complets the mount operation. The store path is now mounted in the
+   filesystem and can be stat'ed and readdir'ed with no additional interaction
+   from Styx or Nix.
+1. Styx reports success to Nix.
+1. Nix records that the store path has been successfully substituted.
+
+That's the simple case. There are a few complications that might happen:
+
+1. The manifest might be "chunked" itself. We do this when it's too big and
+   could benefit from differential compression. In this case, we have to get the
+   chunks of the manifest to reassemble it before we can build the image. This
+   basically follows the read path below, so read that first.
+2. If this is the first image we're mounting, EROFS will also request to open
+   the slab device(s). The Styx daemon responds to that by setting up some
+   internal data structures. But then it also mounts the slab image (this is so
+   we can read from it). This is another round-trip through the kernel and back
+   up to Styx, where it returns a single 4KiB image. It then keeps an open
+   file descriptor to the slab file within the slab image.
+
+
+Now suppose a userspace program does a read from a file. That looks like this:
+
+1. Userspace calls read on a file in a Styx EROFS mount.
+1. The EROFS filesystem that we constructed tells EROFS that the chunk at that
+   offset is actually found at a particular offset in a different "device",
+   which is actually our slab file.
+1. If the data at that offset of the slab file is cached, it can return that.
+   Note that the data may have been cached by another image, the slab file is
+   shared.
+1. If not, it requests the data from Styx.
+1. Styx figures out what chunk is at that offset.
+1. Now there are a few options for how it can get the data for that chunk:
+    1. It can request the single chunk from the chunk store.
+    1. It can guess that some nearby chunks are also going to be requested, and
+       ask the chunk differ to recompress and send a batch of chunks at once. This
+       is higher latency (the server side is doing more work), but will generally
+       give better compression than individual chunks.
+    1. It can guess that the requested chunk and some nearby chunks are likely to
+       be similar to a run of chunks that it already has. E.g., a bunch of chunks
+       for a newer version of a package are similar to the corresponding chunks
+       from the previous version of the same package. It can ask the chunk differ
+       for a binary diff, which can provide much better compression.
+1. Once it has the data, it supplies it to cachefiles, and the read completes.
+
+
+
+## Discussion and notes
+
+### Security
+
+Nix's security for binary substitution is based on the nar hash: a cryptographic
+digest of the whole nar file. Since our goal is to avoid downloading nar files,
+we can't verify a nar hash at substitution time. (We can verify it if all data
+for a package is completely fetched, but that might never happen for some
+packages.)
+
+Instead, the manifester verifies the nar hash, and then signs the manifest with
+its own key. The Styx daemon verifies the manifest signature. This obviously
+means we need to trust the manifester. This is sort of unfortunate but unlikely
+to change any time soon.
+
+We don't have to trust the chunk store, manifest cache, or chunk differ: chunks
+are content-addressed so can be verified independently.
+
+
+### Chunking schemes
+
+EROFS basically imposes a chunking scheme on us: chunks of some fixed
+power-of-two multiple of the block size, sequentially from the start of each
+file.
+
+(Note that EROFS supports more flexible chunking when using its compression
+features. As far as I can tell, you can't use both compression and cross-image
+sharing at once. Maybe that'll be possible in the future.)
+
+How does this compare to content-defined chunking (CDC)? CDC can theoretically
+share more data, especially if you use a smaller chunk size. But chunks at odd
+offsets add more overhead to reconstructing files. You can transfer data with
+CDC and reconstruct it into a filesystem. But then you're doubling local storage
+space.
+
+To get a single copy of local data plus good performance, I think fixed-size
+chunks are the best way to go for now.
+
+In some local experiments I found that whole-file sharing (i.e. optimize-store)
+cuts my local store size by 1.5× (to 66%), and 64KiB fixed chunks cut it down by
+2.5× (to 40%).
+
+
+### Expanding compressed files
+
+TBD
+
+
+### GC
+
+So far we've only written data. How do we clean things up? There's enough
+metadata in the db to trace all chunk references, so we can find unused chunks.
+The next part is uncertain: based on a few experiments, I think that we can use
+`fallocate` with `FALLOC_FL_PUNCH_HOLE` to free space in the slab file.
+
+
+### Cachefiles culling
+
+Cachefiles has a culling mechanism that kicks in when the disk gets full. This
+isn't implemented yet. Don't let the disk get full or things will probably go
+badly.
 
 
 
@@ -123,18 +363,22 @@ Pieces:
     - Better readahead heuristics (whole file at a time)
     - Exploring other approaches like simhash
     - Consider how to make diffs more cacheable
+- Prefetch {file, package} command
 - Expanding compressed files
 - Support for bare files
-- GC: Ability to reclaim space after deleting packages
+- Combine multiple store paths into images to reduce overhead
+- GC
+- Respond to cachefiles culling requests
 - CI to pre-create manifests for core packages after channel bumps
-- Run a system with everything not needed by stage1+stage2 on styx
+- Run a system with everything not needed by stage1+stage2 on Styx
 - Adaptive chunk sizes for less overhead on very large packages
+- Closer integration into other binary caches and maybe Nix itself
 
 
 ### Slightly crazy
 
-- Boot a system with almost everything in the store in styx (kernel + initrd
-  copied to /boot, styx started in stage1)
+- Boot a system with almost everything in the store in Styx (kernel + initrd
+  copied to /boot, Styx started in stage1)
 
 
 
