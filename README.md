@@ -4,11 +4,18 @@
 
 ## Introduction
 
-Styx is an alternate binary substitution mechanism for Nix that provides
-efficient disk and bandwidth usage, and on-demand fetching.
+Styx is an alternate binary substitution mechanism for Nix.
+It downloads data on-demand,
+stores common chunks of data only once to reduce local disk usage,
+and uses differential compression to reduce bandwidth usage.
 
-Before explaining what it does and how it works, let me motivate things a
-little:
+It's currently quite experimental, though the basic features are working.
+If you want to try it, skip down to the bottom.
+
+### Motivation
+
+Before explaining exactly what it does and how it works, let me motivate things
+a little:
 
 We all know that Nix uses a ton of storage and bandwidth. This is because of how
 it works: each package contains absolute references to its dependencies, so if
@@ -331,7 +338,33 @@ cuts my local store size by 1.5× (to 66%), and 64KiB fixed chunks cut it down b
 
 ### Expanding compressed files
 
-TBD
+If you've poked around in your Nix store, you might have noticed some packages
+contain compressed files. Prominent examples are man pages (compressed with
+gzip), Linux kernel module files (compressed with xz), and Linux firmware
+(compressed with xz). This makes some sense for normal substitution, since those
+files aren't often used and can be smaller on disk.
+
+For Styx, though, this is actually conterproductive: Files that are not used are
+simply never downloaded, so it doesn't matter whether they're compressed or not.
+Per-file also interferes with Styx's differential compression (and nar
+compression for that matter): A small change in a file will produce a large
+change in the compressed version of that file, at least after the first point
+where they differ.
+
+So it would be nice to undo this compression so we can get better binary diffs.
+Actually we can: the manifester can simply un-gzip or un-xz the files in the nar
+as it reads it, and present to Styx a package made of uncompressed files.
+There's only two issues:
+
+- We should probably rename the files by removing the .gz/.xz extension so
+  programs don't get confused. We'll also have to be careful to rewrite
+  symlinks.
+- If we modify the contents of the package, it will no longer match the nar and
+  Nix will fail to verify it. This is fine as long as we understand what's
+  happening. We could re-generate the nar signature with our own key if we
+  really wanted.
+
+(This isn't fully implemented yet.)
 
 
 ### GC
@@ -341,6 +374,8 @@ metadata in the db to trace all chunk references, so we can find unused chunks.
 The next part is uncertain: based on a few experiments, I think that we can use
 `fallocate` with `FALLOC_FL_PUNCH_HOLE` to free space in the slab file.
 
+(This isn't implemented yet.)
+
 
 ### Cachefiles culling
 
@@ -348,6 +383,41 @@ Cachefiles has a culling mechanism that kicks in when the disk gets full. This
 isn't implemented yet. Don't let the disk get full or things will probably go
 badly.
 
+
+## How to use it
+
+Note that Styx requires two "experimental" kernel options to be enabled, so all
+of the following commands will build a custom kernel. I'll set up a binary cache
+with kernel builds soon.
+
+At least kernel 6.8 is recommended since some bugs were fixed. These commands
+will use `linuxPackages_latest`.
+
+This will also build a patched Nix.
+
+##### Run the test suite in a VM
+
+`testvm`
+
+##### Run the test suite on this machine (requires custom kernel build)
+
+`testlocal`
+
+##### Start a VM with Styx running and available
+
+**This will use services in my AWS account. I may turn it off or break it at any time.**
+
+`runvm`, log in with `test`/`test`
+
+The VM will be set up with `nixpkgs` shared on `/tmp/nixpkgs` and set on
+`NIX_PATH`. Styx will be configured to substitute all packages >= 32KiB. So you
+can start with `nix-shell -p ...` and see what happens.
+
+##### Use it in your system configuration
+
+**Don't do this yet, this is still pretty experimental**
+
+Import `./module` from this repo and set `services.styx.enable = true;`
 
 
 ## Roadmap and future work
@@ -387,4 +457,15 @@ badly.
 [erofs]: https://erofs.docs.kernel.org/
 [erofs_over_fscache]: https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=65965d9530b0c320759cd18a9a5975fb2e098462
 [nydus]: https://nydus.dev/
+
+
+# License
+
+GPL-2.0-only
+
+Styx incorporates bits of code from Linux so it could be considered a derived
+work. Most of the code incorporated is either dual-licenced with Apache 2.0 or
+with the Linux syscall exception, so theoretically Styx would not have to use
+GPL-2.0, but that's the simplest option for now. If you're interested in using
+this code under different terms, let me know.
 

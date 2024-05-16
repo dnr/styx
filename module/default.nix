@@ -84,9 +84,7 @@ in with lib; {
           FileDescriptorStorePreserve = "yes";
           LimitNOFILE = "500000";
           Restart = "on-failure";
-          #TemporaryFileSystem = "/tmpfs:size=16G,mode=1777"; # force tmpfs
         };
-        #environment.TMPDIR = "/tmpfs";
       };
     })
   ];
