@@ -305,16 +305,18 @@ packages.)
 
 Instead, the manifester verifies the nar hash, and then signs the manifest with
 its own key. The Styx daemon verifies the manifest signature. This obviously
-means we need to trust the manifester. This is sort of unfortunate but unlikely
-to change any time soon.
+means that **the end user needs to trust the manifester**, in addition to the
+nar signer as usual. This is sort of unfortunate but it's the best we can do
+without changing Nix itself. With tighter intergration to Nix and a different
+binary cache substitution protocol, we could of course do better here.
 
-We don't have to trust the chunk store, manifest cache, or chunk differ: chunks
-are content-addressed so can be verified independently.
+Note that we don't have to trust the chunk store, manifest cache, or chunk
+differ: chunks are content-addressed so can be verified independently.
 
 
 ### Chunking schemes
 
-EROFS basically imposes a chunking scheme on us: chunks of some fixed
+EROFS basically imposes a chunking scheme on us: aligned chunks of some fixed
 power-of-two multiple of the block size, sequentially from the start of each
 file.
 
@@ -323,17 +325,22 @@ features. As far as I can tell, you can't use both compression and cross-image
 sharing at once. Maybe that'll be possible in the future.)
 
 How does this compare to content-defined chunking (CDC)? CDC can theoretically
-share more data, especially if you use a smaller chunk size. But chunks at odd
-offsets add more overhead to reconstructing files. You can transfer data with
-CDC and reconstruct it into a filesystem. But then you're doubling local storage
-space.
+share more data, especially if you use a smaller chunk size. But chunks at
+non-aligned offsets add more overhead to reconstructing files. Of course you can
+transfer data with CDC and reconstruct it into a filesystem. But then you lose
+the benefits of CDC in the local filesystem.
 
-To get a single copy of local data plus good performance, I think fixed-size
-chunks are the best way to go for now.
+The idea of Styx is to partially decouple local storage sharing from network
+transfer sharing. Local storage uses aligned fixed size chunks for performance
+(this part isn't really changeable), but as long as we can reconstruct the data,
+we can inject anything into Styx: whole nar files, CDC-reconstituted nars,
+differentially-compressed nars, or (the current choice)
+differentially-compressed/individually-retrieved chunks.
 
-In some local experiments I found that whole-file sharing (i.e. optimize-store)
-cuts my local store size by 1.5× (to 66%), and 64KiB fixed chunks cut it down by
-2.5× (to 40%).
+There are some nice properties of using the same chunks for transfer that we do
+for storage, notably it reduces the metadata overhead of keeping track of what
+we have and what we're missing, and makes building manifests simpler. But it's
+not strictly required.
 
 
 ### Expanding compressed files
@@ -379,9 +386,19 @@ The next part is uncertain: based on a few experiments, I think that we can use
 
 ### Cachefiles culling
 
-Cachefiles has a culling mechanism that kicks in when the disk gets full. This
-isn't implemented yet. Don't let the disk get full or things will probably go
-badly.
+Cachefiles has a culling mechanism that kicks in when the disk gets full. It's
+not clear what we should do since we can't just throw away the whole slab (the
+bulk of the data). Maybe we could keep some LRU info and throw out some old
+data.
+
+For now, don't let the disk get full or things will probably go badly.
+
+(This isn't implemented yet.)
+
+
+### Cost of server components
+
+TBD
 
 
 ## How to use it
@@ -395,29 +412,35 @@ will use `linuxPackages_latest`.
 
 This will also build a patched Nix.
 
-##### Run the test suite in a VM
+#### Run the test suite in a VM
 
 `testvm`
 
-##### Run the test suite on this machine (requires custom kernel build)
+#### Run the test suite on this machine (requires custom kernel build)
 
 `testlocal`
 
-##### Start a VM with Styx running and available
+#### Start a VM with Styx running and available
 
 **This will use services in my AWS account. I may turn it off or break it at any time.**
 
 `runvm`, log in with `test`/`test`
 
-The VM will be set up with `nixpkgs` shared on `/tmp/nixpkgs` and set on
-`NIX_PATH`. Styx will be configured to substitute all packages >= 32KiB. So you
-can start with `nix-shell -p ...` and see what happens.
+The VM will be set up with `<nixpkgs>` shared on `/tmp/nixpkgs` and set on
+`NIX_PATH`. Styx will be configured to substitute all packages ≥ 32KiB. So start
+with `nix-shell -p ...` and see what happens.
 
-##### Use it in your system configuration
+#### Use it in your system configuration
 
 **Don't do this yet, this is still pretty experimental**
 
-Import `./module` from this repo and set `services.styx.enable = true;`
+```
+   imports = [
+      ./path/to/this/repo/module
+   ];
+   services.styx.enable = true;
+   nix.settings.styx-include = [ "list" "of" "package" "name" "regexp-.*" ];
+```
 
 
 ## Roadmap and future work
