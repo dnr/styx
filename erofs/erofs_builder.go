@@ -314,20 +314,16 @@ func (b *Builder) BuildFromManifestWithSlab(
 				break
 			}
 		}
-		// log.Printf("ALLOC %v", inodealloc)
-		// log.Printf("INODE %d need %d ischunkindex %v found %d", i, need, inode.taildataIsChunkIndex, found)
 		if found == -1 {
 			if inode.taildataIsChunkIndex && len(inodealloc) > 0 &&
 				inodealloc[len(inodealloc)-1].addr == nextAddr-1 {
 				// can use last block and overflow
 				found = len(inodealloc) - 1
-				// log.Printf("is chunk index, using last block")
 			} else {
 				// allocate new block
 				found = len(inodealloc)
 				inodealloc = append(inodealloc, inodespace{nextAddr, 0, common.TruncU16(b.blk.Size())})
 				nextAddr++
-				// log.Printf("alloc new block")
 			}
 		}
 
@@ -343,11 +339,9 @@ func (b *Builder) BuildFromManifestWithSlab(
 			nextAddr = space.addr + 1
 			space.off = common.TruncU16(b.blk.Leftover(need))
 			space.ln = common.TruncU16(b.blk.Size()) - space.off
-			// log.Printf("OVERFLOWED nid %d", inodes[i].nid)
 		} else {
 			space.off += common.TruncU16(need)
 			space.ln -= common.TruncU16(need)
-			// log.Printf("FIT nid %d", inodes[i].nid)
 		}
 		inodealloc[found] = space
 		// clear filled blocks and also anything more than 16 back
@@ -401,7 +395,6 @@ func (b *Builder) BuildFromManifestWithSlab(
 	p = 0
 	writeInode := func(i *inodebuilder) {
 		needPad := int64(i.nid)<<EROFS_NID_SHIFT - p
-		// log.Printf("WRITE INODE p is %d, nid is %d, pad %d", p, i.nid, needPad)
 		pad(out, needPad)
 		p += needPad
 		pack(out, i.i)

@@ -34,8 +34,6 @@ func (d *dummySlabManager) VerifyParams(hashBytes, blockShift, chunkShift int) e
 func (d *dummySlabManager) AllocateBatch(ctx context.Context, blocks []uint16, digests []byte) ([]SlabLoc, error) {
 	out := make([]SlabLoc, len(blocks))
 	for i := range out {
-		// digest := digests[i*24 : (i+1)*24]
-		// log.Printf("allocating chunk len %d, digest %q", blocks[i], digest)
 		out[i].Addr = *(*uint32)(d)
 		(*d)++
 	}

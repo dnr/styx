@@ -7,9 +7,10 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/dnr/styx/pb"
 	"github.com/nix-community/go-nix/pkg/narinfo/signature"
 	"google.golang.org/protobuf/proto"
+
+	"github.com/dnr/styx/pb"
 )
 
 func LoadPubKeys(keys []string) ([]signature.PublicKey, error) {

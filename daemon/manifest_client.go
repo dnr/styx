@@ -167,7 +167,7 @@ func (s *server) getNewManifest(ctx context.Context, url string, req manifester.
 
 	shards := max(min(int((narSize+shardBy-1)/shardBy), 40), 1)
 	log.Printf("requesting manifest for %s with %d shards", req.StorePathHash, shards)
-	eg, ctx := errgroup.WithContext(ctx)
+	eg, gCtx := errgroup.WithContext(ctx)
 
 	var shard0 []byte
 	for i := 0; i < shards; i++ {
@@ -180,7 +180,7 @@ func (s *server) getNewManifest(ctx context.Context, url string, req manifester.
 			if err != nil {
 				return err
 			}
-			res, err := retryHttpRequest(ctx, http.MethodPost, url, "application/json", reqBytes)
+			res, err := retryHttpRequest(gCtx, http.MethodPost, url, "application/json", reqBytes)
 			if err != nil {
 				return fmt.Errorf("manifester http error: %w", err)
 			}
