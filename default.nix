@@ -18,9 +18,6 @@ rec {
   };
 
   styx-local = pkgs.buildGoModule (base // {
-    # buildInputs = with pkgs; [
-    #   brotli.dev
-    # ];
   });
 
   styx-test = pkgs.buildGoModule (base // {
@@ -42,9 +39,6 @@ rec {
 
   styx-lambda = pkgs.buildGoModule (base // {
     tags = [ "lambda.norpc" ];
-    # CGO is only needed for cbrotli, which is only used on the client side.
-    # Disabling CGO shrinks the binary a little more.
-    CGO_ENABLED = "0";
     ldflags = [
       # "-s" "-w"  # only saves 3.6% of image size
       "-X github.com/dnr/styx/common.XzBin=${xzStaticBin}/bin/xz"
