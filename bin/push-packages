@@ -6,7 +6,8 @@ store="s3://styx-1/nixcache/?compression=zstd"
 
 kernel=$(dirname $(readlink /var/run/booted-system/kernel))
 styx=$(nix-build --no-out-link -A styx-local)
-pkgs="$kernel $styx"
+nix=$(nix-build --no-out-link -A patched-nix)
+pkgs="$kernel $styx $nix"
 
-nix store sign --key-file keys/styx-nixcache-dev-1.secret $pkgs
+nix store sign --key-file keys/styx-nixcache-test-1.secret $pkgs
 nix copy --to "$store" $pkgs

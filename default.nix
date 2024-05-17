@@ -46,6 +46,11 @@ rec {
     ];
   });
 
+  patched-nix = pkgs.nixVersions.nix_2_18.overrideAttrs (prev: {
+    patches = prev.patches ++ [ ./module/patches/nix_2_18.patch ];
+    doInstallCheck = false; # broke tests/ca, ignore for now
+  });
+
   # Use static binaries and take only the main binaries to make the image as
   # small as possible:
   xzStaticBin = pkgs.stdenv.mkDerivation {

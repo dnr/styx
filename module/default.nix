@@ -1,6 +1,6 @@
 { config, lib, pkgs, ... }:
 let
-  defpkg = (import ../. { inherit pkgs; }).styx-local;
+  styx = import ../. { inherit pkgs; };
   cfg = config.services.styx;
 in with lib; {
   options = {
@@ -8,6 +8,7 @@ in with lib; {
       enable = mkEnableOption "Styx storage manager for nix";
       enablePatchedNix = mkEnableOption "Patched nix for styx";
       enableNixSettings = mkEnableOption "nix.conf settings for styx";
+      enableStyxNixCache = mkEnableOption "add binary cache for styx and related packages";
       enableKernelOptions = mkEnableOption "Enable erofs+cachefiles on-demand kernel options for styx";
       params = mkOption {
         description = "url to remote params";
@@ -22,17 +23,14 @@ in with lib; {
       package = mkOption {
         description = "styx package";
         type = types.package;
-        default = defpkg;
+        default = styx.styx-local;
       };
     };
   };
 
   config = mkMerge [
     (mkIf (cfg.enable || cfg.enablePatchedNix) {
-      nix.package = pkgs.nixVersions.nix_2_18.overrideAttrs (prev: {
-        patches = prev.patches ++ [ ./patches/nix_2_18.patch ];
-        doInstallCheck = false; # broke tests/ca, ignore for now
-      });
+      nix.package = styx.patched-nix;
     })
 
     (mkIf (cfg.enable || cfg.enableNixSettings) {
@@ -40,16 +38,15 @@ in with lib; {
         # Add "?styx=1" to default substituter.
         # TODO: can we do this in overlay style to filter the previous value?
         substituters = mkForce [ "https://cache.nixos.org/?styx=1" ];
+        styx-include = [ ];
+      };
+    })
 
+    (mkIf (cfg.enable || cfg.enableStyxNixCache) {
+      nix.settings = {
         # Use binary cache to avoid rebuilds:
         extra-substituters = [ "https://styx-1.s3.amazonaws.com/nixcache/" ];
         extra-trusted-public-keys = [ "styx-nixcache-test-1:IbJB9NG5antB2WpE+aE5QzmXapT2yLQb8As/FRkbm3Q=" ];
-
-        styx-include = [ ];
-
-        # These are defaults:
-        #styx-min-size = 32*1024;
-        #styx-sock-path = "/var/cache/styx/styx.sock";
       };
     })
 
