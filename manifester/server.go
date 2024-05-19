@@ -2,6 +2,7 @@ package manifester
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"errors"
@@ -14,6 +15,7 @@ import (
 	"os/exec"
 	"path"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/DataDog/zstd"
@@ -46,6 +48,8 @@ type (
 		mb  *ManifestBuilder
 		zp  *common.ZstdCtxPool
 
+		digestBytes int
+
 		httpServer *http.Server
 	}
 
@@ -67,6 +71,8 @@ func ManifestServer(cfg Config) (*server, error) {
 		cfg: &cfg,
 		mb:  cfg.ManifestBuilder,
 		zp:  common.NewZstdCtxPool(),
+
+		digestBytes: int(cfg.ManifestBuilder.params.DigestBits) >> 3,
 	}, nil
 }
 
@@ -332,24 +338,28 @@ func (s *server) handleChunkDiff(w http.ResponseWriter, req *http.Request) {
 	// load requested chunks
 	start := time.Now()
 
-	var baseData, reqData bytes.Buffer
-	baseErrCh := make(chan error)
-	reqErrCh := make(chan error)
+	var baseData, reqData []byte
+	var baseErr, reqErr error
+	var wg sync.WaitGroup
 
-	// start fetching both
+	// fetch both in parallel
+	wg.Add(2)
 	go func() {
-		baseErrCh <- s.fetchChunkSeries(req.Context(), r.Bases, chunksInParallel/2, &baseData)
+		baseData, baseErr = s.expand(req.Context(), r.Bases, chunksInParallel/2, r.ExpandBeforeDiff)
+		wg.Done()
 	}()
 	go func() {
-		reqErrCh <- s.fetchChunkSeries(req.Context(), r.Reqs, chunksInParallel/2, &reqData)
+		reqData, reqErr = s.expand(req.Context(), r.Reqs, chunksInParallel/2, r.ExpandBeforeDiff)
+		wg.Done()
 	}()
 	// wait for both
-	if baseErr := <-baseErrCh; baseErr != nil {
+	wg.Wait()
+	if baseErr != nil {
 		log.Println("chunk read (base) error", baseErr)
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
-	if reqErr := <-reqErrCh; reqErr != nil {
+	if reqErr != nil {
 		log.Println("chunk read (req) error", reqErr)
 		w.WriteHeader(http.StatusInternalServerError)
 		return
@@ -362,8 +372,8 @@ func (s *server) handleChunkDiff(w http.ResponseWriter, req *http.Request) {
 	const statsSpace = 256
 
 	cw := countWriter{w: w}
-	zw := zstd.NewWriterPatcher(&cw, level, baseData.Bytes(), int64(reqData.Len())+statsSpace)
-	if _, err := zw.Write(reqData.Bytes()); err != nil {
+	zw := zstd.NewWriterPatcher(&cw, level, baseData, int64(len(reqData))+statsSpace)
+	if _, err := zw.Write(reqData); err != nil {
 		log.Printf("zstd write error %v", err)
 		w.WriteHeader(http.StatusInternalServerError) // this will fail if zstd wrote anything
 		return
@@ -376,12 +386,11 @@ func (s *server) handleChunkDiff(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	digestBytes := int(s.mb.params.DigestBits >> 3)
 	stats := ChunkDiffStats{
-		BaseChunks: len(r.Bases) / digestBytes,
-		BaseBytes:  baseData.Len(),
-		ReqChunks:  len(r.Reqs) / digestBytes,
-		ReqBytes:   reqData.Len(),
+		BaseChunks: len(r.Bases) / s.digestBytes,
+		BaseBytes:  len(baseData),
+		ReqChunks:  len(r.Reqs) / s.digestBytes,
+		ReqBytes:   len(reqData),
 		DiffBytes:  cw.c,
 		DlTotalMs:  dlDone.Sub(start).Milliseconds(),
 		ZstdMs:     time.Now().Sub(dlDone).Milliseconds(),
@@ -407,8 +416,53 @@ func (s *server) handleChunkDiff(w http.ResponseWriter, req *http.Request) {
 	log.Printf("diff done %#v", stats)
 }
 
+func (s *server) expand(ctx context.Context, digests []byte, parallel int, expand string) ([]byte, error) {
+	if len(digests) == 0 {
+		return nil, nil
+	}
+
+	switch expand {
+	case ExpandGz:
+		pr, pw := io.Pipe()
+		go func() {
+			pw.CloseWithError(s.fetchChunkSeries(ctx, digests, parallel, pw))
+		}()
+		gzr, err := gzip.NewReader(pr)
+		if err != nil {
+			pr.CloseWithError(err) // cause writes to write end to fail
+			return nil, err
+		}
+		return io.ReadAll(gzr)
+
+	case ExpandXz:
+		decompress := exec.Command(common.XzBin, "-d")
+		pw, err := decompress.StdinPipe()
+		if err != nil {
+			return nil, err
+		}
+		pr, err := decompress.StdoutPipe()
+		if err != nil {
+			return nil, err
+		}
+		if err = decompress.Start(); err != nil {
+			return nil, err
+		}
+		go func() {
+			s.fetchChunkSeries(ctx, digests, parallel, pw)
+			pw.Close()
+		}()
+		out, readErr := io.ReadAll(pr)
+		return common.ValOrErr(out, common.Or(decompress.Wait(), readErr))
+
+	default:
+		var out bytes.Buffer
+		out.Grow((len(digests) / s.digestBytes) << (s.mb.params.ChunkShift - 1))
+		err := s.fetchChunkSeries(ctx, digests, parallel, &out)
+		return common.ValOrErr(out.Bytes(), err)
+	}
+}
+
 func (s *server) fetchChunkSeries(ctx context.Context, digests []byte, parallel int, out io.Writer) error {
-	digestBytes := s.mb.params.DigestBits >> 3
 	// TODO: ew, use separate setting?
 	cs := s.cfg.ManifestBuilder.cs
 
@@ -419,8 +473,8 @@ func (s *server) fetchChunkSeries(ctx context.Context, digests []byte, parallel 
 	chs := make(chan chan res, parallel)
 	go func() {
 		for len(digests) > 0 {
-			digest := digests[:digestBytes]
-			digests = digests[digestBytes:]
+			digest := digests[:s.digestBytes]
+			digests = digests[s.digestBytes:]
 			ch := make(chan res)
 			chs <- ch
 			go func() {
@@ -435,8 +489,10 @@ func (s *server) fetchChunkSeries(ctx context.Context, digests []byte, parallel 
 	for ch := range chs {
 		res := <-ch
 		if res.err != nil {
+			// FIXME: drain channel??
 			return res.err
 		} else if _, err := out.Write(res.b); err != nil {
+			// FIXME: drain channel??
 			return err
 		}
 	}

@@ -18,6 +18,9 @@ var (
 	// chunk read protocol
 	ChunkReadPath     = "/chunk/"    // digest as final path component
 	ManifestCachePath = "/manifest/" // cache key as final path component
+
+	ExpandGz = "gz"
+	ExpandXz = "xz"
 )
 
 type (
@@ -40,6 +43,10 @@ type (
 	ChunkDiffReq struct {
 		Bases []byte
 		Reqs  []byte
+
+		// If set: Bases and Reqs each comprise one single file in the given compression
+		// format. Pass each one through this decompressor before diffing.
+		ExpandBeforeDiff string `json:",omitempty"`
 	}
 	// Response is compressed concatenation of reqs, using bases as compression base,
 	// with ChunkDiffStats (json) appended after that (also compressed).
