@@ -3,6 +3,7 @@ package common
 var (
 	// binary paths (can be overridden by ldflags)
 	NixBin      = "nix"
+	GzipBin     = "gzip"
 	XzBin       = "xz"
 	ModprobeBin = "modprobe"
 

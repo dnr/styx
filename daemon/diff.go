@@ -9,6 +9,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"os/exec"
 	"strings"
 	"unsafe"
 
@@ -43,6 +44,7 @@ type (
 		baseDigests, reqDigests     []byte
 		baseInfo, reqInfo           []info
 		baseTotalSize, reqTotalSize int64
+		diffRecompress              []string
 
 		// info for single op
 		singleLoc    erofs.SlabLoc
@@ -225,6 +227,8 @@ func (s *server) buildDiffOp(
 
 	// build diff
 	// TODO: this algorithm is kind of awful
+	// TODO: if this is a man page .gz or kernel module .ko.xz (or firmware)
+	// add appropriate diff directives
 
 	found := false
 	maxDigestLen := s.digestBytes * s.cfg.ReadaheadChunks
@@ -339,7 +343,7 @@ func (s *server) startOp(ctx context.Context, op *diffOp) {
 }
 
 func (s *server) doDiffOp(ctx context.Context, op *diffOp) error {
-	diff, err := s.getChunkDiff(ctx, op.baseDigests, op.reqDigests)
+	diff, err := s.getChunkDiff(ctx, op.baseDigests, op.reqDigests, op.diffRecompress)
 	if err != nil {
 		return fmt.Errorf("getChunkDiff error: %w", err)
 	}
@@ -364,6 +368,12 @@ func (s *server) doDiffOp(ctx context.Context, op *diffOp) error {
 		return fmt.Errorf("decompressed data is too short: %d < %d", len(reqData), op.reqTotalSize)
 	}
 
+	// recompress if needed
+	reqData, err = s.diffRecompress(ctx, reqData, op.diffRecompress)
+	if err != nil {
+		return fmt.Errorf("recompress error: %w", err)
+	}
+
 	// write out to slab
 	p = 0
 	for idx, i := range op.reqInfo {
@@ -371,6 +381,10 @@ func (s *server) doDiffOp(ctx context.Context, op *diffOp) error {
 		b := reqData[p : p+i.size : p+i.size]
 		digest := op.reqDigests[idx*s.digestBytes : (idx+1)*s.digestBytes]
 		if err := s.gotNewChunk(i.loc, digest, b); err != nil {
+			if len(op.diffRecompress) > 0 && strings.Contains(err.Error(), "digest mismatch") {
+				// we didn't recompress correctly, fall back to single
+				return fmt.Errorf("recompress mismatch")
+			}
 			return fmt.Errorf("gotNewChunk error (diff): %w", err)
 		}
 		p += i.size
@@ -465,8 +479,12 @@ func (s *server) gotNewChunk(loc erofs.SlabLoc, digest []byte, b []byte) error {
 	return nil
 }
 
-func (s *server) getChunkDiff(ctx context.Context, bases, reqs []byte) (io.ReadCloser, error) {
-	reqBytes, err := json.Marshal(manifester.ChunkDiffReq{Bases: bases, Reqs: reqs})
+func (s *server) getChunkDiff(ctx context.Context, bases, reqs []byte, recompress []string) (io.ReadCloser, error) {
+	r := manifester.ChunkDiffReq{Bases: bases, Reqs: reqs}
+	if len(recompress) > 0 {
+		r.ExpandBeforeDiff = recompress[0]
+	}
+	reqBytes, err := json.Marshal(r)
 	if err != nil {
 		return nil, err
 	}
@@ -570,6 +588,42 @@ func (s *server) getKnownChunk(loc erofs.SlabLoc, buf []byte) error {
 
 	_, err := unix.Pread(readFd, buf, int64(loc.Addr)<<s.blockShift)
 	return err
+}
+
+func (s *server) diffRecompress(ctx context.Context, data []byte, args []string) ([]byte, error) {
+	if len(args) == 0 {
+		return data, nil
+	}
+	switch args[0] {
+	case manifester.ExpandGz:
+		gz := exec.Command(common.GzipBin, "-nc")
+		gz.Stdin = bytes.NewReader(data)
+		out, err := gz.StdoutPipe()
+		if err != nil {
+			return nil, err
+		}
+		if err := gz.Start(); err != nil {
+			return nil, err
+		}
+		newData, readErr := io.ReadAll(out)
+		return common.ValOrErr(newData, common.Or(gz.Wait(), readErr))
+
+	case manifester.ExpandXz:
+		xz := exec.Command(common.XzBin, append([]string{"-c"}, args[1:]...)...)
+		xz.Stdin = bytes.NewReader(data)
+		out, err := xz.StdoutPipe()
+		if err != nil {
+			return nil, err
+		}
+		if err := xz.Start(); err != nil {
+			return nil, err
+		}
+		newData, readErr := io.ReadAll(out)
+		return common.ValOrErr(newData, common.Or(xz.Wait(), readErr))
+
+	default:
+		return nil, fmt.Errorf("unknown expander %q", args[0])
+	}
 }
 
 func (s *server) locPresent(tx *bbolt.Tx, loc erofs.SlabLoc) bool {

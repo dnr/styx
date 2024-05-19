@@ -11,6 +11,7 @@ rec {
     subPackages = [ "cmd/styx" ];
     ldflags = with pkgs; [
       "-X github.com/dnr/styx/common.NixBin=${nix}/bin/nix"
+      "-X github.com/dnr/styx/common.GzipBin=${gzip}/bin/gzip"
       "-X github.com/dnr/styx/common.XzBin=${xz}/bin/xz"
       "-X github.com/dnr/styx/common.ModprobeBin=${kmod}/bin/modprobe"
       "-X github.com/dnr/styx/common.Version=${base.version}"
@@ -42,6 +43,7 @@ rec {
     ldflags = [
       # "-s" "-w"  # only saves 3.6% of image size
       "-X github.com/dnr/styx/common.XzBin=${xzStaticBin}/bin/xz"
+      # GzipBin is not used by manifester or differ, only local
       "-X github.com/dnr/styx/common.Version=${base.version}"
     ];
   });
