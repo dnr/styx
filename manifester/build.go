@@ -2,13 +2,10 @@ package manifester
 
 import (
 	"bytes"
-	"compress/gzip"
 	"context"
 	"crypto/sha256"
 	"errors"
 	"io"
-	"regexp"
-	"strings"
 
 	"github.com/nix-community/go-nix/pkg/nar"
 	"golang.org/x/sync/errgroup"
@@ -22,7 +19,6 @@ import (
 type (
 	BuildArgs struct {
 		SmallFileCutoff int
-		ExpandManFiles  bool
 
 		ShardTotal int
 		ShardIndex int
@@ -68,7 +64,6 @@ func (b *ManifestBuilder) Build(ctx context.Context, args *BuildArgs, r io.Reade
 	m := &pb.Manifest{
 		Params:          b.params,
 		SmallFileCutoff: int32(args.SmallFileCutoff),
-		ExpandManFiles:  args.ExpandManFiles,
 	}
 
 	nr, err := nar.NewReader(r)
@@ -136,19 +131,6 @@ func (b *ManifestBuilder) entry(ctx context.Context, args *BuildArgs, m *pb.Mani
 		e.Type = pb.EntryType_REGULAR
 
 		var dataR io.Reader = nr
-
-		if args.ExpandManFiles && isGzManFile(h) {
-			if gzr, err := gzip.NewReader(nr); err == nil {
-				data, dErr := io.ReadAll(gzr)
-				cErr := gzr.Close()
-				if dErr == nil && cErr == nil {
-					dataR = bytes.NewReader(data)
-					e.Size = int64(len(data))
-					e.Path = strings.TrimSuffix(e.Path, ".gz")
-					e.ExpandedByManifester = true
-				}
-			}
-		}
 
 		if e.Size <= int64(args.SmallFileCutoff) {
 			e.InlineData = make([]byte, e.Size)
@@ -218,10 +200,4 @@ func (b *ManifestBuilder) chunkData(ctx context.Context, args *BuildArgs, dataSi
 	}
 
 	return fullDigests, nil
-}
-
-var reManPath = regexp.MustCompile(`^/share/man/.*[.]gz$`)
-
-func isGzManFile(h *nar.Header) bool {
-	return reManPath.MatchString(h.Path)
 }

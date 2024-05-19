@@ -13,7 +13,6 @@ message Manifest {
 
   // build parameters
   int32 small_file_cutoff = 2;
-  bool expand_man_files = 4;
 
   // Metadata on how this was generated
   ManifestMeta meta = 10;

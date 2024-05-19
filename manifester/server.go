@@ -212,7 +212,6 @@ func (s *server) handleManifest(w http.ResponseWriter, req *http.Request) {
 	// TODO: make args configurable again (hashed in manifest cache key)
 	args := &BuildArgs{
 		SmallFileCutoff: defaultSmallFileCutoff,
-		ExpandManFiles:  defaultExpandManFiles,
 		ShardTotal:      r.ShardTotal,
 		ShardIndex:      r.ShardIndex,
 	}
