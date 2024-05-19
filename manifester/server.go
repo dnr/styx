@@ -24,6 +24,7 @@ import (
 	"github.com/nix-community/go-nix/pkg/narinfo"
 	"github.com/nix-community/go-nix/pkg/narinfo/signature"
 	"golang.org/x/exp/slices"
+	"golang.org/x/sync/errgroup"
 
 	"github.com/dnr/styx/common"
 	"github.com/dnr/styx/pb"
@@ -466,37 +467,32 @@ func (s *server) fetchChunkSeries(ctx context.Context, digests []byte, parallel 
 	// TODO: ew, use separate setting?
 	cs := s.cfg.ManifestBuilder.cs
 
-	type res struct {
-		b   []byte
-		err error
-	}
-	chs := make(chan chan res, parallel)
+	eg, gCtx := errgroup.WithContext(ctx)
+	chs := make(chan chan []byte, parallel)
 	go func() {
 		for len(digests) > 0 {
-			digest := digests[:s.digestBytes]
+			digestStr := common.DigestStr(digests[:s.digestBytes])
 			digests = digests[s.digestBytes:]
-			ch := make(chan res)
+			ch := make(chan []byte)
 			chs <- ch
-			go func() {
-				digestStr := common.DigestStr(digest)
-				b, err := cs.Get(ctx, ChunkReadPath, digestStr, nil)
-				ch <- res{b, err}
-			}()
+			eg.Go(func() error {
+				b, err := cs.Get(gCtx, ChunkReadPath, digestStr, nil)
+				ch <- b
+				return err
+			})
 		}
 		close(chs)
 	}()
 
+	var wErr error
 	for ch := range chs {
-		res := <-ch
-		if res.err != nil {
-			// FIXME: drain channel??
-			return res.err
-		} else if _, err := out.Write(res.b); err != nil {
-			// FIXME: drain channel??
-			return err
+		if b := <-ch; len(b) > 0 && wErr == nil {
+			if _, err := out.Write(b); err != nil {
+				wErr = err
+			}
 		}
 	}
-	return nil
+	return common.Or(eg.Wait(), wErr)
 }
 
 func (s *server) handleChunk(w http.ResponseWriter, r *http.Request) {
