@@ -2,7 +2,7 @@ package daemon
 
 import (
 	"bytes"
-	"cmp"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"errors"
@@ -358,7 +358,12 @@ func (s *server) doDiffOp(ctx context.Context, op *diffOp) error {
 		}
 		p += i.size
 	}
-	// log.Println("read baseData", len(baseData))
+
+	// decompress if needed
+	baseData, err = s.diffDecompress(ctx, baseData, op.diffRecompress)
+	if err != nil {
+		return fmt.Errorf("decompress error: %w", err)
+	}
 
 	// decompress from diff
 	reqData, err := io.ReadAll(zstd.NewReaderPatcher(diff, baseData))
@@ -589,6 +594,28 @@ func (s *server) getKnownChunk(loc erofs.SlabLoc, buf []byte) error {
 
 	_, err := unix.Pread(readFd, buf, int64(loc.Addr)<<s.blockShift)
 	return err
+}
+
+func (s *server) diffDecompress(ctx context.Context, data []byte, args []string) ([]byte, error) {
+	if len(args) == 0 {
+		return data, nil
+	}
+	switch args[0] {
+	case manifester.ExpandGz:
+		gz, err := gzip.NewReader(bytes.NewReader(data))
+		if err != nil {
+			return nil, err
+		}
+		return io.ReadAll(gz)
+
+	case manifester.ExpandXz:
+		xz := exec.Command(common.XzBin, "-d")
+		xz.Stdin = bytes.NewReader(data)
+		return xz.Output()
+
+	default:
+		return nil, fmt.Errorf("unknown expander %q", args[0])
+	}
 }
 
 func (s *server) diffRecompress(ctx context.Context, data []byte, args []string) ([]byte, error) {
