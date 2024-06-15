@@ -10,6 +10,21 @@ const (
 )
 
 type (
+	CiArgs struct {
+		// constants
+		Channel string
+
+		// state
+		LastBump string
+	}
+
+	pollReq struct {
+		Channel  string
+		LastBump string
+	}
+	pollRes struct {
+	}
+
 	somethingArgs struct {
 	}
 )

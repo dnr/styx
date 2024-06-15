@@ -50,6 +50,8 @@ type (
 )
 
 var globalScaler atomic.Pointer[scaler]
+var acts *activities = nil
+var heavyActs *activities = nil
 
 func RunWorker(ctx context.Context, cfg WorkerConfig) error {
 	if cfg.RunWorker && cfg.RunHeavyWorker {
@@ -92,20 +94,46 @@ func RunWorker(ctx context.Context, cfg WorkerConfig) error {
 }
 
 // main workflow
-func ci(ctx workflow.Context) error {
-	return nil
+func ci(ctx workflow.Context, args CiArgs) error {
+	for !workflow.GetInfo(ctx).GetContinueAsNewSuggested() {
+		// poll
+		res, err := ciPoll(ctx, &pollReq{
+			Channel:  args.Channel,
+			LastBump: args.LastBump,
+		})
+		if err != nil {
+			// only non-retryable errors end up here
+			workflow.GetLogger(ctx).Error("poll error", "error", err)
+			workflow.Sleep(ctx, time.Hour)
+			continue
+		}
+		// build
+		_ = res // FIXME
+	}
+	return workflow.NewContinueAsNewError(ctx, ci, args)
+}
+
+func ciPoll(ctx workflow.Context, req *pollReq) (*pollRes, error) {
+	actx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
+		HeartbeatTimeout:    time.Minute,
+		StartToCloseTimeout: 24 * time.Hour,
+	})
+	fut := workflow.ExecuteActivity(actx, acts.poll, req)
+	pokeScaler(ctx)
+	var res pollRes
+	return &res, fut.Get(ctx, &res)
 }
 
 func pokeScaler(ctx workflow.Context) {
-	workflow.SideEffect(ctx, func(workflow.Context) any {
+	if !workflow.IsReplaying(ctx) {
 		if s := globalScaler.Load(); s != nil {
 			s.poke()
 		}
-		return nil
-	})
+	}
 }
 
 // autoscaler
+
 func newScaler(cfg WorkerConfig, c client.Client) (*scaler, error) {
 	awscfg, err := awsconfig.LoadDefaultConfig(context.Background())
 	if err != nil {
@@ -127,7 +155,7 @@ func (s *scaler) run() {
 		case <-t:
 		case <-s.notifyCh:
 			// wait a bit for activity info to be updated
-			time.Sleep(3 * time.Second)
+			time.Sleep(5 * time.Second)
 		}
 		s.iter()
 	}
@@ -197,7 +225,8 @@ func (s *scaler) poke() { s.notifyCh <- struct{}{} }
 
 // activities
 
-func (a *activities) DoSomething(ctx context.Context, args somethingArgs) error {
+func (a *activities) poll(ctx context.Context, args pollReq) error {
+	// TODO
 	return nil
 }
 
