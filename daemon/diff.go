@@ -11,6 +11,7 @@ import (
 	"log"
 	"net/http"
 	"os/exec"
+	"regexp"
 	"strings"
 	"unsafe"
 
@@ -227,35 +228,54 @@ func (s *server) buildDiffOp(
 	op := newDiffOp(opTypeDiff)
 
 	// build diff
-	// TODO: this algorithm is kind of awful
-	// TODO: if this is a man page .gz or kernel module .ko.xz (or firmware)
-	// add appropriate diff directives
 
-	found := false
-	maxDigestLen := s.digestBytes * s.cfg.ReadaheadChunks
-	for len(op.baseDigests) < maxDigestLen || len(op.reqDigests) < maxDigestLen {
-		_, baseDigest, baseSize, baseOk := baseIter.next()
-		_, reqDigest, reqSize, reqOk := reqIter.next()
-		if !baseOk && !reqOk {
-			break
+	// find entry
+	var foundEnt *pb.Entry
+	for foundEnt == nil {
+		reqEnt, reqDigest, _, reqOk := reqIter.next()
+		if !reqOk {
+			// shouldn't happen
+			return nil, fmt.Errorf("req digest not found in manifest")
 		}
-
-		// loop until we found the target digest
-		found = found || bytes.Equal(reqDigest, targetDigest)
-		if !found {
-			continue
+		if bytes.Equal(reqDigest, targetDigest) {
+			foundEnt = reqEnt
 		}
+	}
 
-		if baseOk && len(op.baseDigests) < maxDigestLen {
-			if baseLoc, basePresent := s.digestPresent(tx, baseDigest); basePresent {
-				op.addBase(baseDigest, baseSize, baseLoc)
+	if isManPageGz(foundEnt) {
+		// single file with recompression
+		op.diffRecompress = []string{manifester.ExpandGz}
+		// FIXME
+	} else if isLinuxKoXz(foundEnt) {
+		// TODO: maybe get these args from looking at the base? or the chunk differ can look at
+		// req and return them? or try several values and take the matching one?
+		op.diffRecompress = []string{manifester.ExpandXz, "--check=crc32", "--lzma2=dict=1MiB"}
+		// FIXME
+	} else {
+		// position baseIter at approximately the same place
+		// FIXME
+
+		// TODO: this algorithm is kind of awful
+
+		maxDigestLen := s.digestBytes * s.cfg.ReadaheadChunks
+		for len(op.baseDigests) < maxDigestLen || len(op.reqDigests) < maxDigestLen {
+			_, baseDigest, baseSize, baseOk := baseIter.next()
+			_, reqDigest, reqSize, reqOk := reqIter.next()
+			if !baseOk && !reqOk {
+				break
 			}
-		}
-		if reqOk && len(op.reqDigests) < maxDigestLen {
-			if reqLoc, reqPresent := s.digestPresent(tx, reqDigest); !reqPresent && reqLoc.Addr > 0 && s.diffMap[reqLoc] == nil {
-				op.addReq(reqDigest, reqSize, reqLoc)
-				// record we're diffing this one in the map
-				s.diffMap[reqLoc] = op
+
+			if baseOk && len(op.baseDigests) < maxDigestLen {
+				if baseLoc, basePresent := s.digestPresent(tx, baseDigest); basePresent {
+					op.addBase(baseDigest, baseSize, baseLoc)
+				}
+			}
+			if reqOk && len(op.reqDigests) < maxDigestLen {
+				if reqLoc, reqPresent := s.digestPresent(tx, reqDigest); !reqPresent && reqLoc.Addr > 0 && s.diffMap[reqLoc] == nil {
+					op.addReq(reqDigest, reqSize, reqLoc)
+					// record we're diffing this one in the map
+					s.diffMap[reqLoc] = op
+				}
 			}
 		}
 	}
@@ -676,10 +696,10 @@ func (s *server) newDigestIterator(entries []*pb.Entry) digestIterator {
 	return digestIterator{ents: entries, digestLen: s.digestBytes, chunkShift: s.chunkShift}
 }
 
-func (i *digestIterator) next() (string, []byte, int64, bool) {
+func (i *digestIterator) next() (*pb.Entry, []byte, int64, bool) {
 	for {
 		if i.e >= len(i.ents) {
-			return "", nil, 0, false
+			return nil, nil, 0, false
 		}
 		ent := i.ents[i.e]
 		if i.d >= len(ent.Digests) {
@@ -692,7 +712,7 @@ func (i *digestIterator) next() (string, []byte, int64, bool) {
 		if i.d >= len(ent.Digests) { // last chunk
 			size = i.chunkShift.Leftover(ent.Size)
 		}
-		return ent.Path, ent.Digests[i.d-i.digestLen : i.d], size, true
+		return ent, ent.Digests[i.d-i.digestLen : i.d], size, true
 	}
 }
 
@@ -713,4 +733,14 @@ func (op *diffOp) addReq(digest []byte, size int64, loc erofs.SlabLoc) {
 	op.reqDigests = append(op.reqDigests, digest...)
 	op.reqInfo = append(op.reqInfo, info{size, loc})
 	op.reqTotalSize += size
+}
+
+var reManPage = regexp.MustCompile(`^/share/man/.*[.]gz$`)
+var reLinuxKoXz = regexp.MustCompile(`^/lib/modules/[^/]+/kernel/.*[.]ko[.]xz$`)
+
+func isManPageGz(ent *pb.Entry) bool {
+	return ent.Type == pb.EntryType_REGULAR && reManPage.MatchString(ent.Path)
+}
+func isLinuxKoXz(ent *pb.Entry) bool {
+	return ent.Type == pb.EntryType_REGULAR && reLinuxKoXz.MatchString(ent.Path)
 }
