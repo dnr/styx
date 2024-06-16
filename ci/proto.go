@@ -15,14 +15,15 @@ type (
 		Channel string
 
 		// state
-		LastBump string
+		LastRelID string // "nixos-23.11.7609.5c2ec3a5c2ee"
 	}
 
 	pollReq struct {
-		Channel  string
-		LastBump string
+		Channel   string
+		LastRelID string
 	}
 	pollRes struct {
+		RelID string
 	}
 
 	somethingArgs struct {
