@@ -19,6 +19,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/autoscaling"
+	ssm "github.com/aws/aws-sdk-go-v2/service/ssm"
 	"go.temporal.io/api/workflowservice/v1"
 	"go.temporal.io/sdk/activity"
 	"go.temporal.io/sdk/client"
@@ -370,7 +371,11 @@ func (a *heavyActivities) heavyBuild(ctx context.Context, req *buildReq) (*build
 
 	if req.SignKeySSM != "" {
 		l.Info("signing packages...")
-		keyfile := "FIXME - from ssm"
+		keyfile, err := getFileFromSSM(req.SignKeySSM)
+		if err != nil {
+			return nil, err
+		}
+		defer os.Remove(keyfile)
 		cmd = exec.CommandContext(ctx, "nix", "store", "sign", "--key-file", keyfile, "--stdin")
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
@@ -404,4 +409,28 @@ func makeNixexprsUrl(channel, relid string) string {
 	// turn nixos-23.11, nixos-23.11.7609.5c2ec3a5c2ee into
 	// https://releases.nixos.org/nixos/23.11/nixos-23.11.7609.5c2ec3a5c2ee/nixexprs.tar.xz
 	return "https://releases.nixos.org/" + strings.ReplaceAll(channel, "-", "/") + "/" + relid + "/nixexprs.tar.xz"
+}
+
+func getFileFromSSM(name string) (string, error) {
+	awscfg, err := awsconfig.LoadDefaultConfig(context.Background())
+	if err != nil {
+		return "", err
+	}
+	ssmcli := ssm.NewFromConfig(awscfg)
+	decrypt := true
+	f, err := os.CreateTemp("", "signkey")
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+
+	out, err := ssmcli.GetParameter(context.Background(), &ssm.GetParameterInput{
+		Name:           &name,
+		WithDecryption: &decrypt,
+	})
+	if err != nil {
+		return "", err
+	}
+	f.WriteString(strings.TrimSpace(*out.Parameter.Value) + "\n")
+	return f.Name(), nil
 }
