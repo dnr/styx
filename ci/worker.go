@@ -1,12 +1,15 @@
 package ci
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
+	"os"
+	"os/exec"
 	"path"
 	"strconv"
 	"strings"
@@ -54,9 +57,17 @@ type (
 	}
 )
 
+const (
+	// poll
+	pollInterval   = 5 * time.Minute
+	heartbeatExtra = 15 * time.Second
+
+	// build
+	buildHeartbeat = 1 * time.Minute
+	buildTimeout   = 2 * time.Hour
+)
+
 var globalScaler atomic.Pointer[scaler]
-var acts *activities = nil
-var heavyActs *activities = nil
 
 func RunWorker(ctx context.Context, cfg WorkerConfig) error {
 	if cfg.RunWorker && cfg.RunHeavyWorker {
@@ -100,33 +111,59 @@ func RunWorker(ctx context.Context, cfg WorkerConfig) error {
 
 // main workflow
 func ci(ctx workflow.Context, args CiArgs) error {
+	l := workflow.GetLogger(ctx)
 	for !workflow.GetInfo(ctx).GetContinueAsNewSuggested() {
 		// poll
-		res, err := ciPoll(ctx, &pollReq{
+		pres, err := ciPoll(ctx, &pollReq{
 			Channel:   args.Channel,
 			LastRelID: args.LastRelID,
 		})
 		if err != nil {
 			// only non-retryable errors end up here
-			workflow.GetLogger(ctx).Error("poll error", "error", err)
+			l.Error("poll error", "error", err)
 			workflow.Sleep(ctx, time.Hour)
 			continue
 		}
+		l.Info("poll got new relid", pres.RelID)
+		args.LastRelID = pres.RelID
+
 		// build
-		_ = res // FIXME
+		_, err = ciBuild(ctx, &buildReq{
+			Channel:   args.Channel,
+			RelID:     pres.RelID,
+			ConfigURL: args.ConfigURL,
+		})
+		if err != nil {
+			// only non-retryable errors end up here
+			l.Error("build error", "error", err)
+			workflow.Sleep(ctx, time.Hour)
+			continue
+		}
+		l.Info("build success at", pres.RelID)
 	}
 	return workflow.NewContinueAsNewError(ctx, ci, args)
 }
 
 func ciPoll(ctx workflow.Context, req *pollReq) (*pollRes, error) {
 	actx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
-		HeartbeatTimeout:    5 * time.Minute,
-		StartToCloseTimeout: 24 * time.Hour,
+		HeartbeatTimeout:    pollInterval + heartbeatExtra,
+		StartToCloseTimeout: 365 * 24 * time.Hour,
 	})
-	fut := workflow.ExecuteActivity(actx, acts.poll, req)
-	pokeScaler(ctx)
 	var res pollRes
-	return &res, fut.Get(ctx, &res)
+	var a *activities
+	return &res, workflow.ExecuteActivity(actx, a.poll, req).Get(ctx, &res)
+}
+
+func ciBuild(ctx workflow.Context, req *buildReq) (*buildRes, error) {
+	pokeScaler(ctx)
+	actx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
+		TaskQueue:           heavyTaskQueue,
+		HeartbeatTimeout:    buildHeartbeat,
+		StartToCloseTimeout: buildTimeout,
+	})
+	var res buildRes
+	var a *heavyActivities
+	return &res, workflow.ExecuteActivity(actx, a.heavyBuild, req).Get(ctx, &res)
 }
 
 func pokeScaler(ctx workflow.Context) {
@@ -203,7 +240,7 @@ func (s *scaler) getPending() (int, error) {
 			return 0, err
 		}
 		for _, act := range desc.PendingActivities {
-			if strings.Contains(act.ActivityType.Name, "Heavy") {
+			if strings.Contains(strings.ToLower(act.ActivityType.Name), "heavy") {
 				total++
 			}
 		}
@@ -231,8 +268,8 @@ func (s *scaler) poke() { s.notifyCh <- struct{}{} }
 // activities
 
 func (a *activities) poll(ctx context.Context, args *pollReq) (*pollRes, error) {
-	hbt := activity.GetInfo(ctx).HeartbeatTimeout
-	t := time.NewTicker(hbt)
+	interval := activity.GetInfo(ctx).HeartbeatTimeout - heartbeatExtra
+	t := time.NewTicker(interval)
 	defer t.Stop()
 
 	for !(<-t.C).IsZero() && ctx.Err() == nil {
@@ -276,8 +313,95 @@ func getRelNum(relid string) int {
 	return 0
 }
 
-// heavy activities (all must have "Heavy" in the name for scaler to work)
+// heavy activities (all must have "heavy" in the name for scaler to work)
 
-func (a *heavyActivities) HeavySomething(ctx context.Context, args somethingArgs) error {
-	return nil
+func (a *heavyActivities) heavyBuild(ctx context.Context, req *buildReq) (*buildRes, error) {
+	l := activity.GetLogger(ctx)
+	info := activity.GetInfo(ctx)
+	hbt := info.HeartbeatTimeout
+	_ = hbt // FIXME: do heartbeats
+
+	// build
+
+	l.Info("building nixos...")
+	cmd := exec.CommandContext(ctx,
+		"nix-build",
+		"<nixpkgs/nixos>",
+		"-A", "system",
+		"--no-out-link",
+		"--timeout", strconv.Itoa(int(time.Until(info.Deadline).Seconds())),
+		"--keep-going",
+		"-j", "auto",
+		"-I", "nixpkgs="+makeNixexprsUrl(req.Channel, req.RelID),
+		"-I", "nixos-config="+req.ConfigURL,
+	)
+	cmd.Stderr = os.Stderr
+	cmd.Env = append(os.Environ(), "NIX_PATH=")
+	out, err := cmd.Output()
+	if err != nil {
+		l.Error("build error", "error", err)
+		return nil, err
+	}
+
+	// list
+
+	l.Info("getting package list from closure...")
+	cmd = exec.CommandContext(ctx, "nix-store", "-qR", string(out))
+	cmd.Stderr = os.Stderr
+	closure, err := cmd.Output()
+	if err != nil {
+		l.Error("get closure error", "error", err)
+		return nil, err
+	}
+	var paths [][]byte
+	var pathsConcat []byte
+	for _, p := range bytes.SplitAfter(closure, []byte("\n")) {
+		if bytes.Contains(p, []byte("-nixos-system-")) ||
+			bytes.Contains(p, []byte("-security-wrapper-")) ||
+			bytes.Contains(p, []byte("-unit-")) ||
+			bytes.Contains(p, []byte("-etc-")) {
+			continue
+		}
+		paths = append(paths, p)
+		pathsConcat = append(pathsConcat, p...)
+	}
+
+	// sign
+
+	if req.SignKeySSM != "" {
+		l.Info("signing packages...")
+		keyfile := "FIXME - from ssm"
+		cmd = exec.CommandContext(ctx, "nix", "store", "sign", "--key-file", keyfile, "--stdin")
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		cmd.Stdin = bytes.NewReader(pathsConcat)
+		err = cmd.Run()
+		if err != nil {
+			l.Error("sign error", "error", err)
+			return nil, err
+		}
+	}
+
+	// copy
+
+	if req.CopyDest != "" {
+		l.Info("copying packages to dest store...")
+		cmd = exec.CommandContext(ctx, "nix", "copy", "--to", req.CopyDest, "--stdin", "--verbose")
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		cmd.Stdin = bytes.NewReader(pathsConcat)
+		err = cmd.Run()
+		if err != nil {
+			l.Error("copy error", "error", err)
+			return nil, err
+		}
+	}
+
+	return &buildRes{}, nil
+}
+
+func makeNixexprsUrl(channel, relid string) string {
+	// turn nixos-23.11, nixos-23.11.7609.5c2ec3a5c2ee into
+	// https://releases.nixos.org/nixos/23.11/nixos-23.11.7609.5c2ec3a5c2ee/nixexprs.tar.xz
+	return "https://releases.nixos.org/" + strings.ReplaceAll(channel, "-", "/") + "/" + relid + "/nixexprs.tar.xz"
 }

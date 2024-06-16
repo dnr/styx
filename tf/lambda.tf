@@ -105,6 +105,12 @@ resource "aws_ssm_parameter" "manifester_signkey" {
   value = file("../keys/styx-test-1.secret")
 }
 
+resource "aws_ssm_parameter" "charon_signkey" {
+  name  = "styx-charon-signkey-test-1"
+  type  = "SecureString"
+  value = file("../keys/styx-nixcache-test-1.secret")
+}
+
 // lambda:
 
 variable "manifester_image_tag" {}

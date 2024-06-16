@@ -1,7 +1,5 @@
 package ci
 
-// TODO: proto between workflow/activity/builder
-
 const (
 	workflowType = "ci" // matches function name
 
@@ -12,7 +10,10 @@ const (
 type (
 	CiArgs struct {
 		// constants
-		Channel string
+		Channel    string
+		ConfigURL  string
+		SignKeySSM string
+		CopyDest   string
 
 		// state
 		LastRelID string // "nixos-23.11.7609.5c2ec3a5c2ee"
@@ -26,6 +27,16 @@ type (
 		RelID string
 	}
 
-	somethingArgs struct {
+	buildReq struct {
+		// building
+		Channel   string
+		RelID     string
+		ConfigURL string
+
+		// copying
+		SignKeySSM string
+		CopyDest   string
+	}
+	buildRes struct {
 	}
 )
