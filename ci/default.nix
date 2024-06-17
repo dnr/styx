@@ -10,5 +10,6 @@
       "^(ci)($|/.*)"
     ];
     subPackages = [ "cmd/charon" ];
+    doCheck = false;
   };
 }

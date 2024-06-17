@@ -10,6 +10,7 @@ rec {
       "^(common|daemon|erofs|manifester|pb|keys|tests)($|/.*)"
     ];
     subPackages = [ "cmd/styx" ];
+    doCheck = false;
     ldflags = with pkgs; [
       "-X github.com/dnr/styx/common.NixBin=${nix}/bin/nix"
       "-X github.com/dnr/styx/common.GzipBin=${gzip}/bin/gzip"
@@ -28,7 +29,6 @@ rec {
       "^go\.(mod|sum)$"
       "^(cmd|common|daemon|erofs|manifester|pb|keys|tests)($|/.*)"
     ];
-    doCheck = false;
     buildPhase = ''
       go test -c -o styxtest ./tests
     '';

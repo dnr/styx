@@ -13,6 +13,7 @@ import (
 	"path"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -29,9 +30,10 @@ import (
 
 type (
 	WorkerConfig struct {
-		HostPort  string
-		Namespace string
-		ApiKey    string
+		TemporalSSM string
+		HostPort    string
+		Namespace   string
+		ApiKey      string
 
 		RunWorker      bool
 		RunScaler      bool
@@ -75,6 +77,18 @@ func RunWorker(ctx context.Context, cfg WorkerConfig) error {
 		return errors.New("can't run both worker and heavy worker")
 	} else if !cfg.RunWorker && !cfg.RunHeavyWorker {
 		return errors.New("must run either worker or heavy worker")
+	}
+
+	if cfg.TemporalSSM != "" {
+		params, err := getStringFromSSM(cfg.TemporalSSM)
+		if err != nil {
+			return err
+		}
+		parts := strings.SplitN(params, "~", 3)
+		if len(parts) < 3 {
+			return errors.New("bad params format")
+		}
+		cfg.HostPort, cfg.Namespace, cfg.ApiKey = parts[0], parts[1], parts[2]
 	}
 
 	co := client.Options{
@@ -411,19 +425,12 @@ func makeNixexprsUrl(channel, relid string) string {
 	return "https://releases.nixos.org/" + strings.ReplaceAll(channel, "-", "/") + "/" + relid + "/nixexprs.tar.xz"
 }
 
-func getFileFromSSM(name string) (string, error) {
-	awscfg, err := awsconfig.LoadDefaultConfig(context.Background())
+func getStringFromSSM(name string) (string, error) {
+	ssmcli, err := getSSMCli()
 	if err != nil {
 		return "", err
 	}
-	ssmcli := ssm.NewFromConfig(awscfg)
 	decrypt := true
-	f, err := os.CreateTemp("", "signkey")
-	if err != nil {
-		return "", err
-	}
-	defer f.Close()
-
 	out, err := ssmcli.GetParameter(context.Background(), &ssm.GetParameterInput{
 		Name:           &name,
 		WithDecryption: &decrypt,
@@ -431,6 +438,31 @@ func getFileFromSSM(name string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	f.WriteString(strings.TrimSpace(*out.Parameter.Value) + "\n")
+	return strings.TrimSpace(*out.Parameter.Value), nil
+}
+
+func getFileFromSSM(name string) (string, error) {
+	val, err := getStringFromSSM(name)
+	if err != nil {
+		return "", err
+	}
+	f, err := os.CreateTemp("", "ssmtmp")
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	f.WriteString(val)
 	return f.Name(), nil
 }
+
+var getAwsCfg = sync.OnceValues(func() (aws.Config, error) {
+	return awsconfig.LoadDefaultConfig(context.Background())
+})
+
+var getSSMCli = sync.OnceValues(func() (*ssm.Client, error) {
+	awscfg, err := getAwsCfg()
+	if err != nil {
+		return nil, err
+	}
+	return ssm.NewFromConfig(awscfg), nil
+})

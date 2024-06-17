@@ -1,5 +1,7 @@
 #!/bin/sh
 
+# TODO: convert this to terraform that writes out a local script with a provisioner?
+
 Channel="nixos-23.11"
 : "${branch:=ci-release}"
 ConfigURL="https://github.com/dnr/styx/archive/refs/heads/$branch.tar.gz"

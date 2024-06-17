@@ -51,8 +51,11 @@ data "aws_iam_policy_document" "styx_bucket_policy" {
   }
   statement {
     principals {
-      type        = "AWS"
-      identifiers = [aws_iam_role.iam_for_lambda.arn]
+      type = "AWS"
+      identifiers = [
+        aws_iam_role.iam_for_lambda.arn,
+        aws_iam_role.iam_for_charon.arn,
+      ]
     }
     actions   = ["s3:*"]
     resources = [aws_s3_bucket.styx.arn, "${aws_s3_bucket.styx.arn}/*"]

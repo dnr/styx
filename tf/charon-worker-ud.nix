@@ -1,26 +1,22 @@
 ### https://channels.nixos.org/nixos-24.05 nixos
 
-{ config, pkgs, lib, ... }:
+{ config, pkgs, ... }:
 let
-  src = lib.fetchFromGitHub {
+  src = pkgs.fetchFromGitHub {
     owner = "dnr";
     repo = "styx";
-    rev = "main";
+    rev = "5be11bc61319e3f1a0f15f1a556cbf8ac0c3e3ac";
+    hash = "sha256-T2QXQCpP8NZwzg6Q74zVMTU8M7NA9oVSg0cRrkPPUSc=";
   };
-  srci = import "${src}/ci";
-  pkg = srci.charon;
+  srci = import "${src}/ci" { inherit pkgs; };
 in
 {
   imports = [ <nixpkgs/nixos/modules/virtualisation/amazon-image.nix> ];
-  ec2.hvm = true;
-  environment.systemPackages = with pkgs; [
-    git
-  ];
-
   systemd.services.charon = {
     description = "charon ci for styx";
     wantedBy = [ "multi-user.target" ];
-    serviceConfig.ExecStart = "${charon}/bin/charon worker --heavyworker";
+    serviceConfig.ExecStart =
+      "${srci.charon}/bin/charon worker --heavy --temporal_ssm styx-charon-temporal-params";
     serviceConfig.Restart = "always";
   };
 }
