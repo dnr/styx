@@ -93,26 +93,40 @@ data "aws_ami" "nixos_x86_64" {
   }
 }
 
+variable "charon_store" {
+  default = "DUMMY"
+}
+variable "charon_storekey" {
+  default = "DUMMY"
+}
+variable "charon_storepath" {
+  default = "DUMMY"
+}
+
 resource "aws_launch_template" "charon_worker" {
   name_prefix          = "charon-worker"
   image_id             = data.aws_ami.nixos_x86_64.id
-  instance_type        = "c7a.4xlarge"
   security_group_names = [aws_security_group.worker_sg.name]
   iam_instance_profile {
     arn = aws_iam_instance_profile.charon_worker.arn
   }
-  key_name  = aws_key_pair.my_ssh_key.id
-  user_data = filebase64("charon-worker-ud.nix")
+  key_name = aws_key_pair.my_ssh_key.id
+  user_data = base64encode(templatefile("charon-worker-ud.nix", {
+    region = data.aws_region.current.name
+    sub    = var.charon_store
+    pubkey = var.charon_storekey
+    charon = var.charon_storepath
+    tmpssm = aws_ssm_parameter.charon_temporal_params.name
+  }))
   block_device_mappings {
     device_name = "/dev/xvda"
-    ebs {
-      volume_size = 40
-    }
+    ebs { volume_size = 20 }
   }
+  instance_type = "c7a.4xlarge"
   instance_market_options {
     market_type = "spot"
     spot_options {
-      max_price = "0.40" # on-demand 0.8211
+      max_price = "0.40" # c7a.4xlarge on-demand: 0.8211
     }
   }
 }
@@ -123,6 +137,8 @@ resource "aws_autoscaling_group" "charon_asg" {
   min_size         = 0
   max_size         = 1
   desired_capacity = 0
+
+  availability_zones = ["us-east-1a", "us-east-1b", "us-east-1c", "us-east-1d", "us-east-1e"]
 
   launch_template {
     id      = aws_launch_template.charon_worker.id

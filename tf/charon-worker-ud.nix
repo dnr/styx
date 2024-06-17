@@ -1,23 +1,15 @@
-### https://channels.nixos.org/nixos-24.05 nixos
-
+# Note this is templated by terraform, $ {} is TF, $${} is Nix
 { config, pkgs, ... }:
-let
-  src = pkgs.fetchFromGitHub {
-    owner = "dnr";
-    repo = "styx";
-    rev = "cdfb7e7f29d973f1cbb30f138ad7d7ee418b4507";
-    # nix-prefetch-url --unpack https://github.com/dnr/styx/archive/$rev.tar.gz
-    sha256 = "1mhcdvzijk94yl8q34k5s81kc6lxcj9cncb50g5cpkvxks73x54p";
-  };
-  srci = import "${src}/ci" { inherit pkgs; };
-in
 {
   imports = [ <nixpkgs/nixos/modules/virtualisation/amazon-image.nix> ];
   systemd.services.charon = {
-    description = "charon ci for styx";
+    description = "charon ci worker";
     wantedBy = [ "multi-user.target" ];
-    serviceConfig.ExecStart =
-      "${srci.charon}/bin/charon worker --heavy --temporal_ssm styx-charon-temporal-params";
-    serviceConfig.Restart = "always";
+    environment.AWS_REGION = "${region}";
+    serviceConfig = {
+      ExecStartPre = "nix-store --realize --option extra-substituters ${sub} --option extra-trusted-public-keys ${pubkey} ${charon}";
+      ExecStart = "${charon}/bin/charon worker --heavy --temporal_ssm ${tmpssm}";
+      Restart = "always";
+    };
   };
 }

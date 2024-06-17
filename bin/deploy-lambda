@@ -19,7 +19,7 @@ $script | gzip --fast | skopeo --insecure-policy copy \
   docker://$repourl:$tag
 
 export TF_VAR_manifester_image_tag=$tag
-terraform -chdir=tf apply
+terraform -chdir=tf apply -target aws_lambda_function_url.manifester
 
 echo ============
 echo "URL is: $(tfget aws_lambda_function_url.manifester function_url)"
