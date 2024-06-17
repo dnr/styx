@@ -3,10 +3,11 @@ rec {
   base = {
     pname = "styx";
     version = "0.0.6";
-    vendorHash = "sha256-DKZwt/+974xS30tqPwhlg8ISLmzh3gA7ne96uri+qTY=";
+    vendorHash = "sha256-TB0zFm95H8R/tHfnjYK90TjpX5tqKnLohDBS9qXGzds=";
     src = pkgs.lib.sourceByRegex ./. [
       "^go\.(mod|sum)$"
-      "^(cmd|common|daemon|erofs|manifester|pb|keys|tests)($|/.*)"
+      "^(cmd|cmd/styx|cmd/styx/.*)$"
+      "^(common|daemon|erofs|manifester|pb|keys|tests)($|/.*)"
     ];
     subPackages = [ "cmd/styx" ];
     ldflags = with pkgs; [

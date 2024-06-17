@@ -1,7 +1,7 @@
 
 // iam for lambda:
 
-data "aws_iam_policy_document" "assume_role" {
+data "aws_iam_policy_document" "assume_role_lambda" {
   statement {
     principals {
       type        = "Service"
@@ -11,7 +11,7 @@ data "aws_iam_policy_document" "assume_role" {
   }
 }
 
-data "aws_iam_policy_document" "get_parameter" {
+data "aws_iam_policy_document" "manifester_get_parameter" {
   statement {
     actions   = ["ssm:GetParameter"]
     resources = ["${aws_ssm_parameter.manifester_signkey.arn}"]
@@ -20,11 +20,11 @@ data "aws_iam_policy_document" "get_parameter" {
 
 resource "aws_iam_role" "iam_for_lambda" {
   name                = "iam_for_lambda_styx"
-  assume_role_policy  = data.aws_iam_policy_document.assume_role.json
+  assume_role_policy  = data.aws_iam_policy_document.assume_role_lambda.json
   managed_policy_arns = ["arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"]
   inline_policy {
     name   = "get-parameter"
-    policy = data.aws_iam_policy_document.get_parameter.json
+    policy = data.aws_iam_policy_document.manifester_get_parameter.json
   }
 }
 
@@ -103,12 +103,6 @@ resource "aws_ssm_parameter" "manifester_signkey" {
   name  = "styx-manifester-signkey-test-1"
   type  = "SecureString"
   value = file("../keys/styx-test-1.secret")
-}
-
-resource "aws_ssm_parameter" "charon_signkey" {
-  name  = "styx-charon-signkey-test-1"
-  type  = "SecureString"
-  value = file("../keys/styx-nixcache-test-1.secret")
 }
 
 // lambda:
