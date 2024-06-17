@@ -5,8 +5,9 @@ let
   src = pkgs.fetchFromGitHub {
     owner = "dnr";
     repo = "styx";
-    rev = "5be11bc61319e3f1a0f15f1a556cbf8ac0c3e3ac";
-    hash = "sha256-T2QXQCpP8NZwzg6Q74zVMTU8M7NA9oVSg0cRrkPPUSc=";
+    rev = "cdfb7e7f29d973f1cbb30f138ad7d7ee418b4507";
+    # nix-prefetch-url --unpack https://github.com/dnr/styx/archive/$rev.tar.gz
+    sha256 = "1mhcdvzijk94yl8q34k5s81kc6lxcj9cncb50g5cpkvxks73x54p";
   };
   srci = import "${src}/ci" { inherit pkgs; };
 in
