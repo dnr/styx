@@ -11,4 +11,5 @@ nix copy -v --to "$store" "$charon"
 export TF_VAR_charon_store=$store
 export TF_VAR_charon_storekey=$(cat keys/styx-nixcache-test-1.public)
 export TF_VAR_charon_storepath=$charon
-terraform -chdir=tf apply -target aws_autoscaling_group.charon_asg
+# TODO: get rid of target again
+terraform -chdir=tf apply -target aws_autoscaling_group.charon_asg -target aws_launch_template.charon_worker

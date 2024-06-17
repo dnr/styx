@@ -112,7 +112,6 @@ resource "aws_launch_template" "charon_worker" {
   }
   key_name = aws_key_pair.my_ssh_key.id
   user_data = base64encode(templatefile("charon-worker-ud.nix", {
-    region = data.aws_region.current.name
     sub    = var.charon_store
     pubkey = var.charon_storekey
     charon = var.charon_storepath

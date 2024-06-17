@@ -456,7 +456,7 @@ func getFileFromSSM(name string) (string, error) {
 }
 
 var getAwsCfg = sync.OnceValues(func() (aws.Config, error) {
-	return awsconfig.LoadDefaultConfig(context.Background())
+	return awsconfig.LoadDefaultConfig(context.Background(), awsconfig.WithEC2IMDSRegion())
 })
 
 var getSSMCli = sync.OnceValues(func() (*ssm.Client, error) {
