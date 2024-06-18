@@ -1,19 +1,17 @@
 # Stripped-down version of my (dnr)'s basic nix config:
 
-{ lib, config, pkgs, ... }:
+{ pkgs, ... }:
+let
+  # Use styx from "release" branch:
+  styx = builtins.fetchTarball "https://github.com/dnr/styx/archive/release.tar.gz";
+in
 {
-  # latest kernel with styx config:
-  # FIXME: replace this with reference to styx module
-  boot.kernelPackages = pkgs.linuxPackages_latest;
-  boot.kernelPatches = [ {
-    name = "styx";
-    patch = null;
-    extraStructuredConfig = {
-      CACHEFILES_ONDEMAND = lib.kernel.yes;
-      EROFS_FS_ONDEMAND = lib.kernel.yes;
-    };
-  } ];
+  imports = [
+    "${styx}/module"
+  ];
 
+  # builds custom kernel, patched nix, styx binary
+  services.styx.enable = true;
 
   # just enough to make nix-build not complain:
   fileSystems."/".device = "/dev/dummy";
