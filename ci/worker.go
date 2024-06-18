@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math/rand"
 	"net/http"
 	"os"
 	"os/exec"
@@ -26,6 +27,9 @@ import (
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/worker"
 	"go.temporal.io/sdk/workflow"
+	"golang.org/x/exp/slices"
+
+	"github.com/dnr/styx/common"
 )
 
 type (
@@ -128,7 +132,8 @@ func RunWorker(ctx context.Context, cfg WorkerConfig) error {
 func ci(ctx workflow.Context, args CiArgs) error {
 	l := workflow.GetLogger(ctx)
 	for !workflow.GetInfo(ctx).GetContinueAsNewSuggested() {
-		// poll
+		// poll nixos channels
+		// TODO: check for bump on styx "release" branch also
 		pres, err := ciPoll(ctx, &pollReq{
 			Channel:   args.Channel,
 			LastRelID: args.LastRelID,
@@ -143,18 +148,26 @@ func ci(ctx workflow.Context, args CiArgs) error {
 		args.LastRelID = pres.RelID
 
 		// build
-		_, err = ciBuild(ctx, &buildReq{
+		bres, err := ciBuild(ctx, &buildReq{
 			Channel:   args.Channel,
 			RelID:     pres.RelID,
 			ConfigURL: args.ConfigURL,
 		})
 		if err != nil {
-			// only non-retryable errors end up here
 			l.Error("build error", "error", err)
 			workflow.Sleep(ctx, time.Hour)
 			continue
 		}
 		l.Info("build success at", pres.RelID)
+
+		// manifest
+		err = ciManifest(ctx, bres.StorePaths)
+		if err != nil {
+			l.Error("manifest error error", "error", err)
+			workflow.Sleep(ctx, time.Hour)
+			continue
+		}
+		l.Info("manifested all paths")
 	}
 	return workflow.NewContinueAsNewError(ctx, ci, args)
 }
@@ -179,6 +192,32 @@ func ciBuild(ctx workflow.Context, req *buildReq) (*buildRes, error) {
 	var res buildRes
 	var a *heavyActivities
 	return &res, workflow.ExecuteActivity(actx, a.heavyBuild, req).Get(ctx, &res)
+}
+
+func ciManifest(ctx workflow.Context, storePaths []string) error {
+	const batchSize = 100
+	l := workflow.GetLogger(ctx)
+
+	sp := slices.Clone(storePaths)
+	rand.Shuffle(len(sp), func(i, j int) { sp[i], sp[j] = sp[j], sp[i] })
+	var futs []workflow.Future
+	actx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
+		// TODO: maybe nice to use heartbeats?
+		StartToCloseTimeout: 1 * time.Minute * batchSize,
+	})
+	var a *activities
+	for _, batch := range batches(sp, batchSize) {
+		req := &manifestReq{StorePaths: batch}
+		futs = append(futs, workflow.ExecuteActivity(actx, a.manifest, req))
+	}
+	var err error
+	for _, f := range futs {
+		if e := f.Get(ctx, nil); e != nil {
+			l.Error("manifest error", "error", e)
+			err = common.Or(err, e)
+		}
+	}
+	return err
 }
 
 func pokeScaler(ctx workflow.Context) {
@@ -282,22 +321,27 @@ func (s *scaler) poke() { s.notifyCh <- struct{}{} }
 
 // activities
 
-func (a *activities) poll(ctx context.Context, args *pollReq) (*pollRes, error) {
+func (a *activities) poll(ctx context.Context, req *pollReq) (*pollRes, error) {
 	interval := activity.GetInfo(ctx).HeartbeatTimeout - heartbeatExtra
 	t := time.NewTicker(interval)
 	defer t.Stop()
 
 	for !(<-t.C).IsZero() && ctx.Err() == nil {
-		relid, err := getRelID(ctx, args.Channel)
+		relid, err := getRelID(ctx, req.Channel)
 		if err != nil {
 			return nil, err
 		}
-		if getRelNum(relid) > getRelNum(args.LastRelID) {
+		if getRelNum(relid) > getRelNum(req.LastRelID) {
 			return &pollRes{RelID: relid}, nil
 		}
 		activity.RecordHeartbeat(ctx)
 	}
 	return nil, ctx.Err()
+}
+
+func (a *activities) manifest(ctx context.Context, req *manifestReq) (*manifestRes, error) {
+	// FIXME
+	return nil, nil
 }
 
 func getRelID(ctx context.Context, channel string) (string, error) {
@@ -361,6 +405,7 @@ func (a *heavyActivities) heavyBuild(ctx context.Context, req *buildReq) (*build
 	// list
 
 	l.Info("getting package list from closure...")
+	// FIXME: switch to path-info so we can get more metadata
 	cmd = exec.CommandContext(ctx, "nix-store", "-qR", string(out))
 	cmd.Stderr = os.Stderr
 	closure, err := cmd.Output()
@@ -368,7 +413,7 @@ func (a *heavyActivities) heavyBuild(ctx context.Context, req *buildReq) (*build
 		l.Error("get closure error", "error", err)
 		return nil, err
 	}
-	var paths [][]byte
+	var paths []string
 	var pathsConcat []byte
 	for _, p := range bytes.SplitAfter(closure, []byte("\n")) {
 		if bytes.Contains(p, []byte("-nixos-system-")) ||
@@ -377,7 +422,7 @@ func (a *heavyActivities) heavyBuild(ctx context.Context, req *buildReq) (*build
 			bytes.Contains(p, []byte("-etc-")) {
 			continue
 		}
-		paths = append(paths, p)
+		paths = append(paths, string(bytes.TrimSpace(p)))
 		pathsConcat = append(pathsConcat, p...)
 	}
 
@@ -405,6 +450,7 @@ func (a *heavyActivities) heavyBuild(ctx context.Context, req *buildReq) (*build
 
 	if req.CopyDest != "" {
 		l.Info("copying packages to dest store...")
+		// TODO: avoid copying stuff that's already in the public cache
 		cmd = exec.CommandContext(ctx, "nix", "copy", "--to", req.CopyDest, "--stdin", "--verbose")
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
@@ -416,7 +462,9 @@ func (a *heavyActivities) heavyBuild(ctx context.Context, req *buildReq) (*build
 		}
 	}
 
-	return &buildRes{}, nil
+	return &buildRes{
+		StorePaths: paths,
+	}, nil
 }
 
 func makeNixexprsUrl(channel, relid string) string {

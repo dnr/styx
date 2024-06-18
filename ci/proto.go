@@ -38,5 +38,14 @@ type (
 		CopyDest   string
 	}
 	buildRes struct {
+		StorePaths []string
+		// TODO: add stats?
+	}
+
+	manifestReq struct {
+		StorePaths []string
+	}
+	manifestRes struct {
+		// TODO: add stats?
 	}
 )
