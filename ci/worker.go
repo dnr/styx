@@ -3,6 +3,8 @@ package ci
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -28,6 +30,8 @@ import (
 	"go.temporal.io/sdk/worker"
 	"go.temporal.io/sdk/workflow"
 	"golang.org/x/exp/slices"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/metadata"
 
 	"github.com/dnr/styx/common"
 )
@@ -61,6 +65,12 @@ type (
 		notifyCh chan struct{}
 		prev     int
 		asgcli   *autoscaling.Client
+	}
+
+	pathInfoJson struct {
+		Path       string   `json:"path"`
+		NarSize    int64    `json:"narSize"`
+		Signatures []string `json:"signatures"`
 	}
 )
 
@@ -101,6 +111,24 @@ func RunWorker(ctx context.Context, cfg WorkerConfig) error {
 	}
 	if cfg.ApiKey != "" {
 		co.Credentials = client.NewAPIKeyStaticCredentials(cfg.ApiKey)
+		// TODO: remove after go sdk does this automatically
+		co.ConnectionOptions = client.ConnectionOptions{
+			TLS: &tls.Config{},
+			DialOptions: []grpc.DialOption{
+				grpc.WithUnaryInterceptor(
+					func(ctx context.Context, method string, req any, reply any, cc *grpc.ClientConn, invoker grpc.UnaryInvoker, opts ...grpc.CallOption) error {
+						return invoker(
+							metadata.AppendToOutgoingContext(ctx, "temporal-namespace", cfg.Namespace),
+							method,
+							req,
+							reply,
+							cc,
+							opts...,
+						)
+					},
+				),
+			},
+		}
 	}
 	c, err := client.DialContext(ctx, co)
 	if err != nil {
@@ -194,7 +222,7 @@ func ciBuild(ctx workflow.Context, req *buildReq) (*buildRes, error) {
 	return &res, workflow.ExecuteActivity(actx, a.heavyBuild, req).Get(ctx, &res)
 }
 
-func ciManifest(ctx workflow.Context, storePaths []string) error {
+func ciManifest(ctx workflow.Context, storePaths []pathAndSize) error {
 	const batchSize = 100
 	l := workflow.GetLogger(ctx)
 
@@ -377,12 +405,21 @@ func getRelNum(relid string) int {
 func (a *heavyActivities) heavyBuild(ctx context.Context, req *buildReq) (*buildRes, error) {
 	l := activity.GetLogger(ctx)
 	info := activity.GetInfo(ctx)
-	hbt := info.HeartbeatTimeout
-	_ = hbt // FIXME: do heartbeats
+
+	var stage atomic.Value
+	stage.Store("init")
+
+	go func() {
+		for ctx.Err() == nil {
+			time.Sleep(5 * time.Second)
+			activity.RecordHeartbeat(ctx, stage.Load())
+		}
+	}()
 
 	// build
 
 	l.Info("building nixos...")
+	stage.Store("build")
 	cmd := exec.CommandContext(ctx,
 		"nix-build",
 		"<nixpkgs/nixos>",
@@ -405,31 +442,57 @@ func (a *heavyActivities) heavyBuild(ctx context.Context, req *buildReq) (*build
 	// list
 
 	l.Info("getting package list from closure...")
-	// FIXME: switch to path-info so we can get more metadata
-	cmd = exec.CommandContext(ctx, "nix-store", "-qR", string(out))
+	stage.Store("list")
+	cmd = exec.CommandContext(ctx,
+		"nix", "--extra-experimental-features", "nix-command",
+		"path-info",
+		"--json",
+		"--recursive",
+		string(out),
+	)
 	cmd.Stderr = os.Stderr
-	closure, err := cmd.Output()
+	j, err := cmd.Output()
 	if err != nil {
 		l.Error("get closure error", "error", err)
 		return nil, err
 	}
-	var paths []string
-	var pathsConcat []byte
-	for _, p := range bytes.SplitAfter(closure, []byte("\n")) {
-		if bytes.Contains(p, []byte("-nixos-system-")) ||
-			bytes.Contains(p, []byte("-security-wrapper-")) ||
-			bytes.Contains(p, []byte("-unit-")) ||
-			bytes.Contains(p, []byte("-etc-")) {
+	var pathInfo []pathInfoJson
+	var toSign bytes.Buffer
+	var toCopy bytes.Buffer
+	if err := json.Unmarshal(j, &pathInfo); err != nil {
+		l.Error("get closure json unmarshal error", "error", err)
+		return nil, err
+	}
+
+	bres := buildRes{
+		StorePaths: make([]pathAndSize, 0, len(pathInfo)),
+	}
+
+	for _, pi := range pathInfo {
+		// filter out tiny build-specific stuff
+		if strings.Contains(pi.Path, "-nixos-system-") ||
+			strings.Contains(pi.Path, "-security-wrapper-") ||
+			strings.Contains(pi.Path, "-unit-") ||
+			strings.Contains(pi.Path, "-etc-") {
 			continue
 		}
-		paths = append(paths, string(bytes.TrimSpace(p)))
-		pathsConcat = append(pathsConcat, p...)
+		// only sign if not from public cache
+		if !pi.fromPublicCache() {
+			toSign.WriteString(pi.Path + "\n")
+		}
+		// copy is going to take closures anyway so just pass all to copy
+		toCopy.WriteString(pi.Path + "\n")
+		bres.StorePaths = append(bres.StorePaths, pathAndSize{
+			Path: pi.Path,
+			Size: pi.NarSize, // size is used as hint to manifest client
+		})
 	}
 
 	// sign
 
 	if req.SignKeySSM != "" {
 		l.Info("signing packages...")
+		stage.Store("sign")
 		keyfile, err := getFileFromSSM(req.SignKeySSM)
 		if err != nil {
 			return nil, err
@@ -438,7 +501,7 @@ func (a *heavyActivities) heavyBuild(ctx context.Context, req *buildReq) (*build
 		cmd = exec.CommandContext(ctx, "nix", "store", "sign", "--key-file", keyfile, "--stdin")
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
-		cmd.Stdin = bytes.NewReader(pathsConcat)
+		cmd.Stdin = &toSign
 		err = cmd.Run()
 		if err != nil {
 			l.Error("sign error", "error", err)
@@ -450,11 +513,17 @@ func (a *heavyActivities) heavyBuild(ctx context.Context, req *buildReq) (*build
 
 	if req.CopyDest != "" {
 		l.Info("copying packages to dest store...")
-		// TODO: avoid copying stuff that's already in the public cache
-		cmd = exec.CommandContext(ctx, "nix", "copy", "--to", req.CopyDest, "--stdin", "--verbose")
+		stage.Store("copy")
+		cmd = exec.CommandContext(ctx,
+			"nix", "--extra-experimental-features", "nix-command",
+			"copy",
+			"--to", req.CopyDest,
+			"--stdin",
+			"--verbose",
+		)
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
-		cmd.Stdin = bytes.NewReader(pathsConcat)
+		cmd.Stdin = &toCopy
 		err = cmd.Run()
 		if err != nil {
 			l.Error("copy error", "error", err)
@@ -462,9 +531,7 @@ func (a *heavyActivities) heavyBuild(ctx context.Context, req *buildReq) (*build
 		}
 	}
 
-	return &buildRes{
-		StorePaths: paths,
-	}, nil
+	return &bres, nil
 }
 
 func makeNixexprsUrl(channel, relid string) string {
@@ -514,3 +581,12 @@ var getSSMCli = sync.OnceValues(func() (*ssm.Client, error) {
 	}
 	return ssm.NewFromConfig(awscfg), nil
 })
+
+func (pi *pathInfoJson) fromPublicCache() bool {
+	for _, s := range pi.Signatures {
+		if strings.HasPrefix(s, "cache.nixos.org-1:") {
+			return true
+		}
+	}
+	return false
+}

@@ -19,6 +19,11 @@ type (
 		LastRelID string // "nixos-23.11.7609.5c2ec3a5c2ee"
 	}
 
+	pathAndSize struct {
+		Path string `json:"p"`
+		Size int64  `json:"s"`
+	}
+
 	pollReq struct {
 		Channel   string
 		LastRelID string
@@ -38,12 +43,12 @@ type (
 		CopyDest   string
 	}
 	buildRes struct {
-		StorePaths []string
+		StorePaths []pathAndSize
 		// TODO: add stats?
 	}
 
 	manifestReq struct {
-		StorePaths []string
+		StorePaths []pathAndSize
 	}
 	manifestRes struct {
 		// TODO: add stats?

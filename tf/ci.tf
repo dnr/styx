@@ -41,7 +41,7 @@ resource "aws_ssm_parameter" "charon_signkey" {
 resource "aws_ssm_parameter" "charon_temporal_params" {
   name  = "styx-charon-temporal-params"
   type  = "SecureString"
-  value = "fixme:fixme:fixme"
+  value = file("../keys/temporal-creds-charon.secret")
 }
 
 // security group
