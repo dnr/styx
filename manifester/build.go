@@ -60,7 +60,7 @@ func NewManifestBuilder(cfg ManifestBuilderConfig, cs ChunkStoreWrite) (*Manifes
 	}, nil
 }
 
-func (b *ManifestBuilder) Build(ctx context.Context, args *BuildArgs, r io.Reader) (*pb.Manifest, error) {
+func (b *ManifestBuilder) BuildFromNar(ctx context.Context, args *BuildArgs, r io.Reader) (*pb.Manifest, error) {
 	m := &pb.Manifest{
 		Params:          b.params,
 		SmallFileCutoff: int32(args.SmallFileCutoff),

@@ -58,8 +58,6 @@ type (
 		Bind             string
 		AllowedUpstreams []string
 
-		ManifestBuilder *ManifestBuilder
-
 		// Verify loaded narinfo against these keys. Nil means don't verify.
 		PublicKeys []signature.PublicKey
 		// Sign manifests with these keys.
@@ -67,13 +65,13 @@ type (
 	}
 )
 
-func ManifestServer(cfg Config) (*server, error) {
+func NewManifestServer(cfg Config, mb *ManifestBuilder) (*server, error) {
 	return &server{
 		cfg: &cfg,
-		mb:  cfg.ManifestBuilder,
+		mb:  mb,
 		zp:  common.NewZstdCtxPool(),
 
-		digestBytes: int(cfg.ManifestBuilder.params.DigestBits) >> 3,
+		digestBytes: int(mb.params.DigestBits) >> 3,
 	}, nil
 }
 
@@ -222,7 +220,7 @@ func (s *server) handleManifest(w http.ResponseWriter, req *http.Request) {
 		ShardTotal:      r.ShardTotal,
 		ShardIndex:      r.ShardIndex,
 	}
-	manifest, err := s.mb.Build(req.Context(), args, io.TeeReader(narOut, narHasher))
+	manifest, err := s.mb.BuildFromNar(req.Context(), args, io.TeeReader(narOut, narHasher))
 	if err != nil {
 		log.Println("manifest generation error", err)
 		w.WriteHeader(http.StatusInternalServerError)
@@ -465,7 +463,7 @@ func (s *server) expand(ctx context.Context, digests []byte, parallel int, expan
 
 func (s *server) fetchChunkSeries(ctx context.Context, digests []byte, parallel int, out io.Writer) error {
 	// TODO: ew, use separate setting?
-	cs := s.cfg.ManifestBuilder.cs
+	cs := s.mb.cs
 
 	eg, gCtx := errgroup.WithContext(ctx)
 	chs := make(chan chan []byte, parallel)
@@ -497,7 +495,7 @@ func (s *server) fetchChunkSeries(ctx context.Context, digests []byte, parallel 
 
 func (s *server) handleChunk(w http.ResponseWriter, r *http.Request) {
 	// This is for local testing only, real usage goes to s3 directly!
-	localWrite, ok := s.cfg.ManifestBuilder.cs.(*localChunkStoreWrite)
+	localWrite, ok := s.mb.cs.(*localChunkStoreWrite)
 	if !ok {
 		w.WriteHeader(http.StatusNotImplemented)
 		return

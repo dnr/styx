@@ -132,7 +132,7 @@ func (tb *testBase) startManifester() {
 	cfg.SigningKeys, err = common.LoadSecretKeys([]string{"../keys/testsuite.secret"})
 	require.NoError(tb.t, err)
 
-	m, err := manifester.ManifestServer(cfg)
+	m, err := manifester.NewManifestServer(cfg)
 	require.NoError(tb.t, err)
 
 	go m.Run()

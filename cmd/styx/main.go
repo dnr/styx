@@ -107,14 +107,12 @@ func withManifesterConfig(c *cobra.Command) runE {
 
 	return chainRunE(
 		withSignKeys(c),
-		withManifestBuilder(c),
 		func(c *cobra.Command, args []string) error {
 			var err error
 			if cfg.PublicKeys, err = common.LoadPubKeys(*pubkeys); err != nil {
 				return err
 			}
 			cfg.SigningKeys = c.Context().Value(ctxSignKeys).([]signature.SecretKey)
-			cfg.ManifestBuilder = c.Context().Value(ctxManifestBuilder).(*manifester.ManifestBuilder)
 			c.SetContext(context.WithValue(c.Context(), ctxManifesterConfig, cfg))
 			return nil
 		},
@@ -210,9 +208,11 @@ func main() {
 				Short: "act as manifester server",
 			},
 			withManifesterConfig,
+			withManifestBuilder,
 			func(c *cobra.Command, args []string) error {
 				cfg := c.Context().Value(ctxManifesterConfig).(manifester.Config)
-				m, err := manifester.ManifestServer(cfg)
+				mb := c.Context().Value(ctxManifestBuilder).(*manifester.ManifestBuilder)
+				m, err := manifester.NewManifestServer(cfg, mb)
 				if err != nil {
 					return err
 				}
