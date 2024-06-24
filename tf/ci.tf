@@ -94,15 +94,7 @@ data "aws_ami" "nixos_x86_64" {
   }
 }
 
-variable "charon_store" {
-  default = "DUMMY"
-}
-variable "charon_storekey" {
-  default = "DUMMY"
-}
-variable "charon_storepath" {
-  default = "DUMMY"
-}
+variable "charon_storepath" { }
 
 resource "aws_launch_template" "charon_worker" {
   name_prefix          = "charon-worker"
@@ -113,8 +105,8 @@ resource "aws_launch_template" "charon_worker" {
   }
   key_name = aws_key_pair.my_ssh_key.id
   user_data = base64encode(templatefile("charon-worker-ud.nix", {
-    sub      = var.charon_store
-    pubkey   = var.charon_storekey
+    sub      = "https://${aws_s3_bucket.styx.id}.s3.amazonaws.com/nixcache/"
+    pubkey   = file("../keys/styx-nixcache-test-1.public")
     charon   = var.charon_storepath
     tmpssm   = aws_ssm_parameter.charon_temporal_params.name
     cachessm = aws_ssm_parameter.charon_signkey.id

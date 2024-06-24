@@ -6,29 +6,29 @@ rec {
     vendorHash = "sha256-TB0zFm95H8R/tHfnjYK90TjpX5tqKnLohDBS9qXGzds=";
     src = pkgs.lib.sourceByRegex ./. [
       "^go\.(mod|sum)$"
-      "^(cmd|cmd/styx|cmd/styx/.*)$"
-      "^(common|daemon|erofs|manifester|pb|keys|tests)($|/.*)"
+      "^(ci|cmd|common|daemon|erofs|manifester|pb|keys|tests)($|/.*)"
     ];
     subPackages = [ "cmd/styx" ];
     doCheck = false;
-    ldflags = with pkgs; [
-      "-X github.com/dnr/styx/common.NixBin=${nix}/bin/nix"
-      "-X github.com/dnr/styx/common.GzipBin=${gzip}/bin/gzip"
-      "-X github.com/dnr/styx/common.XzBin=${xz}/bin/xz"
-      "-X github.com/dnr/styx/common.ModprobeBin=${kmod}/bin/modprobe"
-      "-X github.com/dnr/styx/common.Version=${base.version}"
-    ];
+    ldflags = baseLdFlags;
   };
 
+  baseLdFlags = [
+    "-X github.com/dnr/styx/common.NixBin=${pkgs.nix}/bin/nix"
+    "-X github.com/dnr/styx/common.XzBin=${pkgs.xz}/bin/xz"
+    "-X github.com/dnr/styx/common.Version=${base.version}"
+  ];
+  daemonLdFlags = baseLdFlags ++ [
+      "-X github.com/dnr/styx/common.GzipBin=${pkgs.gzip}/bin/gzip"
+      "-X github.com/dnr/styx/common.ModprobeBin=${pkgs.kmod}/bin/modprobe"
+  ];
+
   styx-local = pkgs.buildGoModule (base // {
+    ldflags = daemonLdFlags;
   });
 
   styx-test = pkgs.buildGoModule (base // {
     pname = "styxtest";
-    src = pkgs.lib.sourceByRegex ./. [
-      "^go\.(mod|sum)$"
-      "^(cmd|common|daemon|erofs|manifester|pb|keys|tests)($|/.*)"
-    ];
     buildPhase = ''
       go test -c -o styxtest ./tests
     '';
@@ -37,6 +37,7 @@ rec {
       install styxtest $out/bin/
       cp keys/testsuite* $out/keys/
     '';
+    ldflags = daemonLdFlags;
   });
 
   styx-lambda = pkgs.buildGoModule (base // {
@@ -49,10 +50,11 @@ rec {
     ];
   });
 
-  patched-nix = pkgs.nixVersions.nix_2_18.overrideAttrs (prev: {
-    patches = prev.patches ++ [ ./module/patches/nix_2_18.patch ];
-    doInstallCheck = false; # broke tests/ca, ignore for now
-  });
+  # built by deploy-ci, for heavy CI worker on EC2
+  charon = pkgs.buildGoModule base // {
+    pname = "charon";
+    subPackages = [ "cmd/charon" ];
+  };
 
   # Use static binaries and take only the main binaries to make the image as
   # small as possible:
@@ -62,7 +64,8 @@ rec {
     installPhase = "mkdir -p $out/bin && cp $src/bin/xz $out/bin/";
   };
 
-  image = pkgs.dockerTools.streamLayeredImage {
+  # for styx lambda manifester and chunk differ:
+  styx-lambda-image = pkgs.dockerTools.streamLayeredImage {
     name = "lambda";
     # TODO: can we make it run on arm?
     # architecture = "arm64";
@@ -72,6 +75,19 @@ rec {
     config = {
       User = "1000:1000";
       Entrypoint = [ "${styx-lambda}/bin/styx" ];
+    };
+  };
+
+  # for light CI worker on non-AWS server:
+  charon-image = pkgs.dockerTools.streamLayeredImage {
+    name = "charon-worker-light";
+    contents = [
+      pkgs.cacert
+    ];
+    config = {
+      User = "1000:1000";
+      Entrypoint = [ "${charon}/bin/charon" ];
+      Cmd = [ "worker" "--worker" ];
     };
   };
 }

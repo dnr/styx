@@ -110,9 +110,7 @@ resource "aws_ssm_parameter" "manifester_signkey" {
 
 // lambda:
 
-variable "manifester_image_tag" {
-  default = "DUMMY"
-}
+variable "manifester_image_tag" { }
 
 resource "aws_lambda_function" "manifester" {
   package_type = "Image"

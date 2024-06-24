@@ -30,7 +30,10 @@ in with lib; {
 
   config = mkMerge [
     (mkIf (cfg.enable || cfg.enablePatchedNix) {
-      nix.package = styx.patched-nix;
+      nix.package = pkgs.nixVersions.nix_2_18.overrideAttrs (prev: {
+        patches = prev.patches ++ [ ./patches/nix_2_18.patch ];
+        doInstallCheck = false; # broke tests/ca, ignore for now
+      });
     })
 
     (mkIf (cfg.enable || cfg.enableNixSettings) {
