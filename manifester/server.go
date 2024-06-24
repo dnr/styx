@@ -20,14 +20,10 @@ import (
 
 	"github.com/DataDog/zstd"
 	"github.com/aws/aws-lambda-go/lambdaurl"
-	"github.com/nix-community/go-nix/pkg/hash"
-	"github.com/nix-community/go-nix/pkg/narinfo"
-	"github.com/nix-community/go-nix/pkg/narinfo/signature"
 	"golang.org/x/exp/slices"
 	"golang.org/x/sync/errgroup"
 
 	"github.com/dnr/styx/common"
-	"github.com/dnr/styx/pb"
 )
 
 const (
@@ -47,7 +43,6 @@ type (
 	server struct {
 		cfg *Config
 		mb  *ManifestBuilder
-		zp  *common.ZstdCtxPool
 
 		digestBytes int
 
@@ -57,11 +52,6 @@ type (
 	Config struct {
 		Bind             string
 		AllowedUpstreams []string
-
-		// Verify loaded narinfo against these keys. Nil means don't verify.
-		PublicKeys []signature.PublicKey
-		// Sign manifests with these keys.
-		SigningKeys []signature.SecretKey
 	}
 )
 
@@ -69,7 +59,6 @@ func NewManifestServer(cfg Config, mb *ManifestBuilder) (*server, error) {
 	return &server{
 		cfg: &cfg,
 		mb:  mb,
-		zp:  common.NewZstdCtxPool(),
 
 		digestBytes: int(mb.params.DigestBits) >> 3,
 	}, nil
@@ -115,208 +104,25 @@ func (s *server) handleManifest(w http.ResponseWriter, req *http.Request) {
 
 	log.Println("req", r.StorePathHash, "from", r.Upstream)
 
-	// get narinfo
+	cmpSb, err := s.mb.Build(req.Context(), r.Upstream, r.StorePathHash, r.ShardTotal, r.ShardIndex)
 
-	narinfoUrl := upstreamUrl.JoinPath(r.StorePathHash + ".narinfo").String()
-	res, err := http.Get(narinfoUrl)
 	if err != nil {
-		log.Println("upstream http error:", err, "for", narinfoUrl)
-		w.WriteHeader(http.StatusExpectationFailed)
-		return
-	}
-	defer res.Body.Close()
-
-	if res.StatusCode != http.StatusOK {
-		log.Println("upstream http error:", res.Status, "for", narinfoUrl)
-		if res.StatusCode == http.StatusNotFound {
+		w.Header().Set("Content-Type", "text/plain")
+		switch {
+		case errors.Is(err, ErrReq):
+			w.WriteHeader(http.StatusExpectationFailed)
+		case errors.Is(err, ErrNotFound):
 			w.WriteHeader(http.StatusNotFound)
-			return
-		}
-		w.WriteHeader(http.StatusExpectationFailed)
-		return
-	}
-
-	var rawNarinfo bytes.Buffer
-	ni, err := narinfo.Parse(io.TeeReader(res.Body, &rawNarinfo))
-	if err != nil {
-		log.Println("narinfo parse error:", err, "for", narinfoUrl)
-		w.WriteHeader(http.StatusExpectationFailed)
-		return
-	}
-
-	// verify signature
-
-	if !signature.VerifyFirst(ni.Fingerprint(), ni.Signatures, s.cfg.PublicKeys) {
-		log.Printf("signature validation failed for narinfo %s: %#v", narinfoUrl, ni)
-		w.WriteHeader(http.StatusExpectationFailed)
-		return
-	}
-
-	log.Println("req", r.StorePathHash, "got narinfo", ni.StorePath[44:], ni.FileSize, ni.NarSize)
-
-	// download nar
-
-	// start := time.Now()
-	narUrl := upstreamUrl.JoinPath(ni.URL).String()
-	res, err = http.Get(narUrl)
-	if err != nil {
-		log.Println("nar http error:", err, "for", narUrl)
-		w.WriteHeader(http.StatusExpectationFailed)
-		return
-	}
-	defer res.Body.Close()
-	if res.StatusCode != http.StatusOK {
-		log.Println("nar http status: ", res.Status, "for", narUrl)
-		w.WriteHeader(http.StatusExpectationFailed)
-		return
-	}
-
-	// log.Println("req", r.StorePathHash, "downloading nar")
-
-	narOut := res.Body
-
-	var decompress *exec.Cmd
-	switch ni.Compression {
-	case "", "none":
-		decompress = nil
-	case "xz":
-		decompress = exec.Command(common.XzBin, "-d")
-	// case "zst":
-	// TODO: use in-memory pipe?
-	// 	decompress = exec.Command(common.ZstdBin, "-d")
-	default:
-		log.Println("unknown compression:", ni.Compression, "for", narUrl)
-		w.WriteHeader(http.StatusExpectationFailed)
-		return
-	}
-	if decompress != nil {
-		decompress.Stdin = res.Body
-		narOut, err = decompress.StdoutPipe()
-		if err != nil {
-			log.Println("can't create stdout pipe")
+		case errors.Is(err, ErrInternal):
 			w.WriteHeader(http.StatusInternalServerError)
-			return
 		}
-		decompress.Stderr = os.Stderr
-		if err = decompress.Start(); err != nil {
-			log.Print("nar decompress start error: ", err)
-			w.WriteHeader(http.StatusInternalServerError)
-			return
-		}
-	}
-
-	// set up to hash nar
-
-	narHasher, err := hash.New(ni.NarHash.HashType)
-	if err != nil {
-		log.Print("invalid NarHash type:", err)
-		w.WriteHeader(http.StatusInternalServerError)
+		w.Write([]byte(err.Error()))
 		return
 	}
 
-	// TODO: make args configurable again (hashed in manifest cache key)
-	args := &BuildArgs{
-		SmallFileCutoff: defaultSmallFileCutoff,
-		ShardTotal:      r.ShardTotal,
-		ShardIndex:      r.ShardIndex,
-	}
-	manifest, err := s.mb.BuildFromNar(req.Context(), args, io.TeeReader(narOut, narHasher))
-	if err != nil {
-		log.Println("manifest generation error", err)
-		w.WriteHeader(http.StatusInternalServerError)
-		return
-	}
-
-	// verify nar hash
-
-	if narHasher.SRIString() != ni.NarHash.SRIString() {
-		log.Println("nar hash mismatch")
-		w.WriteHeader(http.StatusExpectationFailed)
-		return
-	}
-
-	if decompress != nil {
-		if err = decompress.Wait(); err != nil {
-			log.Println("nar decompress error: ", err)
-			w.WriteHeader(http.StatusInternalServerError)
-			return
-		}
-		// elapsed := time.Since(start)
-		// ps := decompress.ProcessState
-		// log.Printf("downloaded %s [%d bytes] in %s [decmp %s user, %s sys]: %.3f MB/s",
-		// 	ni.URL, size, elapsed, ps.UserTime(), ps.SystemTime(),
-		// 	float64(size)/elapsed.Seconds()/1e6)
-	}
-
-	// if we're not shard 0, we're done
 	if r.ShardIndex != 0 {
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("ok"))
+		w.Write([]byte(fmt.Sprintf("shard %d/%d ok", r.ShardIndex, r.ShardTotal)))
 		return
-	}
-
-	// add metadata
-
-	nipb := &pb.NarInfo{
-		StorePath:   ni.StorePath,
-		Url:         ni.URL,
-		Compression: ni.Compression,
-		FileHash:    ni.FileHash.NixString(),
-		FileSize:    int64(ni.FileSize),
-		NarHash:     ni.NarHash.NixString(),
-		NarSize:     int64(ni.NarSize),
-		References:  ni.References,
-		Deriver:     ni.Deriver,
-		System:      ni.System,
-		Signatures:  make([]string, len(ni.Signatures)),
-		Ca:          ni.CA,
-	}
-	for i, sig := range ni.Signatures {
-		nipb.Signatures[i] = sig.String()
-	}
-	manifest.Meta = &pb.ManifestMeta{
-		NarinfoUrl:    narinfoUrl,
-		Narinfo:       nipb,
-		Generator:     "styx-" + common.Version,
-		GeneratedTime: time.Now().Unix(),
-	}
-
-	// turn into entry (maybe chunk)
-
-	manifestArgs := BuildArgs{SmallFileCutoff: smallManifestCutoff}
-	path := common.ManifestContext + "/" + path.Base(ni.StorePath)
-	entry, err := s.mb.ManifestAsEntry(req.Context(), &manifestArgs, path, manifest)
-	if err != nil {
-		log.Println("make manifest entry error:", err)
-		w.WriteHeader(http.StatusInternalServerError)
-		return
-	}
-
-	sb, err := common.SignMessageAsEntry(s.cfg.SigningKeys, s.mb.params, entry)
-	if err != nil {
-		log.Println("sign error:", err)
-		w.WriteHeader(http.StatusInternalServerError)
-		return
-	}
-
-	// write to cache (it'd be nice to return and do this in the background, but that doesn't
-	// work on lambda)
-	// TODO: we shouldn't write to cache unless we know for sure that other shards are done.
-	// (or else change client to re-request manifest on missing)
-	cmpSb, err := s.mb.cs.PutIfNotExists(req.Context(), ManifestCachePath, r.CacheKey(), sb)
-	if err != nil {
-		log.Println("error writing signed manifest cache:", err)
-	}
-	if cmpSb == nil {
-		// already exists in cache, need to compress ourselves
-		z := s.zp.Get()
-		defer s.zp.Put(z)
-		cmpSb, err = z.Compress(nil, sb)
-		if err != nil {
-			log.Println("compress error:", err)
-			w.WriteHeader(http.StatusInternalServerError)
-			return
-		}
 	}
 
 	w.Header().Set("Content-Encoding", "zstd")

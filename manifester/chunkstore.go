@@ -60,7 +60,7 @@ func newLocalChunkStoreWrite(dir string) (*localChunkStoreWrite, error) {
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return nil, err
 	}
-	return &localChunkStoreWrite{dir: dir, zp: common.NewZstdCtxPool()}, nil
+	return &localChunkStoreWrite{dir: dir, zp: common.GetZstdCtxPool()}, nil
 }
 
 func (l *localChunkStoreWrite) PutIfNotExists(ctx context.Context, path_, key string, data []byte) ([]byte, error) {
@@ -111,7 +111,7 @@ func newS3ChunkStoreWrite(bucket string, zlevel int) (*s3ChunkStoreWrite, error)
 	return &s3ChunkStoreWrite{
 		bucket:   bucket,
 		s3client: s3client,
-		zp:       common.NewZstdCtxPool(),
+		zp:       common.GetZstdCtxPool(),
 		zlevel:   zlevel,
 	}, nil
 }
@@ -182,7 +182,7 @@ func NewChunkStoreReadUrl(url, path string) ChunkStoreRead {
 	}
 	return &urlChunkStoreRead{
 		url: strings.TrimSuffix(url, "/") + path,
-		zp:  common.NewZstdCtxPool(),
+		zp:  common.GetZstdCtxPool(),
 	}
 }
 

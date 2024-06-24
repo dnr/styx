@@ -51,10 +51,19 @@ func withManifestBuilder(c *cobra.Command) runE {
 	c.Flags().IntVar(&mbcfg.ChunkShift, "chunk_shift", 16, "chunk shift for building manifests")
 	c.Flags().StringVar(&mbcfg.DigestAlgo, "digest_algo", "sha256", "digest algo for building manifests")
 	c.Flags().IntVar(&mbcfg.DigestBits, "digest_bits", 192, "digest bits for building manifests")
+	pubkeys := c.Flags().StringArray("nix_pubkey",
+		[]string{"cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY="},
+		"verify narinfo with this public key")
 
 	return chainRunE(
 		withChunkStoreWrite(c),
+		withSignKeys(c),
 		func(c *cobra.Command, args []string) error {
+			var err error
+			if mbcfg.PublicKeys, err = common.LoadPubKeys(*pubkeys); err != nil {
+				return err
+			}
+			mbcfg.SigningKeys = c.Context().Value(ctxSignKeys).([]signature.SecretKey)
 			cs := c.Context().Value(ctxChunkStoreWrite).(manifester.ChunkStoreWrite)
 			mb, err := manifester.NewManifestBuilder(mbcfg, cs)
 			if err != nil {
@@ -101,22 +110,11 @@ func withManifesterConfig(c *cobra.Command) runE {
 	c.Flags().StringVar(&cfg.Bind, "bind", ":7420", "address to listen on")
 	c.Flags().StringArrayVar(&cfg.AllowedUpstreams, "allowed-upstream",
 		[]string{"cache.nixos.org"}, "allowed upstream binary caches")
-	pubkeys := c.Flags().StringArray("nix_pubkey",
-		[]string{"cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY="},
-		"verify narinfo with this public key")
 
-	return chainRunE(
-		withSignKeys(c),
-		func(c *cobra.Command, args []string) error {
-			var err error
-			if cfg.PublicKeys, err = common.LoadPubKeys(*pubkeys); err != nil {
-				return err
-			}
-			cfg.SigningKeys = c.Context().Value(ctxSignKeys).([]signature.SecretKey)
-			c.SetContext(context.WithValue(c.Context(), ctxManifesterConfig, cfg))
-			return nil
-		},
-	)
+	return func(c *cobra.Command, args []string) error {
+		c.SetContext(context.WithValue(c.Context(), ctxManifesterConfig, cfg))
+		return nil
+	}
 }
 
 func withSignKeys(c *cobra.Command) runE {

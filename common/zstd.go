@@ -10,10 +10,12 @@ type ZstdCtxPool struct {
 	p sync.Pool
 }
 
-func NewZstdCtxPool() *ZstdCtxPool {
-	return &ZstdCtxPool{
-		p: sync.Pool{New: func() any { return zstd.NewCtx() }},
-	}
+var globalPool = &ZstdCtxPool{
+	p: sync.Pool{New: func() any { return zstd.NewCtx() }},
+}
+
+func GetZstdCtxPool() *ZstdCtxPool {
+	return globalPool
 }
 
 func (z *ZstdCtxPool) Get() zstd.Ctx {
