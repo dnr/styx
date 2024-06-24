@@ -104,7 +104,7 @@ func (s *server) handleManifest(w http.ResponseWriter, req *http.Request) {
 
 	log.Println("req", r.StorePathHash, "from", r.Upstream)
 
-	cmpSb, err := s.mb.Build(req.Context(), r.Upstream, r.StorePathHash, r.ShardTotal, r.ShardIndex)
+	cmpSb, err := s.mb.Build(req.Context(), r.Upstream, r.StorePathHash, r.ShardTotal, r.ShardIndex, "")
 
 	if err != nil {
 		w.Header().Set("Content-Type", "text/plain")
@@ -114,6 +114,8 @@ func (s *server) handleManifest(w http.ResponseWriter, req *http.Request) {
 		case errors.Is(err, ErrNotFound):
 			w.WriteHeader(http.StatusNotFound)
 		case errors.Is(err, ErrInternal):
+			w.WriteHeader(http.StatusInternalServerError)
+		default:
 			w.WriteHeader(http.StatusInternalServerError)
 		}
 		w.Write([]byte(err.Error()))

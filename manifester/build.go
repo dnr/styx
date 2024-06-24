@@ -90,6 +90,7 @@ func (b *ManifestBuilder) Build(
 	ctx context.Context,
 	upstream, storePathHash string,
 	shardTotal, shardIndex int,
+	useLocalStoreDump string,
 ) ([]byte, error) {
 	// get narinfo
 
@@ -127,43 +128,53 @@ func (b *ManifestBuilder) Build(
 	log.Println("req", storePathHash, "got narinfo", ni.StorePath[44:], ni.FileSize, ni.NarSize)
 
 	// download nar
-
-	// start := time.Now()
-	narUrl := upstreamUrl.JoinPath(ni.URL).String()
-	res, err = http.Get(narUrl)
-	if err != nil {
-		return nil, fmt.Errorf("%w: nar http error for %s: %w", ErrReq, narUrl, err)
-	}
-	defer res.Body.Close()
-	if res.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("%w: nar http status for %s: %s", ErrReq, narUrl, res.Status)
-	}
-
-	// log.Println("req", storePathHash, "downloading nar")
-
-	narOut := res.Body
-
-	var decompress *exec.Cmd
-	switch ni.Compression {
-	case "", "none":
-		decompress = nil
-	case "xz":
-		decompress = exec.Command(common.XzBin, "-d")
-	// case "zst":
-	// TODO: use in-memory pipe?
-	// 	decompress = exec.Command(common.ZstdBin, "-d")
-	default:
-		return nil, fmt.Errorf("%w: unknown compression for %s: %s", ErrReq, narUrl, ni.Compression)
-	}
-	if decompress != nil {
-		decompress.Stdin = res.Body
-		narOut, err = decompress.StdoutPipe()
-		if err != nil {
-			return nil, fmt.Errorf("%w: can't create stdout pipe: %w", ErrInternal, err)
+	var narOut io.Reader
+	var dump, decompress *exec.Cmd
+	if useLocalStoreDump != "" {
+		dump = exec.CommandContext(ctx, common.NixBin+"-store", "--dump", useLocalStoreDump)
+		if narOut, err = dump.StdoutPipe(); err != nil {
+			return nil, err
 		}
-		decompress.Stderr = os.Stderr
-		if err = decompress.Start(); err != nil {
-			return nil, fmt.Errorf("%w: nar decompress start error: %w", ErrInternal, err)
+		if err = dump.Start(); err != nil {
+			return nil, err
+		}
+		defer dump.Wait()
+	} else {
+		// start := time.Now()
+		narUrl := upstreamUrl.JoinPath(ni.URL).String()
+		res, err = http.Get(narUrl)
+		if err != nil {
+			return nil, fmt.Errorf("%w: nar http error for %s: %w", ErrReq, narUrl, err)
+		}
+		defer res.Body.Close()
+		if res.StatusCode != http.StatusOK {
+			return nil, fmt.Errorf("%w: nar http status for %s: %s", ErrReq, narUrl, res.Status)
+		}
+		narOut = res.Body
+
+		// log.Println("req", storePathHash, "downloading nar")
+
+		switch ni.Compression {
+		case "", "none":
+			decompress = nil
+		case "xz":
+			decompress = exec.Command(common.XzBin, "-d")
+		// case "zst":
+		// TODO: use in-memory pipe?
+		// 	decompress = exec.Command(common.ZstdBin, "-d")
+		default:
+			return nil, fmt.Errorf("%w: unknown compression for %s: %s", ErrReq, narUrl, ni.Compression)
+		}
+		if decompress != nil {
+			decompress.Stdin = narOut
+			narOut, err = decompress.StdoutPipe()
+			if err != nil {
+				return nil, fmt.Errorf("%w: can't create stdout pipe: %w", ErrInternal, err)
+			}
+			decompress.Stderr = os.Stderr
+			if err = decompress.Start(); err != nil {
+				return nil, fmt.Errorf("%w: nar decompress start error: %w", ErrInternal, err)
+			}
 		}
 	}
 
@@ -200,6 +211,12 @@ func (b *ManifestBuilder) Build(
 		// log.Printf("downloaded %s [%d bytes] in %s [decmp %s user, %s sys]: %.3f MB/s",
 		// 	ni.URL, size, elapsed, ps.UserTime(), ps.SystemTime(),
 		// 	float64(size)/elapsed.Seconds()/1e6)
+	}
+
+	if dump != nil {
+		if err = dump.Wait(); err != nil {
+			return nil, fmt.Errorf("%w: nar dump error: %w", ErrInternal, err)
+		}
 	}
 
 	// if we're not shard 0, we're done

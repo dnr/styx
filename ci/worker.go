@@ -9,11 +9,11 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"math/rand"
 	"net/http"
 	"os"
 	"os/exec"
 	"path"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -24,16 +24,18 @@ import (
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/autoscaling"
 	ssm "github.com/aws/aws-sdk-go-v2/service/ssm"
+	"github.com/nix-community/go-nix/pkg/narinfo/signature"
 	"go.temporal.io/api/workflowservice/v1"
 	"go.temporal.io/sdk/activity"
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/worker"
 	"go.temporal.io/sdk/workflow"
-	"golang.org/x/exp/slices"
+	"golang.org/x/sync/errgroup"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/metadata"
 
 	"github.com/dnr/styx/common"
+	"github.com/dnr/styx/manifester"
 )
 
 type (
@@ -49,6 +51,12 @@ type (
 
 		ScaleInterval time.Duration
 		AsgGroupName  string
+
+		ManifestPubKeys    []string
+		ManifestSignKeySSM []string
+
+		CSWCfg manifester.ChunkStoreWriteConfig
+		MBCfg  manifester.ManifestBuilderConfig
 	}
 
 	activities struct {
@@ -57,6 +65,7 @@ type (
 
 	heavyActivities struct {
 		cfg WorkerConfig
+		b   *manifester.ManifestBuilder
 	}
 
 	scaler struct {
@@ -71,6 +80,10 @@ type (
 		Path       string   `json:"path"`
 		NarSize    int64    `json:"narSize"`
 		Signatures []string `json:"signatures"`
+	}
+	manifestReq struct {
+		upstream  string
+		storePath string
 	}
 )
 
@@ -137,7 +150,7 @@ func RunWorker(ctx context.Context, cfg WorkerConfig) error {
 
 	var w worker.Worker
 	if cfg.RunWorker {
-		w := worker.New(c, taskQueue, worker.Options{})
+		w = worker.New(c, taskQueue, worker.Options{})
 		w.RegisterWorkflow(ci)
 		w.RegisterActivity(&activities{cfg: cfg})
 
@@ -150,14 +163,28 @@ func RunWorker(ctx context.Context, cfg WorkerConfig) error {
 			go s.run()
 		}
 	} else if cfg.RunHeavyWorker {
-		w := worker.New(c, heavyTaskQueue, worker.Options{})
-		w.RegisterActivity(&heavyActivities{cfg: cfg})
+		cs, err := manifester.NewChunkStoreWrite(cfg.CSWCfg)
+		if err != nil {
+			return err
+		}
+		if cfg.MBCfg.PublicKeys, err = common.LoadPubKeys(cfg.ManifestPubKeys); err != nil {
+			return err
+		}
+		if cfg.MBCfg.SigningKeys, err = getKeysFromSSM(cfg.ManifestSignKeySSM); err != nil {
+			return err
+		}
+		b, err := manifester.NewManifestBuilder(cfg.MBCfg, cs)
+		if err != nil {
+			return err
+		}
+		w = worker.New(c, heavyTaskQueue, worker.Options{})
+		w.RegisterActivity(&heavyActivities{cfg: cfg, b: b})
 	}
 	return w.Run(worker.InterruptCh())
 }
 
 // main workflow
-func ci(ctx workflow.Context, args CiArgs) error {
+func ci(ctx workflow.Context, args *CiArgs) error {
 	l := workflow.GetLogger(ctx)
 	for !workflow.GetInfo(ctx).GetContinueAsNewSuggested() {
 		// poll nixos channels
@@ -176,10 +203,8 @@ func ci(ctx workflow.Context, args CiArgs) error {
 		args.LastRelID = pres.RelID
 
 		// build
-		bres, err := ciBuild(ctx, &buildReq{
-			Channel:   args.Channel,
-			RelID:     pres.RelID,
-			ConfigURL: args.ConfigURL,
+		_, err = ciBuild(ctx, &buildReq{
+			Args: args,
 		})
 		if err != nil {
 			l.Error("build error", "error", err)
@@ -187,20 +212,12 @@ func ci(ctx workflow.Context, args CiArgs) error {
 			continue
 		}
 		l.Info("build success at", pres.RelID)
-
-		// manifest
-		err = ciManifest(ctx, bres.StorePaths)
-		if err != nil {
-			l.Error("manifest error error", "error", err)
-			workflow.Sleep(ctx, time.Hour)
-			continue
-		}
-		l.Info("manifested all paths")
 	}
 	return workflow.NewContinueAsNewError(ctx, ci, args)
 }
 
 func ciPoll(ctx workflow.Context, req *pollReq) (*pollRes, error) {
+	// TODO: switch to using retry polling pattern
 	actx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
 		HeartbeatTimeout:    pollInterval + heartbeatExtra,
 		StartToCloseTimeout: 365 * 24 * time.Hour,
@@ -220,32 +237,6 @@ func ciBuild(ctx workflow.Context, req *buildReq) (*buildRes, error) {
 	var res buildRes
 	var a *heavyActivities
 	return &res, workflow.ExecuteActivity(actx, a.heavyBuild, req).Get(ctx, &res)
-}
-
-func ciManifest(ctx workflow.Context, storePaths []pathAndSize) error {
-	const batchSize = 100
-	l := workflow.GetLogger(ctx)
-
-	sp := slices.Clone(storePaths)
-	rand.Shuffle(len(sp), func(i, j int) { sp[i], sp[j] = sp[j], sp[i] })
-	var futs []workflow.Future
-	actx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
-		// TODO: maybe nice to use heartbeats?
-		StartToCloseTimeout: 1 * time.Minute * batchSize,
-	})
-	var a *activities
-	for _, batch := range batches(sp, batchSize) {
-		req := &manifestReq{StorePaths: batch}
-		futs = append(futs, workflow.ExecuteActivity(actx, a.manifest, req))
-	}
-	var err error
-	for _, f := range futs {
-		if e := f.Get(ctx, nil); e != nil {
-			l.Error("manifest error", "error", e)
-			err = common.Or(err, e)
-		}
-	}
-	return err
 }
 
 func pokeScaler(ctx workflow.Context) {
@@ -367,11 +358,6 @@ func (a *activities) poll(ctx context.Context, req *pollReq) (*pollRes, error) {
 	return nil, ctx.Err()
 }
 
-func (a *activities) manifest(ctx context.Context, req *manifestReq) (*manifestRes, error) {
-	// FIXME
-	return nil, nil
-}
-
 func getRelID(ctx context.Context, channel string) (string, error) {
 	u := "https://channels.nixos.org/" + channel
 	hreq, err := http.NewRequestWithContext(ctx, http.MethodHead, u, nil)
@@ -421,15 +407,15 @@ func (a *heavyActivities) heavyBuild(ctx context.Context, req *buildReq) (*build
 	l.Info("building nixos...")
 	stage.Store("build")
 	cmd := exec.CommandContext(ctx,
-		"nix-build",
+		common.NixBin+"-build",
 		"<nixpkgs/nixos>",
 		"-A", "system",
 		"--no-out-link",
 		"--timeout", strconv.Itoa(int(time.Until(info.Deadline).Seconds())),
 		"--keep-going",
 		"-j", "auto",
-		"-I", "nixpkgs="+makeNixexprsUrl(req.Channel, req.RelID),
-		"-I", "nixos-config="+req.ConfigURL,
+		"-I", "nixpkgs="+makeNixexprsUrl(req.Args.Channel, req.RelID),
+		"-I", "nixos-config="+req.Args.ConfigURL,
 	)
 	cmd.Stderr = os.Stderr
 	cmd.Env = append(os.Environ(), "NIX_PATH=")
@@ -444,7 +430,7 @@ func (a *heavyActivities) heavyBuild(ctx context.Context, req *buildReq) (*build
 	l.Info("getting package list from closure...")
 	stage.Store("list")
 	cmd = exec.CommandContext(ctx,
-		"nix", "--extra-experimental-features", "nix-command",
+		common.NixBin, "--extra-experimental-features", "nix-command",
 		"path-info",
 		"--json",
 		"--recursive",
@@ -459,13 +445,10 @@ func (a *heavyActivities) heavyBuild(ctx context.Context, req *buildReq) (*build
 	var pathInfo []pathInfoJson
 	var toSign bytes.Buffer
 	var toCopy bytes.Buffer
+	var toManifest []manifestReq
 	if err := json.Unmarshal(j, &pathInfo); err != nil {
 		l.Error("get closure json unmarshal error", "error", err)
 		return nil, err
-	}
-
-	bres := buildRes{
-		StorePaths: make([]pathAndSize, 0, len(pathInfo)),
 	}
 
 	for _, pi := range pathInfo {
@@ -476,29 +459,39 @@ func (a *heavyActivities) heavyBuild(ctx context.Context, req *buildReq) (*build
 			strings.Contains(pi.Path, "-etc-") {
 			continue
 		}
+		public := pi.fromPublicCache()
+		upstream := req.Args.PublicCacheUpstream
 		// only sign if not from public cache
-		if !pi.fromPublicCache() {
+		if !public {
 			toSign.WriteString(pi.Path + "\n")
+			upstream = req.Args.ManifestUpstream
 		}
 		// copy is going to take closures anyway so just pass all to copy
 		toCopy.WriteString(pi.Path + "\n")
-		bres.StorePaths = append(bres.StorePaths, pathAndSize{
-			Path: pi.Path,
-			Size: pi.NarSize, // size is used as hint to manifest client
+		// manifest everything
+		toManifest = append(toManifest, manifestReq{
+			upstream:  upstream,
+			storePath: pi.Path,
 		})
 	}
 
 	// sign
 
-	if req.SignKeySSM != "" {
+	if req.Args.SignKeySSM != "" {
 		l.Info("signing packages...")
 		stage.Store("sign")
-		keyfile, err := getFileFromSSM(req.SignKeySSM)
+		keyfile, err := getFileFromSSM(req.Args.SignKeySSM)
 		if err != nil {
 			return nil, err
 		}
 		defer os.Remove(keyfile)
-		cmd = exec.CommandContext(ctx, "nix", "store", "sign", "--key-file", keyfile, "--stdin")
+		cmd = exec.CommandContext(ctx,
+			common.NixBin, "--extra-experimental-features", "nix-command",
+			"store",
+			"sign",
+			"--key-file", keyfile,
+			"--stdin",
+		)
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 		cmd.Stdin = &toSign
@@ -511,13 +504,13 @@ func (a *heavyActivities) heavyBuild(ctx context.Context, req *buildReq) (*build
 
 	// copy
 
-	if req.CopyDest != "" {
+	if req.Args.CopyDest != "" {
 		l.Info("copying packages to dest store...")
 		stage.Store("copy")
 		cmd = exec.CommandContext(ctx,
-			"nix", "--extra-experimental-features", "nix-command",
+			common.NixBin, "--extra-experimental-features", "nix-command",
 			"copy",
-			"--to", req.CopyDest,
+			"--to", req.Args.CopyDest,
 			"--stdin",
 			"--verbose",
 		)
@@ -531,12 +524,29 @@ func (a *heavyActivities) heavyBuild(ctx context.Context, req *buildReq) (*build
 		}
 	}
 
-	return &bres, nil
+	// manifest
+
+	eg, gCtx := errgroup.WithContext(ctx)
+	parallelManifest := max(1, runtime.NumCPU()/4)
+	eg.SetLimit(parallelManifest)
+	for _, m := range toManifest {
+		m := m
+		eg.Go(func() error {
+			sph := m.storePath[11:43]
+			_, err := a.b.Build(gCtx, m.upstream, sph, 0, 0, m.storePath)
+			return err
+		})
+	}
+	if err := eg.Wait(); err != nil {
+		return nil, err
+	}
+
+	return &buildRes{}, nil
 }
 
 func makeNixexprsUrl(channel, relid string) string {
-	// turn nixos-23.11, nixos-23.11.7609.5c2ec3a5c2ee into
-	// https://releases.nixos.org/nixos/23.11/nixos-23.11.7609.5c2ec3a5c2ee/nixexprs.tar.xz
+	// turn "nixos-23.11", "nixos-23.11.7609.5c2ec3a5c2ee" into
+	// "https://releases.nixos.org/nixos/23.11/nixos-23.11.7609.5c2ec3a5c2ee/nixexprs.tar.xz"
 	return "https://releases.nixos.org/" + strings.ReplaceAll(channel, "-", "/") + "/" + relid + "/nixexprs.tar.xz"
 }
 
@@ -568,6 +578,18 @@ func getFileFromSSM(name string) (string, error) {
 	defer f.Close()
 	f.WriteString(val)
 	return f.Name(), nil
+}
+
+func getKeysFromSSM(names []string) ([]signature.SecretKey, error) {
+	keys := make([]signature.SecretKey, len(names))
+	for i, name := range names {
+		if val, err := getStringFromSSM(name); err != nil {
+			return nil, err
+		} else if keys[i], err = signature.LoadSecretKey(val); err != nil {
+			return nil, err
+		}
+	}
+	return keys, nil
 }
 
 var getAwsCfg = sync.OnceValues(func() (aws.Config, error) {

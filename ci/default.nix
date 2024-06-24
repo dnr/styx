@@ -1,9 +1,11 @@
 { pkgs ? import <nixpkgs> { } }:
 rec {
-  # by deploy-ci, for heavy worker on EC2
+  version = "0.0.2";
+
+  # built by deploy-ci, for heavy worker on EC2
   charon = pkgs.buildGoModule {
     pname = "charon";
-    version = "0.0.1";
+    inherit version;
     vendorHash = "sha256-XJMP7w5bsN5Lo0c0ejM8wNKC2tvSSzqNYqULDej0hoo=";
     src = pkgs.lib.sourceByRegex ./.. [
       "^go\.(mod|sum)$"
@@ -12,6 +14,11 @@ rec {
     ];
     subPackages = [ "cmd/charon" ];
     doCheck = false;
+    ldflags = with pkgs; [
+      "-X github.com/dnr/styx/common.NixBin=${nix}/bin/nix"
+      "-X github.com/dnr/styx/common.XzBin=${xz}/bin/xz"
+      "-X github.com/dnr/styx/common.Version=${version}"
+    ];
   };
 
   # for light worker on non-AWS server:

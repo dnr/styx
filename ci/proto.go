@@ -10,18 +10,15 @@ const (
 type (
 	CiArgs struct {
 		// constants
-		Channel    string
-		ConfigURL  string
-		SignKeySSM string
-		CopyDest   string
+		Channel             string
+		ConfigURL           string
+		SignKeySSM          string
+		CopyDest            string
+		ManifestUpstream    string
+		PublicCacheUpstream string
 
 		// state
 		LastRelID string // "nixos-23.11.7609.5c2ec3a5c2ee"
-	}
-
-	pathAndSize struct {
-		Path string `json:"p"`
-		Size int64  `json:"s"`
 	}
 
 	pollReq struct {
@@ -33,24 +30,13 @@ type (
 	}
 
 	buildReq struct {
-		// building
-		Channel   string
-		RelID     string
-		ConfigURL string
+		// global args
+		Args *CiArgs
 
-		// copying
-		SignKeySSM string
-		CopyDest   string
+		// build args
+		RelID string
 	}
 	buildRes struct {
-		StorePaths []pathAndSize
-		// TODO: add stats?
-	}
-
-	manifestReq struct {
-		StorePaths []pathAndSize
-	}
-	manifestRes struct {
 		// TODO: add stats?
 	}
 )
