@@ -10,22 +10,42 @@ const (
 type (
 	CiArgs struct {
 		// constants
-		Channel             string
-		ConfigURL           string
+
+		// what to watch and build
+		Channel    string
+		StyxRepo   RepoConfig
+		ConfigRepo RepoConfig
+
+		// where to copy it
 		CopyDest            string
 		ManifestUpstream    string
 		PublicCacheUpstream string
 
 		// state
-		LastRelID string // "nixos-23.11.7609.5c2ec3a5c2ee"
+		LastRelID        string // "nixos-23.11.7609.5c2ec3a5c2ee"
+		LastStyxCommit   string
+		LastConfigCommit string
 	}
 
-	pollReq struct {
+	RepoConfig struct {
+		Repo   string
+		Branch string
+	}
+
+	pollChannelReq struct {
 		Channel   string
 		LastRelID string
 	}
-	pollRes struct {
+	pollChannelRes struct {
 		RelID string
+	}
+
+	pollRepoReq struct {
+		Config     RepoConfig
+		LastCommit string
+	}
+	pollRepoRes struct {
+		Commit string
 	}
 
 	buildReq struct {
@@ -33,7 +53,9 @@ type (
 		Args *CiArgs
 
 		// build args
-		RelID string
+		RelID        string
+		StyxCommit   string
+		ConfigCommit string
 	}
 	buildRes struct {
 		// TODO: add stats?

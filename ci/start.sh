@@ -5,7 +5,8 @@
 
 temporal workflow start --task-queue charon --type ci --workflow-id ci-release --input '{
   "Channel": "nixos-23.11",
-  "ConfigURL": "https://github.com/dnr/styx/archive/refs/heads/ci-release.tar.gz",
+  "StyxRepo": {"Repo": "https://github.com/dnr/styx/", "Branch": "release"},
+  "ConfigRepo": {"Repo": "https://github.com/dnr/styx/", "Branch": "ci-release"},
   "CopyDest": "s3://styx-1/nixcache/?region=us-east-1&compression=zstd&parallel-compression=true",
   "ManifestUpstream": "https://styx-1.s3.amazonaws.com/nixcache/",
   "PublicCacheUpstream": "https://cache.nixos.org/",

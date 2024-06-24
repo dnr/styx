@@ -10,6 +10,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path"
@@ -91,8 +92,9 @@ type (
 
 const (
 	// poll
-	pollInterval   = 5 * time.Minute
-	heartbeatExtra = 15 * time.Second
+	releasePollInterval = 10 * time.Minute
+	repoPollInterval    = 15 * time.Minute // github unauthenticated limit = 60/hour/ip
+	heartbeatExtra      = 15 * time.Second
 
 	// build
 	buildHeartbeat = 1 * time.Minute
@@ -187,46 +189,95 @@ func RunWorker(ctx context.Context, cfg WorkerConfig) error {
 
 // main workflow
 func ci(ctx workflow.Context, args *CiArgs) error {
+	var a *activities
 	l := workflow.GetLogger(ctx)
+	var chanF, styxRepoF, configRepoF workflow.Future
 	for !workflow.GetInfo(ctx).GetContinueAsNewSuggested() {
 		// poll nixos channels
-		// TODO: check for bump on styx "release" branch also
-		pres, err := ciPoll(ctx, &pollReq{
-			Channel:   args.Channel,
-			LastRelID: args.LastRelID,
+		if chanF == nil {
+			// TODO: switch to using retry polling pattern
+			chanF = workflow.ExecuteActivity(workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
+				HeartbeatTimeout:    releasePollInterval + heartbeatExtra,
+				StartToCloseTimeout: 365 * 24 * time.Hour,
+			}), a.pollChannel, &pollChannelReq{
+				Channel:   args.Channel,
+				LastRelID: args.LastRelID,
+			})
+		}
+
+		if styxRepoF == nil {
+			// TODO: switch to using retry polling pattern
+			styxRepoF = workflow.ExecuteActivity(workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
+				HeartbeatTimeout:    repoPollInterval + heartbeatExtra,
+				StartToCloseTimeout: 365 * 24 * time.Hour,
+			}), a.pollRepo, &pollRepoReq{
+				Config:     args.StyxRepo,
+				LastCommit: args.LastStyxCommit,
+			})
+		}
+
+		if configRepoF == nil {
+			// TODO: switch to using retry polling pattern
+			configRepoF = workflow.ExecuteActivity(workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
+				HeartbeatTimeout:    repoPollInterval + heartbeatExtra,
+				StartToCloseTimeout: 365 * 24 * time.Hour,
+			}), a.pollRepo, &pollRepoReq{
+				Config:     args.ConfigRepo,
+				LastCommit: args.LastConfigCommit,
+			})
+		}
+
+		sel := workflow.NewSelector(ctx)
+		var err error
+		sel.AddFuture(chanF, func(f workflow.Future) {
+			chanF = nil
+			var pres pollChannelRes
+			if err = f.Get(ctx, &pres); err == nil {
+				l.Info("poll got new nix channel release", "relid", pres.RelID)
+				args.LastRelID = pres.RelID
+			}
 		})
+		sel.AddFuture(styxRepoF, func(f workflow.Future) {
+			styxRepoF = nil
+			var pres pollRepoRes
+			if err = f.Get(ctx, &pres); err == nil {
+				l.Info("poll got new styx commit", "commit", pres.Commit)
+				args.LastStyxCommit = pres.Commit
+			}
+		})
+		sel.AddFuture(configRepoF, func(f workflow.Future) {
+			configRepoF = nil
+			var pres pollRepoRes
+			if err = f.Get(ctx, &pres); err == nil {
+				l.Info("poll got new config commit", "commit", pres.Commit)
+				args.LastConfigCommit = pres.Commit
+			}
+		})
+		sel.Select(ctx)
+
 		if err != nil {
 			// only non-retryable errors end up here
 			l.Error("poll error", "error", err)
 			workflow.Sleep(ctx, time.Hour)
 			continue
 		}
-		l.Info("poll got new relid", pres.RelID)
-		args.LastRelID = pres.RelID
 
 		// build
+		l.Info("building", "relid", args.LastRelID, "styx", args.LastStyxCommit, "config", args.LastConfigCommit)
 		_, err = ciBuild(ctx, &buildReq{
-			Args: args,
+			Args:         args,
+			RelID:        args.LastRelID,
+			StyxCommit:   args.LastStyxCommit,
+			ConfigCommit: args.LastConfigCommit,
 		})
 		if err != nil {
 			l.Error("build error", "error", err)
 			workflow.Sleep(ctx, time.Hour)
 			continue
 		}
-		l.Info("build success at", pres.RelID)
+		l.Info("build succeeded", "relid", args.LastRelID, "styx", args.LastStyxCommit, "config", args.LastConfigCommit)
 	}
 	return workflow.NewContinueAsNewError(ctx, ci, args)
-}
-
-func ciPoll(ctx workflow.Context, req *pollReq) (*pollRes, error) {
-	// TODO: switch to using retry polling pattern
-	actx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
-		HeartbeatTimeout:    pollInterval + heartbeatExtra,
-		StartToCloseTimeout: 365 * 24 * time.Hour,
-	})
-	var res pollRes
-	var a *activities
-	return &res, workflow.ExecuteActivity(actx, a.poll, req).Get(ctx, &res)
 }
 
 func ciBuild(ctx workflow.Context, req *buildReq) (*buildRes, error) {
@@ -342,7 +393,7 @@ func (s *scaler) poke() { s.notifyCh <- struct{}{} }
 
 // activities
 
-func (a *activities) poll(ctx context.Context, req *pollReq) (*pollRes, error) {
+func (a *activities) pollChannel(ctx context.Context, req *pollChannelReq) (*pollChannelRes, error) {
 	interval := activity.GetInfo(ctx).HeartbeatTimeout - heartbeatExtra
 	t := time.NewTicker(interval)
 	defer t.Stop()
@@ -353,7 +404,7 @@ func (a *activities) poll(ctx context.Context, req *pollReq) (*pollRes, error) {
 			return nil, err
 		}
 		if getRelNum(relid) > getRelNum(req.LastRelID) {
-			return &pollRes{RelID: relid}, nil
+			return &pollChannelRes{RelID: relid}, nil
 		}
 		activity.RecordHeartbeat(ctx)
 	}
@@ -388,6 +439,52 @@ func getRelNum(relid string) int {
 	return 0
 }
 
+type ghLatestCommit struct {
+	Oid  string `json:"oid"`
+	Date string `json:"date"`
+}
+
+func (a *activities) pollRepo(ctx context.Context, req *pollRepoReq) (*pollRepoRes, error) {
+	interval := activity.GetInfo(ctx).HeartbeatTimeout - heartbeatExtra
+	t := time.NewTicker(interval)
+	defer t.Stop()
+
+	for !(<-t.C).IsZero() && ctx.Err() == nil {
+		res, err := getLatestCommit(ctx, req.Config.Repo, req.Config.Branch)
+		if err != nil {
+			return nil, err
+		}
+		if res.Oid != req.LastCommit {
+			return &pollRepoRes{Commit: res.Oid}, nil
+		}
+		activity.RecordHeartbeat(ctx)
+	}
+	return nil, ctx.Err()
+}
+
+func getLatestCommit(ctx context.Context, repo, branch string) (*ghLatestCommit, error) {
+	u, err := url.Parse(repo)
+	if err != nil {
+		return nil, err
+	}
+	uStr := u.JoinPath("latest-commit", branch).String()
+	hreq, err := http.NewRequestWithContext(ctx, http.MethodGet, uStr, nil)
+	if err != nil {
+		return nil, err
+	}
+	hres, err := http.DefaultClient.Do(hreq)
+	if err != nil {
+		return nil, err
+	}
+	body, err := io.ReadAll(hres.Body)
+	hres.Body.Close()
+	if err != nil {
+		return nil, err
+	}
+	var res ghLatestCommit
+	return common.ValOrErr(&res, json.Unmarshal(body, &res))
+}
+
 // heavy activities (all must have "heavy" in the name for scaler to work)
 
 func (a *heavyActivities) heavyBuild(ctx context.Context, req *buildReq) (*buildRes, error) {
@@ -417,7 +514,8 @@ func (a *heavyActivities) heavyBuild(ctx context.Context, req *buildReq) (*build
 		"--keep-going",
 		"-j", "auto",
 		"-I", "nixpkgs="+makeNixexprsUrl(req.Args.Channel, req.RelID),
-		"-I", "nixos-config="+req.Args.ConfigURL,
+		"-I", "nixos-config="+makeGithubUrl(req.Args.ConfigRepo, req.ConfigCommit),
+		"-I", "styx="+makeGithubUrl(req.Args.StyxRepo, req.StyxCommit),
 	)
 	cmd.Stderr = os.Stderr
 	cmd.Env = append(os.Environ(), "NIX_PATH=")
@@ -550,6 +648,10 @@ func makeNixexprsUrl(channel, relid string) string {
 	// turn "nixos-23.11", "nixos-23.11.7609.5c2ec3a5c2ee" into
 	// "https://releases.nixos.org/nixos/23.11/nixos-23.11.7609.5c2ec3a5c2ee/nixexprs.tar.xz"
 	return "https://releases.nixos.org/" + strings.ReplaceAll(channel, "-", "/") + "/" + relid + "/nixexprs.tar.xz"
+}
+func makeGithubUrl(repoConfig RepoConfig, commit string) string {
+	// make url like: "https://github.com/dnr/styx/archive/7da079581765d13a37a2e0c27b4a461693384f20.tar.gz"
+	return strings.TrimSuffix(repoConfig.Repo, "/") + "/archive/" + commit + ".tar.gz"
 }
 
 func getStringFromSSM(name string) (string, error) {
