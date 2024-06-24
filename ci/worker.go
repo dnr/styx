@@ -52,6 +52,8 @@ type (
 		ScaleInterval time.Duration
 		AsgGroupName  string
 
+		CacheSignKeySSM string
+
 		ManifestPubKeys    []string
 		ManifestSignKeySSM []string
 
@@ -477,10 +479,10 @@ func (a *heavyActivities) heavyBuild(ctx context.Context, req *buildReq) (*build
 
 	// sign
 
-	if req.Args.SignKeySSM != "" {
+	if a.cfg.CacheSignKeySSM != "" {
 		l.Info("signing packages...")
 		stage.Store("sign")
-		keyfile, err := getFileFromSSM(req.Args.SignKeySSM)
+		keyfile, err := getFileFromSSM(a.cfg.CacheSignKeySSM)
 		if err != nil {
 			return nil, err
 		}

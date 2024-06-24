@@ -27,7 +27,9 @@ func withWorkerConfig(c *cobra.Command) runE {
 	c.Flags().BoolVar(&cfg.RunHeavyWorker, "heavy", false, "run temporal heavy worker (on ec2)")
 
 	c.Flags().DurationVar(&cfg.ScaleInterval, "scale_interval", time.Minute, "scaler interval")
-	c.Flags().StringVar(&cfg.AsgGroupName, "scale_group_name", "styx-charon-asg", "scaler asg group name")
+	c.Flags().StringVar(&cfg.AsgGroupName, "scale_group_name", "", "scaler asg group name")
+
+	c.Flags().StringVar(&cfg.CacheSignKeySSM, "cache_signkey_ssm", "", "sign nix cache with key from SSM")
 
 	// manifest builder cfg
 	c.Flags().IntVar(&cfg.MBCfg.ChunkShift, "chunk_shift", 16, "chunk shift for building manifests")

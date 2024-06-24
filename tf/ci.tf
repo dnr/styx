@@ -15,8 +15,8 @@ data "aws_iam_policy_document" "charon_get_parameters" {
   statement {
     actions = ["ssm:GetParameter"]
     resources = [
-      "${aws_ssm_parameter.charon_signkey.arn}",
       "${aws_ssm_parameter.charon_temporal_params.arn}",
+      "${aws_ssm_parameter.charon_signkey.arn}",
       "${aws_ssm_parameter.manifester_signkey.arn}",
     ]
   }
@@ -113,12 +113,13 @@ resource "aws_launch_template" "charon_worker" {
   }
   key_name = aws_key_pair.my_ssh_key.id
   user_data = base64encode(templatefile("charon-worker-ud.nix", {
-    sub     = var.charon_store
-    pubkey  = var.charon_storekey
-    charon  = var.charon_storepath
-    tmpssm  = aws_ssm_parameter.charon_temporal_params.name
-    bucket  = aws_s3_bucket.styx.id
-    styxssm = aws_ssm_parameter.manifester_signkey.name
+    sub      = var.charon_store
+    pubkey   = var.charon_storekey
+    charon   = var.charon_storepath
+    tmpssm   = aws_ssm_parameter.charon_temporal_params.name
+    cachessm = aws_ssm_parameter.charon_signkey.id
+    bucket   = aws_s3_bucket.styx.id
+    styxssm  = aws_ssm_parameter.manifester_signkey.name
   }))
   block_device_mappings {
     device_name = "/dev/xvda"

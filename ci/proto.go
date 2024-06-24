@@ -12,7 +12,6 @@ type (
 		// constants
 		Channel             string
 		ConfigURL           string
-		SignKeySSM          string
 		CopyDest            string
 		ManifestUpstream    string
 		PublicCacheUpstream string
