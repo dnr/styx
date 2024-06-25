@@ -1,13 +1,9 @@
 # Stripped-down version of my (dnr)'s basic nix config:
 
 { pkgs, ... }:
-let
-  # Use styx from "release" branch:
-  styx = builtins.fetchTarball "https://github.com/dnr/styx/archive/release.tar.gz";
-in
 {
   imports = [
-    "${styx}/module"
+    <styx/module>
   ];
 
   # builds custom kernel, patched nix, styx binary
