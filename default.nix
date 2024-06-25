@@ -51,10 +51,10 @@ rec {
   });
 
   # built by deploy-ci, for heavy CI worker on EC2
-  charon = pkgs.buildGoModule base // {
+  charon = pkgs.buildGoModule (base // {
     pname = "charon";
     subPackages = [ "cmd/charon" ];
-  };
+  });
 
   # Use static binaries and take only the main binaries to make the image as
   # small as possible:

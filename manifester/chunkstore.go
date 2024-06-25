@@ -101,7 +101,7 @@ func (l *localChunkStoreWrite) Get(ctx context.Context, path_, key string, data 
 }
 
 func newS3ChunkStoreWrite(bucket string, zlevel int) (*s3ChunkStoreWrite, error) {
-	awscfg, err := awsconfig.LoadDefaultConfig(context.Background())
+	awscfg, err := awsconfig.LoadDefaultConfig(context.Background(), awsconfig.WithEC2IMDSRegion())
 	if err != nil {
 		return nil, err
 	}

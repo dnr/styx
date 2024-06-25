@@ -18,9 +18,6 @@ func withWorkerConfig(c *cobra.Command) runE {
 	var cfg ci.WorkerConfig
 
 	c.Flags().StringVar(&cfg.TemporalSSM, "temporal_ssm", "", "get temporal params from ssm")
-	c.Flags().StringVar(&cfg.HostPort, "temporal_hostport", "", "temporal hostport")
-	c.Flags().StringVar(&cfg.Namespace, "temporal_namespace", "", "temporal namespace")
-	c.Flags().StringVar(&cfg.ApiKey, "temporal_apikey", "", "temporal api key")
 
 	c.Flags().BoolVar(&cfg.RunWorker, "worker", false, "run temporal workflow+activity worker")
 	c.Flags().BoolVar(&cfg.RunScaler, "scaler", true, "run scaler on worker")
@@ -36,7 +33,11 @@ func withWorkerConfig(c *cobra.Command) runE {
 	c.Flags().StringVar(&cfg.MBCfg.DigestAlgo, "digest_algo", "sha256", "digest algo for building manifests")
 	c.Flags().IntVar(&cfg.MBCfg.DigestBits, "digest_bits", 192, "digest bits for building manifests")
 	c.Flags().StringArrayVar(&cfg.ManifestPubKeys, "nix_pubkey",
-		[]string{"cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY="},
+		[]string{
+			"cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY=",
+			// FIXME: pass this through tf for heavy worker
+			"styx-nixcache-test-1:IbJB9NG5antB2WpE+aE5QzmXapT2yLQb8As/FRkbm3Q=",
+		},
 		"verify narinfo with this public key")
 	c.Flags().StringArrayVar(&cfg.ManifestSignKeySSM, "styx_signkey_ssm", nil, "sign manifest with key from SSM")
 

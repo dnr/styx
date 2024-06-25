@@ -36,13 +36,13 @@ resource "aws_iam_role" "iam_for_charon" {
 resource "aws_ssm_parameter" "charon_signkey" {
   name  = "styx-charon-signkey-test-1"
   type  = "SecureString"
-  value = file("../keys/styx-nixcache-test-1.secret")
+  value = trimspace(file("../keys/styx-nixcache-test-1.secret"))
 }
 
 resource "aws_ssm_parameter" "charon_temporal_params" {
   name  = "styx-charon-temporal-params"
   type  = "SecureString"
-  value = file("../keys/temporal-creds-charon.secret")
+  value = trimspace(file("../keys/temporal-creds-charon.secret"))
 }
 
 // security group
@@ -106,7 +106,7 @@ resource "aws_launch_template" "charon_worker" {
   key_name = aws_key_pair.my_ssh_key.id
   user_data = base64encode(templatefile("charon-worker-ud.nix", {
     sub      = "https://${aws_s3_bucket.styx.id}.s3.amazonaws.com/nixcache/"
-    pubkey   = file("../keys/styx-nixcache-test-1.public")
+    pubkey   = trimspace(file("../keys/styx-nixcache-test-1.public"))
     charon   = var.charon_storepath
     tmpssm   = aws_ssm_parameter.charon_temporal_params.name
     cachessm = aws_ssm_parameter.charon_signkey.id
@@ -115,7 +115,10 @@ resource "aws_launch_template" "charon_worker" {
   }))
   block_device_mappings {
     device_name = "/dev/xvda"
-    ebs { volume_size = 20 }
+    ebs {
+      volume_size = 40
+      volume_type = "gp3"
+    }
   }
   instance_type = "c7a.4xlarge"
   instance_market_options {
@@ -133,7 +136,7 @@ resource "aws_autoscaling_group" "charon_asg" {
   max_size         = 1
   desired_capacity = 0
 
-  availability_zones = ["us-east-1a", "us-east-1b", "us-east-1c", "us-east-1d", "us-east-1e"]
+  availability_zones = ["us-east-1a", "us-east-1b", "us-east-1c", "us-east-1d", "us-east-1f"]
 
   launch_template {
     id      = aws_launch_template.charon_worker.id

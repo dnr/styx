@@ -43,9 +43,6 @@ import (
 type (
 	WorkerConfig struct {
 		TemporalSSM string
-		HostPort    string
-		Namespace   string
-		ApiKey      string
 
 		RunWorker      bool
 		RunScaler      bool
@@ -74,6 +71,7 @@ type (
 
 	scaler struct {
 		cfg      WorkerConfig
+		ns       string
 		c        client.Client
 		notifyCh chan struct{}
 		prev     int
@@ -94,7 +92,7 @@ type (
 const (
 	// poll
 	releasePollInterval = 10 * time.Minute
-	repoPollInterval    = 15 * time.Minute // github unauthenticated limit = 60/hour/ip
+	repoPollInterval    = 10 * time.Minute // github unauthenticated limit = 60/hour/ip
 
 	// build
 	buildHeartbeat = 1 * time.Minute
@@ -110,24 +108,22 @@ func RunWorker(ctx context.Context, cfg WorkerConfig) error {
 		return errors.New("must run either worker or heavy worker")
 	}
 
-	if cfg.TemporalSSM != "" {
-		params, err := getStringFromSSM(cfg.TemporalSSM)
-		if err != nil {
-			return err
-		}
-		parts := strings.SplitN(params, "~", 3)
-		if len(parts) < 3 {
-			return errors.New("bad params format")
-		}
-		cfg.HostPort, cfg.Namespace, cfg.ApiKey = parts[0], parts[1], parts[2]
+	params, err := getStringFromSSM(cfg.TemporalSSM)
+	if err != nil {
+		return err
 	}
+	parts := strings.SplitN(params, "~", 3)
+	if len(parts) < 3 {
+		return errors.New("bad params format")
+	}
+	hostPort, namespace, apiKey := parts[0], parts[1], parts[2]
 
 	co := client.Options{
-		HostPort:  cfg.HostPort,
-		Namespace: cfg.Namespace,
+		HostPort:  hostPort,
+		Namespace: namespace,
 	}
-	if cfg.ApiKey != "" {
-		co.Credentials = client.NewAPIKeyStaticCredentials(cfg.ApiKey)
+	if apiKey != "" {
+		co.Credentials = client.NewAPIKeyStaticCredentials(apiKey)
 		// TODO: remove after go sdk does this automatically
 		co.ConnectionOptions = client.ConnectionOptions{
 			TLS: &tls.Config{},
@@ -135,7 +131,7 @@ func RunWorker(ctx context.Context, cfg WorkerConfig) error {
 				grpc.WithUnaryInterceptor(
 					func(ctx context.Context, method string, req any, reply any, cc *grpc.ClientConn, invoker grpc.UnaryInvoker, opts ...grpc.CallOption) error {
 						return invoker(
-							metadata.AppendToOutgoingContext(ctx, "temporal-namespace", cfg.Namespace),
+							metadata.AppendToOutgoingContext(ctx, "temporal-namespace", namespace),
 							method,
 							req,
 							reply,
@@ -159,7 +155,7 @@ func RunWorker(ctx context.Context, cfg WorkerConfig) error {
 		w.RegisterActivity(&activities{cfg: cfg})
 
 		if cfg.RunScaler {
-			s, err := newScaler(cfg, c)
+			s, err := newScaler(cfg, namespace, c)
 			if err != nil {
 				return err
 			}
@@ -196,7 +192,7 @@ func ci(ctx workflow.Context, args *CiArgs) error {
 		// poll nixos channels
 		if chanF == nil {
 			ac := withPollActivity(ctx, releasePollInterval, time.Minute)
-			chanF = workflow.ExecuteActivity(ac, a.pollChannel, &pollChannelReq{
+			chanF = workflow.ExecuteActivity(ac, a.PollChannel, &pollChannelReq{
 				Channel:   args.Channel,
 				LastRelID: args.LastRelID,
 			})
@@ -204,7 +200,7 @@ func ci(ctx workflow.Context, args *CiArgs) error {
 
 		if styxRepoF == nil {
 			ac := withPollActivity(ctx, repoPollInterval, time.Minute)
-			styxRepoF = workflow.ExecuteActivity(ac, a.pollRepo, &pollRepoReq{
+			styxRepoF = workflow.ExecuteActivity(ac, a.PollRepo, &pollRepoReq{
 				Config:     args.StyxRepo,
 				LastCommit: args.LastStyxCommit,
 			})
@@ -237,19 +233,23 @@ func ci(ctx workflow.Context, args *CiArgs) error {
 			continue
 		}
 
+		// TODO: cancel pollers during build
+
 		// build
-		l.Info("building", "relid", args.LastRelID, "styx", args.LastStyxCommit)
-		_, err = ciBuild(ctx, &buildReq{
-			Args:       args,
-			RelID:      args.LastRelID,
-			StyxCommit: args.LastStyxCommit,
-		})
-		if err != nil {
-			l.Error("build error", "error", err)
-			workflow.Sleep(ctx, time.Hour)
-			continue
+		if args.LastRelID != "" && args.LastStyxCommit != "" {
+			l.Info("building", "relid", args.LastRelID, "styx", args.LastStyxCommit)
+			_, err = ciBuild(ctx, &buildReq{
+				Args:       args,
+				RelID:      args.LastRelID,
+				StyxCommit: args.LastStyxCommit,
+			})
+			if err != nil {
+				l.Error("build error", "error", err)
+				workflow.Sleep(ctx, time.Hour)
+				continue
+			}
+			l.Info("build succeeded", "relid", args.LastRelID, "styx", args.LastStyxCommit)
 		}
-		l.Info("build succeeded", "relid", args.LastRelID, "styx", args.LastStyxCommit)
 	}
 	return workflow.NewContinueAsNewError(ctx, ci, args)
 }
@@ -274,7 +274,7 @@ func ciBuild(ctx workflow.Context, req *buildReq) (*buildRes, error) {
 	})
 	var res buildRes
 	var a *heavyActivities
-	return &res, workflow.ExecuteActivity(actx, a.heavyBuild, req).Get(ctx, &res)
+	return &res, workflow.ExecuteActivity(actx, a.HeavyBuild, req).Get(ctx, &res)
 }
 
 func pokeScaler(ctx workflow.Context) {
@@ -287,13 +287,14 @@ func pokeScaler(ctx workflow.Context) {
 
 // autoscaler
 
-func newScaler(cfg WorkerConfig, c client.Client) (*scaler, error) {
-	awscfg, err := awsconfig.LoadDefaultConfig(context.Background())
+func newScaler(cfg WorkerConfig, ns string, c client.Client) (*scaler, error) {
+	awscfg, err := getAwsCfg()
 	if err != nil {
 		return nil, err
 	}
 	return &scaler{
 		cfg:      cfg,
+		ns:       ns,
 		c:        c,
 		notifyCh: make(chan struct{}, 1),
 		prev:     -1,
@@ -304,13 +305,13 @@ func newScaler(cfg WorkerConfig, c client.Client) (*scaler, error) {
 func (s *scaler) run() {
 	t := time.NewTicker(s.cfg.ScaleInterval).C
 	for {
+		s.iter()
 		select {
 		case <-t:
 		case <-s.notifyCh:
 			// wait a bit for activity info to be updated
 			time.Sleep(5 * time.Second)
 		}
-		s.iter()
 	}
 }
 
@@ -337,7 +338,7 @@ func (s *scaler) getPending() (int, error) {
 	defer cancel()
 
 	res, err := s.c.ListWorkflow(ctx, &workflowservice.ListWorkflowExecutionsRequest{
-		Namespace: s.cfg.Namespace,
+		Namespace: s.ns,
 		Query:     fmt.Sprintf(`WorkflowType = "%s" and ExecutionStatus = "Running"`, workflowType),
 	})
 	if err != nil {
@@ -378,13 +379,13 @@ func (s *scaler) poke() { s.notifyCh <- struct{}{} }
 
 // activities
 
-func (a *activities) pollChannel(ctx context.Context, req *pollChannelReq) (*pollChannelRes, error) {
+func (a *activities) PollChannel(ctx context.Context, req *pollChannelReq) (*pollChannelRes, error) {
 	relid, err := getRelID(ctx, req.Channel)
 	if err != nil {
 		return nil, err
 	}
 	if getRelNum(relid) <= getRelNum(req.LastRelID) {
-		return nil, temporal.NewApplicationError("not yet", "retry", relid)
+		return nil, temporal.NewApplicationError("same as before", "retry", relid)
 	}
 	return &pollChannelRes{RelID: relid}, nil
 }
@@ -422,13 +423,13 @@ type ghLatestCommit struct {
 	Date string `json:"date"`
 }
 
-func (a *activities) pollRepo(ctx context.Context, req *pollRepoReq) (*pollRepoRes, error) {
+func (a *activities) PollRepo(ctx context.Context, req *pollRepoReq) (*pollRepoRes, error) {
 	res, err := getLatestCommit(ctx, req.Config.Repo, req.Config.Branch)
 	if err != nil {
 		return nil, err
 	}
 	if res.Oid == req.LastCommit {
-		return nil, temporal.NewApplicationError("not yet", "retry", res)
+		return nil, temporal.NewApplicationError("same as before", "retry", res)
 	}
 	return &pollRepoRes{Commit: res.Oid}, nil
 }
@@ -443,6 +444,7 @@ func getLatestCommit(ctx context.Context, repo, branch string) (*ghLatestCommit,
 	if err != nil {
 		return nil, err
 	}
+	hreq.Header.Add("Accept", "application/json")
 	hres, err := http.DefaultClient.Do(hreq)
 	if err != nil {
 		return nil, err
@@ -458,7 +460,7 @@ func getLatestCommit(ctx context.Context, repo, branch string) (*ghLatestCommit,
 
 // heavy activities (all must have "heavy" in the name for scaler to work)
 
-func (a *heavyActivities) heavyBuild(ctx context.Context, req *buildReq) (*buildRes, error) {
+func (a *heavyActivities) HeavyBuild(ctx context.Context, req *buildReq) (*buildRes, error) {
 	l := activity.GetLogger(ctx)
 	info := activity.GetInfo(ctx)
 
@@ -476,13 +478,15 @@ func (a *heavyActivities) heavyBuild(ctx context.Context, req *buildReq) (*build
 
 	l.Info("building nixos...")
 	stage.Store("build")
+	// Note: global nix config has our nix cache as substituter so we can pull stuff back
+	// from a previous run
 	cmd := exec.CommandContext(ctx,
 		common.NixBin+"-build",
 		"-E", "(import <nixpkgs/nixos> { configuration = <styx/ci/config>; }).system",
 		"--no-out-link",
 		"--timeout", strconv.Itoa(int(time.Until(info.Deadline).Seconds())),
 		"--keep-going",
-		"-j", "auto",
+		// "-j", strconf.Itoa(max(1, runtime.NumCPU()/4)),
 		"-I", "nixpkgs="+makeNixexprsUrl(req.Args.Channel, req.RelID),
 		"-I", "styx="+makeGithubUrl(req.Args.StyxRepo, req.StyxCommit),
 	)
@@ -503,7 +507,7 @@ func (a *heavyActivities) heavyBuild(ctx context.Context, req *buildReq) (*build
 		"path-info",
 		"--json",
 		"--recursive",
-		string(out),
+		strings.TrimSpace(string(out)),
 	)
 	cmd.Stderr = os.Stderr
 	j, err := cmd.Output()
@@ -595,14 +599,15 @@ func (a *heavyActivities) heavyBuild(ctx context.Context, req *buildReq) (*build
 
 	// manifest
 
+	stage.Store("manifest")
 	eg, gCtx := errgroup.WithContext(ctx)
-	parallelManifest := max(1, runtime.NumCPU()/4)
-	eg.SetLimit(parallelManifest)
+	eg.SetLimit(runtime.NumCPU())
 	for _, m := range toManifest {
 		m := m
 		eg.Go(func() error {
 			sph := m.storePath[11:43]
 			_, err := a.b.Build(gCtx, m.upstream, sph, 0, 0, m.storePath)
+			err = nil // TODO: return err here after we can handle bare file
 			return err
 		})
 	}
@@ -624,6 +629,15 @@ func makeGithubUrl(repoConfig RepoConfig, commit string) string {
 }
 
 func getStringFromSSM(name string) (string, error) {
+	// use local file instead of ssm
+	if path := strings.TrimPrefix(name, "file:"); path != name {
+		v, err := os.ReadFile(path)
+		if err != nil {
+			return "", err
+		}
+		return strings.TrimSpace(string(v)), nil
+	}
+
 	ssmcli, err := getSSMCli()
 	if err != nil {
 		return "", err

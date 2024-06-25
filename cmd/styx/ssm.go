@@ -10,7 +10,7 @@ import (
 )
 
 func loadKeysFromSsm(names []string) ([]signature.SecretKey, error) {
-	awscfg, err := awsconfig.LoadDefaultConfig(context.Background())
+	awscfg, err := awsconfig.LoadDefaultConfig(context.Background(), awsconfig.WithEC2IMDSRegion())
 	if err != nil {
 		return nil, err
 	}
