@@ -29,6 +29,7 @@ import (
 	"go.temporal.io/api/workflowservice/v1"
 	"go.temporal.io/sdk/activity"
 	"go.temporal.io/sdk/client"
+	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/worker"
 	"go.temporal.io/sdk/workflow"
 	"golang.org/x/sync/errgroup"
@@ -94,7 +95,6 @@ const (
 	// poll
 	releasePollInterval = 10 * time.Minute
 	repoPollInterval    = 15 * time.Minute // github unauthenticated limit = 60/hour/ip
-	heartbeatExtra      = 15 * time.Second
 
 	// build
 	buildHeartbeat = 1 * time.Minute
@@ -195,33 +195,24 @@ func ci(ctx workflow.Context, args *CiArgs) error {
 	for !workflow.GetInfo(ctx).GetContinueAsNewSuggested() {
 		// poll nixos channels
 		if chanF == nil {
-			// TODO: switch to using retry polling pattern
-			chanF = workflow.ExecuteActivity(workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
-				HeartbeatTimeout:    releasePollInterval + heartbeatExtra,
-				StartToCloseTimeout: 365 * 24 * time.Hour,
-			}), a.pollChannel, &pollChannelReq{
+			ac := withPollActivity(ctx, releasePollInterval, time.Minute)
+			chanF = workflow.ExecuteActivity(ac, a.pollChannel, &pollChannelReq{
 				Channel:   args.Channel,
 				LastRelID: args.LastRelID,
 			})
 		}
 
 		if styxRepoF == nil {
-			// TODO: switch to using retry polling pattern
-			styxRepoF = workflow.ExecuteActivity(workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
-				HeartbeatTimeout:    repoPollInterval + heartbeatExtra,
-				StartToCloseTimeout: 365 * 24 * time.Hour,
-			}), a.pollRepo, &pollRepoReq{
+			ac := withPollActivity(ctx, repoPollInterval, time.Minute)
+			styxRepoF = workflow.ExecuteActivity(ac, a.pollRepo, &pollRepoReq{
 				Config:     args.StyxRepo,
 				LastCommit: args.LastStyxCommit,
 			})
 		}
 
 		if configRepoF == nil {
-			// TODO: switch to using retry polling pattern
-			configRepoF = workflow.ExecuteActivity(workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
-				HeartbeatTimeout:    repoPollInterval + heartbeatExtra,
-				StartToCloseTimeout: 365 * 24 * time.Hour,
-			}), a.pollRepo, &pollRepoReq{
+			ac := withPollActivity(ctx, repoPollInterval, time.Minute)
+			configRepoF = workflow.ExecuteActivity(ac, a.pollRepo, &pollRepoReq{
 				Config:     args.ConfigRepo,
 				LastCommit: args.LastConfigCommit,
 			})
@@ -278,6 +269,17 @@ func ci(ctx workflow.Context, args *CiArgs) error {
 		l.Info("build succeeded", "relid", args.LastRelID, "styx", args.LastStyxCommit, "config", args.LastConfigCommit)
 	}
 	return workflow.NewContinueAsNewError(ctx, ci, args)
+}
+
+func withPollActivity(ctx workflow.Context, interval, s2ct time.Duration) workflow.Context {
+	return workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
+		ScheduleToCloseTimeout: 365 * 24 * time.Hour,
+		StartToCloseTimeout:    s2ct,
+		RetryPolicy: &temporal.RetryPolicy{
+			InitialInterval:    interval,
+			BackoffCoefficient: 1.0,
+		},
+	})
 }
 
 func ciBuild(ctx workflow.Context, req *buildReq) (*buildRes, error) {
@@ -394,21 +396,14 @@ func (s *scaler) poke() { s.notifyCh <- struct{}{} }
 // activities
 
 func (a *activities) pollChannel(ctx context.Context, req *pollChannelReq) (*pollChannelRes, error) {
-	interval := activity.GetInfo(ctx).HeartbeatTimeout - heartbeatExtra
-	t := time.NewTicker(interval)
-	defer t.Stop()
-
-	for !(<-t.C).IsZero() && ctx.Err() == nil {
-		relid, err := getRelID(ctx, req.Channel)
-		if err != nil {
-			return nil, err
-		}
-		if getRelNum(relid) > getRelNum(req.LastRelID) {
-			return &pollChannelRes{RelID: relid}, nil
-		}
-		activity.RecordHeartbeat(ctx)
+	relid, err := getRelID(ctx, req.Channel)
+	if err != nil {
+		return nil, err
 	}
-	return nil, ctx.Err()
+	if getRelNum(relid) <= getRelNum(req.LastRelID) {
+		return nil, temporal.NewApplicationError("not yet", "retry", relid)
+	}
+	return &pollChannelRes{RelID: relid}, nil
 }
 
 func getRelID(ctx context.Context, channel string) (string, error) {
@@ -445,21 +440,14 @@ type ghLatestCommit struct {
 }
 
 func (a *activities) pollRepo(ctx context.Context, req *pollRepoReq) (*pollRepoRes, error) {
-	interval := activity.GetInfo(ctx).HeartbeatTimeout - heartbeatExtra
-	t := time.NewTicker(interval)
-	defer t.Stop()
-
-	for !(<-t.C).IsZero() && ctx.Err() == nil {
-		res, err := getLatestCommit(ctx, req.Config.Repo, req.Config.Branch)
-		if err != nil {
-			return nil, err
-		}
-		if res.Oid != req.LastCommit {
-			return &pollRepoRes{Commit: res.Oid}, nil
-		}
-		activity.RecordHeartbeat(ctx)
+	res, err := getLatestCommit(ctx, req.Config.Repo, req.Config.Branch)
+	if err != nil {
+		return nil, err
 	}
-	return nil, ctx.Err()
+	if res.Oid == req.LastCommit {
+		return nil, temporal.NewApplicationError("not yet", "retry", res)
+	}
+	return &pollRepoRes{Commit: res.Oid}, nil
 }
 
 func getLatestCommit(ctx context.Context, repo, branch string) (*ghLatestCommit, error) {
