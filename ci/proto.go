@@ -12,9 +12,8 @@ type (
 		// constants
 
 		// what to watch and build
-		Channel    string
-		StyxRepo   RepoConfig
-		ConfigRepo RepoConfig
+		Channel  string
+		StyxRepo RepoConfig
 
 		// where to copy it
 		CopyDest            string
@@ -22,9 +21,8 @@ type (
 		PublicCacheUpstream string
 
 		// state
-		LastRelID        string // "nixos-23.11.7609.5c2ec3a5c2ee"
-		LastStyxCommit   string
-		LastConfigCommit string
+		LastRelID      string // "nixos-23.11.7609.5c2ec3a5c2ee"
+		LastStyxCommit string
 	}
 
 	RepoConfig struct {
@@ -53,9 +51,8 @@ type (
 		Args *CiArgs
 
 		// build args
-		RelID        string
-		StyxCommit   string
-		ConfigCommit string
+		RelID      string
+		StyxCommit string
 	}
 	buildRes struct {
 		// TODO: add stats?

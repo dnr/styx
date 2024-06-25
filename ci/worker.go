@@ -191,7 +191,7 @@ func RunWorker(ctx context.Context, cfg WorkerConfig) error {
 func ci(ctx workflow.Context, args *CiArgs) error {
 	var a *activities
 	l := workflow.GetLogger(ctx)
-	var chanF, styxRepoF, configRepoF workflow.Future
+	var chanF, styxRepoF workflow.Future
 	for !workflow.GetInfo(ctx).GetContinueAsNewSuggested() {
 		// poll nixos channels
 		if chanF == nil {
@@ -207,14 +207,6 @@ func ci(ctx workflow.Context, args *CiArgs) error {
 			styxRepoF = workflow.ExecuteActivity(ac, a.pollRepo, &pollRepoReq{
 				Config:     args.StyxRepo,
 				LastCommit: args.LastStyxCommit,
-			})
-		}
-
-		if configRepoF == nil {
-			ac := withPollActivity(ctx, repoPollInterval, time.Minute)
-			configRepoF = workflow.ExecuteActivity(ac, a.pollRepo, &pollRepoReq{
-				Config:     args.ConfigRepo,
-				LastCommit: args.LastConfigCommit,
 			})
 		}
 
@@ -236,14 +228,6 @@ func ci(ctx workflow.Context, args *CiArgs) error {
 				args.LastStyxCommit = pres.Commit
 			}
 		})
-		sel.AddFuture(configRepoF, func(f workflow.Future) {
-			configRepoF = nil
-			var pres pollRepoRes
-			if err = f.Get(ctx, &pres); err == nil {
-				l.Info("poll got new config commit", "commit", pres.Commit)
-				args.LastConfigCommit = pres.Commit
-			}
-		})
 		sel.Select(ctx)
 
 		if err != nil {
@@ -254,19 +238,18 @@ func ci(ctx workflow.Context, args *CiArgs) error {
 		}
 
 		// build
-		l.Info("building", "relid", args.LastRelID, "styx", args.LastStyxCommit, "config", args.LastConfigCommit)
+		l.Info("building", "relid", args.LastRelID, "styx", args.LastStyxCommit)
 		_, err = ciBuild(ctx, &buildReq{
-			Args:         args,
-			RelID:        args.LastRelID,
-			StyxCommit:   args.LastStyxCommit,
-			ConfigCommit: args.LastConfigCommit,
+			Args:       args,
+			RelID:      args.LastRelID,
+			StyxCommit: args.LastStyxCommit,
 		})
 		if err != nil {
 			l.Error("build error", "error", err)
 			workflow.Sleep(ctx, time.Hour)
 			continue
 		}
-		l.Info("build succeeded", "relid", args.LastRelID, "styx", args.LastStyxCommit, "config", args.LastConfigCommit)
+		l.Info("build succeeded", "relid", args.LastRelID, "styx", args.LastStyxCommit)
 	}
 	return workflow.NewContinueAsNewError(ctx, ci, args)
 }
@@ -495,14 +478,12 @@ func (a *heavyActivities) heavyBuild(ctx context.Context, req *buildReq) (*build
 	stage.Store("build")
 	cmd := exec.CommandContext(ctx,
 		common.NixBin+"-build",
-		"<nixpkgs/nixos>",
-		"-A", "system",
+		"-E", "(import <nixpkgs/nixos> { configuration = <styx/ci/config>; }).system",
 		"--no-out-link",
 		"--timeout", strconv.Itoa(int(time.Until(info.Deadline).Seconds())),
 		"--keep-going",
 		"-j", "auto",
 		"-I", "nixpkgs="+makeNixexprsUrl(req.Args.Channel, req.RelID),
-		"-I", "nixos-config="+makeGithubUrl(req.Args.ConfigRepo, req.ConfigCommit),
 		"-I", "styx="+makeGithubUrl(req.Args.StyxRepo, req.StyxCommit),
 	)
 	cmd.Stderr = os.Stderr
