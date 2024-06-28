@@ -78,7 +78,7 @@ rec {
     };
   };
 
-  # for light CI worker on non-AWS server:
+  # for light CI worker on non-AWS server (dd5):
   charon-image = pkgs.dockerTools.streamLayeredImage {
     name = "charon-worker-light";
     contents = [
@@ -87,7 +87,6 @@ rec {
     config = {
       User = "1000:1000";
       Entrypoint = [ "${charon}/bin/charon" ];
-      Cmd = [ "worker" "--worker" ];
     };
   };
 }

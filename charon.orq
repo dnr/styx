@@ -1,0 +1,20 @@
+[
+  {
+    "name": "charon-worker",
+    "nix-build": "-A charon-image",
+    "stop_old_first": true,
+    "volumes": [
+      { "id": "charon_secrets", "container": "/secrets" }
+    ],
+    "argv": [
+      "worker",
+      "--worker",
+      "--temporal_ssm=file:/secrets/temporal-creds-charon.secret",
+      "--scale_group_name=charon-asg"
+    ],
+    "env": {
+      "AWS_SHARED_CREDENTIALS_FILE": "/secrets/charon-asg-scaler-creds.secret"
+    },
+    "host": "dd5"
+  }
+]

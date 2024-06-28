@@ -1,5 +1,5 @@
 
-// iam for ec2:
+// iam for heavy worker on ec2:
 
 data "aws_iam_policy_document" "assume_role_ec2" {
   statement {
@@ -15,9 +15,9 @@ data "aws_iam_policy_document" "charon_get_parameters" {
   statement {
     actions = ["ssm:GetParameter"]
     resources = [
-      "${aws_ssm_parameter.charon_temporal_params.arn}",
-      "${aws_ssm_parameter.charon_signkey.arn}",
-      "${aws_ssm_parameter.manifester_signkey.arn}",
+      aws_ssm_parameter.charon_temporal_params.arn,
+      aws_ssm_parameter.charon_signkey.arn,
+      aws_ssm_parameter.manifester_signkey.arn,
     ]
   }
 }
@@ -29,6 +29,43 @@ resource "aws_iam_role" "iam_for_charon" {
     name   = "get-parameter"
     policy = data.aws_iam_policy_document.charon_get_parameters.json
   }
+}
+
+// iam for scaler only
+
+data "aws_iam_policy_document" "charon_asg_scaler" {
+  statement {
+    actions = [
+      "autoscaling:DescribeAutoScalingGroups",
+      "autoscaling:SetDesiredCapacity",
+    ]
+    resources = [
+      aws_autoscaling_group.charon_asg.arn,
+    ]
+  }
+}
+
+resource "aws_iam_user" "charon_asg_scaler" {
+  name = "charon_asg_scaler"
+}
+
+resource "aws_iam_user_policy" "charon_asg_scaler" {
+  user   = aws_iam_user.charon_asg_scaler.name
+  policy = data.aws_iam_policy_document.charon_asg_scaler.json
+}
+
+resource "aws_iam_access_key" "charon_asg_scaler" {
+  user = aws_iam_user.charon_asg_scaler.name
+}
+
+resource "local_sensitive_file" "charon_asg_scaler" {
+  content  = <<-EOF
+    [default]
+    aws_access_key_id = ${aws_iam_access_key.charon_asg_scaler.id}
+    aws_secret_access_key = ${aws_iam_access_key.charon_asg_scaler.secret}
+  EOF
+  filename = "../keys/charon-asg-scaler-creds.secret"
+  file_permission = 0600
 }
 
 // parameter store
@@ -94,7 +131,7 @@ data "aws_ami" "nixos_x86_64" {
   }
 }
 
-variable "charon_storepath" { }
+variable "charon_storepath" {}
 
 resource "aws_launch_template" "charon_worker" {
   name_prefix          = "charon-worker"
