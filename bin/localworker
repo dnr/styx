@@ -1,0 +1,2 @@
+#!/bin/sh
+make charon && ./charon worker --temporal_ssm=file:keys/temporal-creds-charon.secret --worker --scale_group_name=charon-asg

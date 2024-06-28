@@ -187,44 +187,41 @@ func RunWorker(ctx context.Context, cfg WorkerConfig) error {
 func ci(ctx workflow.Context, args *CiArgs) error {
 	var a *activities
 	l := workflow.GetLogger(ctx)
-	var chanF, styxRepoF workflow.Future
 	for !workflow.GetInfo(ctx).GetContinueAsNewSuggested() {
 		// poll nixos channels
-		if chanF == nil {
-			ac := withPollActivity(ctx, releasePollInterval, time.Minute)
-			chanF = workflow.ExecuteActivity(ac, a.PollChannel, &pollChannelReq{
-				Channel:   args.Channel,
-				LastRelID: args.LastRelID,
-			})
-		}
+		cctx, cancel := workflow.WithCancel(ctx)
+		actx := withPollActivity(cctx, releasePollInterval, time.Minute)
+		chanF := workflow.ExecuteActivity(actx, a.PollChannel, &pollChannelReq{
+			Channel:   args.Channel,
+			LastRelID: args.LastRelID,
+		})
 
-		if styxRepoF == nil {
-			ac := withPollActivity(ctx, repoPollInterval, time.Minute)
-			styxRepoF = workflow.ExecuteActivity(ac, a.PollRepo, &pollRepoReq{
-				Config:     args.StyxRepo,
-				LastCommit: args.LastStyxCommit,
-			})
-		}
+		// poll github repo
+		actx = withPollActivity(ctx, repoPollInterval, time.Minute)
+		styxRepoF := workflow.ExecuteActivity(actx, a.PollRepo, &pollRepoReq{
+			Config:     args.StyxRepo,
+			LastCommit: args.LastStyxCommit,
+		})
 
-		sel := workflow.NewSelector(ctx)
 		var err error
-		sel.AddFuture(chanF, func(f workflow.Future) {
-			chanF = nil
-			var pres pollChannelRes
-			if err = f.Get(ctx, &pres); err == nil {
-				l.Info("poll got new nix channel release", "relid", pres.RelID)
-				args.LastRelID = pres.RelID
-			}
-		})
-		sel.AddFuture(styxRepoF, func(f workflow.Future) {
-			styxRepoF = nil
-			var pres pollRepoRes
-			if err = f.Get(ctx, &pres); err == nil {
-				l.Info("poll got new styx commit", "commit", pres.Commit)
-				args.LastStyxCommit = pres.Commit
-			}
-		})
-		sel.Select(ctx)
+		workflow.NewSelector(ctx).
+			AddFuture(chanF, func(f workflow.Future) {
+				var res pollChannelRes
+				if err = f.Get(ctx, &res); err == nil {
+					l.Info("poll got new nix channel release", "relid", res.RelID)
+					args.LastRelID = res.RelID
+				}
+			}).
+			AddFuture(styxRepoF, func(f workflow.Future) {
+				var res pollRepoRes
+				if err = f.Get(ctx, &res); err == nil {
+					l.Info("poll got new styx commit", "commit", res.Commit)
+					args.LastStyxCommit = res.Commit
+				}
+			}).
+			Select(ctx)
+
+		cancel() // cancel other poller
 
 		if err != nil {
 			// only non-retryable errors end up here
@@ -233,23 +230,23 @@ func ci(ctx workflow.Context, args *CiArgs) error {
 			continue
 		}
 
-		// TODO: cancel pollers during build
-
 		// build
-		if args.LastRelID != "" && args.LastStyxCommit != "" {
-			l.Info("building", "relid", args.LastRelID, "styx", args.LastStyxCommit)
-			_, err = ciBuild(ctx, &buildReq{
-				Args:       args,
-				RelID:      args.LastRelID,
-				StyxCommit: args.LastStyxCommit,
-			})
-			if err != nil {
-				l.Error("build error", "error", err)
-				workflow.Sleep(ctx, time.Hour)
-				continue
-			}
-			l.Info("build succeeded", "relid", args.LastRelID, "styx", args.LastStyxCommit)
+		if args.LastRelID == "" || args.LastStyxCommit == "" {
+			continue
 		}
+
+		l.Info("building", "relid", args.LastRelID, "styx", args.LastStyxCommit)
+		_, err = ciBuild(ctx, &buildReq{
+			Args:       args,
+			RelID:      args.LastRelID,
+			StyxCommit: args.LastStyxCommit,
+		})
+		if err != nil {
+			l.Error("build error", "error", err)
+			workflow.Sleep(ctx, time.Hour)
+			continue
+		}
+		l.Info("build succeeded", "relid", args.LastRelID, "styx", args.LastStyxCommit)
 	}
 	return workflow.NewContinueAsNewError(ctx, ci, args)
 }
