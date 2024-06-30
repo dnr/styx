@@ -32,13 +32,7 @@ func withWorkerConfig(c *cobra.Command) runE {
 	c.Flags().IntVar(&cfg.MBCfg.ChunkShift, "chunk_shift", 16, "chunk shift for building manifests")
 	c.Flags().StringVar(&cfg.MBCfg.DigestAlgo, "digest_algo", "sha256", "digest algo for building manifests")
 	c.Flags().IntVar(&cfg.MBCfg.DigestBits, "digest_bits", 192, "digest bits for building manifests")
-	c.Flags().StringArrayVar(&cfg.ManifestPubKeys, "nix_pubkey",
-		[]string{
-			"cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY=",
-			// FIXME: pass this through tf for heavy worker
-			"styx-nixcache-test-1:IbJB9NG5antB2WpE+aE5QzmXapT2yLQb8As/FRkbm3Q=",
-		},
-		"verify narinfo with this public key")
+	c.Flags().StringArrayVar(&cfg.ManifestPubKeys, "nix_pubkey", nil, "verify narinfo with this public key")
 	c.Flags().StringArrayVar(&cfg.ManifestSignKeySSM, "styx_signkey_ssm", nil, "sign manifest with key from SSM")
 
 	// chunk store write config

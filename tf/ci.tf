@@ -59,12 +59,12 @@ resource "aws_iam_access_key" "charon_asg_scaler" {
 }
 
 resource "local_sensitive_file" "charon_asg_scaler" {
-  content  = <<-EOF
+  content         = <<-EOF
     [default]
     aws_access_key_id = ${aws_iam_access_key.charon_asg_scaler.id}
     aws_secret_access_key = ${aws_iam_access_key.charon_asg_scaler.secret}
   EOF
-  filename = "../keys/charon-asg-scaler-creds.secret"
+  filename        = "../keys/charon-asg-scaler-creds.secret"
   file_permission = 0600
 }
 
@@ -149,6 +149,7 @@ resource "aws_launch_template" "charon_worker" {
     cachessm = aws_ssm_parameter.charon_signkey.id
     bucket   = aws_s3_bucket.styx.id
     styxssm  = aws_ssm_parameter.manifester_signkey.name
+    nixoskey = "cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY="
   }))
   block_device_mappings {
     device_name = "/dev/xvda"
@@ -169,10 +170,12 @@ resource "aws_launch_template" "charon_worker" {
 resource "aws_autoscaling_group" "charon_asg" {
   name = "charon-asg"
 
-  min_size         = 0
-  max_size         = 1
-  desired_capacity = 0
+  min_size = 0
+  max_size = 1
+  #desired_capacity = 0
 
+  # Note: 1e apparently has no c7a.4xlarge? that alias is account-specific, another account
+  # will have to use a different set here.
   availability_zones = ["us-east-1a", "us-east-1b", "us-east-1c", "us-east-1d", "us-east-1f"]
 
   launch_template {
