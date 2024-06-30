@@ -457,12 +457,11 @@ with `nix-shell -p ...` and see what happens.
     - Exploring other approaches like simhash
     - Consider how to make diffs more cacheable
 - Prefetch {file, package} command
-- Expanding compressed files
-- Support for bare files
+- Expanding compressed files (in-progress)
+- Support for bare files (in-progress)
 - Combine multiple store paths into images to reduce overhead
 - GC
 - Respond to cachefiles culling requests
-- CI to pre-create manifests for core packages after channel bumps
 - Run a system with everything not needed by stage1+stage2 on Styx
 - Adaptive chunk sizes for less overhead on very large packages
 - Closer integration into other binary caches and maybe Nix itself
