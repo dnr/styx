@@ -3,7 +3,6 @@ package ci
 import (
 	"bytes"
 	"context"
-	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -33,8 +32,6 @@ import (
 	"go.temporal.io/sdk/worker"
 	"go.temporal.io/sdk/workflow"
 	"golang.org/x/sync/errgroup"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/metadata"
 
 	"github.com/dnr/styx/common"
 	"github.com/dnr/styx/manifester"
@@ -42,7 +39,7 @@ import (
 
 type (
 	WorkerConfig struct {
-		TemporalSSM string
+		TemporalParams string
 
 		RunWorker      bool
 		RunScaler      bool
@@ -108,42 +105,7 @@ func RunWorker(ctx context.Context, cfg WorkerConfig) error {
 		return errors.New("must run either worker or heavy worker")
 	}
 
-	params, err := getStringFromSSM(cfg.TemporalSSM)
-	if err != nil {
-		return err
-	}
-	parts := strings.SplitN(params, "~", 3)
-	if len(parts) < 3 {
-		return errors.New("bad params format")
-	}
-	hostPort, namespace, apiKey := parts[0], parts[1], parts[2]
-
-	co := client.Options{
-		HostPort:  hostPort,
-		Namespace: namespace,
-	}
-	if apiKey != "" {
-		co.Credentials = client.NewAPIKeyStaticCredentials(apiKey)
-		// TODO: remove after go sdk does this automatically
-		co.ConnectionOptions = client.ConnectionOptions{
-			TLS: &tls.Config{},
-			DialOptions: []grpc.DialOption{
-				grpc.WithUnaryInterceptor(
-					func(ctx context.Context, method string, req any, reply any, cc *grpc.ClientConn, invoker grpc.UnaryInvoker, opts ...grpc.CallOption) error {
-						return invoker(
-							metadata.AppendToOutgoingContext(ctx, "temporal-namespace", namespace),
-							method,
-							req,
-							reply,
-							cc,
-							opts...,
-						)
-					},
-				),
-			},
-		}
-	}
-	c, err := client.DialContext(ctx, co)
+	c, namespace, err := getTemporalClient(ctx, cfg.TemporalParams)
 	if err != nil {
 		return err
 	}
@@ -170,7 +132,7 @@ func RunWorker(ctx context.Context, cfg WorkerConfig) error {
 		if cfg.MBCfg.PublicKeys, err = common.LoadPubKeys(cfg.ManifestPubKeys); err != nil {
 			return err
 		}
-		if cfg.MBCfg.SigningKeys, err = getKeysFromSSM(cfg.ManifestSignKeySSM); err != nil {
+		if cfg.MBCfg.SigningKeys, err = getParamsAsKeys(cfg.ManifestSignKeySSM); err != nil {
 			return err
 		}
 		b, err := manifester.NewManifestBuilder(cfg.MBCfg, cs)
@@ -550,7 +512,7 @@ func (a *heavyActivities) HeavyBuild(ctx context.Context, req *buildReq) (*build
 	if a.cfg.CacheSignKeySSM != "" {
 		l.Info("signing packages...")
 		stage.Store("sign")
-		keyfile, err := getFileFromSSM(a.cfg.CacheSignKeySSM)
+		keyfile, err := getParamsAsFile(a.cfg.CacheSignKeySSM)
 		if err != nil {
 			return nil, err
 		}
@@ -625,23 +587,23 @@ func makeGithubUrl(repoConfig RepoConfig, commit string) string {
 	return strings.TrimSuffix(repoConfig.Repo, "/") + "/archive/" + commit + ".tar.gz"
 }
 
-func getStringFromSSM(name string) (string, error) {
-	// use local file instead of ssm
-	if path := strings.TrimPrefix(name, "file:"); path != name {
-		v, err := os.ReadFile(path)
-		if err != nil {
-			return "", err
-		}
+func getParams(src string) (string, error) {
+	// try file
+	v, err := os.ReadFile(src)
+	if err == nil {
 		return strings.TrimSpace(string(v)), nil
+	} else if strings.Contains(src, "/") {
+		return "", err
 	}
 
+	// does not exist as file and does not contain slash, try ssm
 	ssmcli, err := getSSMCli()
 	if err != nil {
 		return "", err
 	}
 	decrypt := true
 	out, err := ssmcli.GetParameter(context.Background(), &ssm.GetParameterInput{
-		Name:           &name,
+		Name:           &src,
 		WithDecryption: &decrypt,
 	})
 	if err != nil {
@@ -650,8 +612,8 @@ func getStringFromSSM(name string) (string, error) {
 	return strings.TrimSpace(*out.Parameter.Value), nil
 }
 
-func getFileFromSSM(name string) (string, error) {
-	val, err := getStringFromSSM(name)
+func getParamsAsFile(name string) (string, error) {
+	val, err := getParams(name)
 	if err != nil {
 		return "", err
 	}
@@ -664,10 +626,10 @@ func getFileFromSSM(name string) (string, error) {
 	return f.Name(), nil
 }
 
-func getKeysFromSSM(names []string) ([]signature.SecretKey, error) {
+func getParamsAsKeys(names []string) ([]signature.SecretKey, error) {
 	keys := make([]signature.SecretKey, len(names))
 	for i, name := range names {
-		if val, err := getStringFromSSM(name); err != nil {
+		if val, err := getParams(name); err != nil {
 			return nil, err
 		} else if keys[i], err = signature.LoadSecretKey(val); err != nil {
 			return nil, err

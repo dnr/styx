@@ -1,2 +1,2 @@
 #!/bin/sh
-make charon && ./charon worker --temporal_ssm=file:keys/temporal-creds-charon.secret --worker --scale_group_name=charon-asg
+make charon && ./charon worker --temporal_params=keys/temporal-creds-charon.secret --worker --scale_group_name=charon-asg

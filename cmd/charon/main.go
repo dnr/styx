@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"time"
 
@@ -12,12 +13,13 @@ import (
 
 const (
 	ctxWorkerConfig = iota
+	ctxStartConfig
 )
 
 func withWorkerConfig(c *cobra.Command) runE {
 	var cfg ci.WorkerConfig
 
-	c.Flags().StringVar(&cfg.TemporalSSM, "temporal_ssm", "", "get temporal params from ssm")
+	c.Flags().StringVar(&cfg.TemporalParams, "temporal_params", "", "source for temporal params")
 
 	c.Flags().BoolVar(&cfg.RunWorker, "worker", false, "run temporal workflow+activity worker")
 	c.Flags().BoolVar(&cfg.RunScaler, "scaler", true, "run scaler on worker")
@@ -45,6 +47,33 @@ func withWorkerConfig(c *cobra.Command) runE {
 	}
 }
 
+func withStartConfig(c *cobra.Command) runE {
+	var cfg ci.StartConfig
+
+	c.Flags().StringVar(&cfg.TemporalParams, "temporal_params", "", "source for temporal params")
+
+	// might use these:
+	c.Flags().StringVar(&cfg.Args.Channel, "nix_channel", "nixos-23.11", "nix channel to watch/build")
+	c.Flags().StringVar(&cfg.Args.StyxRepo.Branch, "styx_branch", "release", "branch of styx repo to watch/build")
+
+	// probably don't use these:
+	const bucket = "styx-1"
+	const subdir = "nixcache"
+	const region = "us-east-1"
+	const level = 9
+	defCopyDest := fmt.Sprintf("s3://%s/%s/?region=%s&compression=zstd&compression-level=%d", bucket, subdir, region, level)
+	defUpstream := fmt.Sprintf("https://%s.s3.amazonaws.com/%s/", bucket, subdir) // note missing region
+	c.Flags().StringVar(&cfg.Args.StyxRepo.Repo, "styx_repo", "https://github.com/dnr/styx/", "url of styx repo")
+	c.Flags().StringVar(&cfg.Args.CopyDest, "copy_dest", defCopyDest, "store path for copying built packages")
+	c.Flags().StringVar(&cfg.Args.ManifestUpstream, "manifest_upstream", defUpstream, "read-only url for dest store")
+	c.Flags().StringVar(&cfg.Args.PublicCacheUpstream, "public_upstream", "https://cache.nixos.org/", "read-only url for public cache")
+
+	return func(c *cobra.Command, args []string) error {
+		c.SetContext(context.WithValue(c.Context(), ctxStartConfig, cfg))
+		return nil
+	}
+}
+
 func main() {
 	root := cmd(
 		&cobra.Command{
@@ -57,6 +86,14 @@ func main() {
 			func(c *cobra.Command, args []string) error {
 				cfg := c.Context().Value(ctxWorkerConfig).(ci.WorkerConfig)
 				return ci.RunWorker(c.Context(), cfg)
+			},
+		),
+		cmd(
+			&cobra.Command{Use: "start", Short: "start ci workflow"},
+			withStartConfig,
+			func(c *cobra.Command, args []string) error {
+				cfg := c.Context().Value(ctxStartConfig).(ci.StartConfig)
+				return ci.Start(c.Context(), cfg)
 			},
 		),
 	)

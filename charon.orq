@@ -9,7 +9,7 @@
     "argv": [
       "worker",
       "--worker",
-      "--temporal_ssm=file:/secrets/temporal-creds-charon.secret",
+      "--temporal_params=/secrets/temporal-creds-charon.secret",
       "--scale_group_name=charon-asg"
     ],
     "env": {

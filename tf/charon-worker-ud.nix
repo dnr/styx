@@ -14,7 +14,7 @@
       # TODO: this works but it feels weird. should it use builtins.storePath?
       # but how do we set the cache and trusted key in that case?
       ExecStartPre = "$${pkgs.nix}/bin/nix-store --realize ${charon}";
-      ExecStart = "${charon}/bin/charon worker --heavy --temporal_ssm ${tmpssm} --cache_signkey_ssm ${cachessm} --chunkbucket ${bucket} --nix_pubkey ${pubkey} --nix_pubkey ${nixoskey} --styx_signkey_ssm ${styxssm}";
+      ExecStart = "${charon}/bin/charon worker --heavy --temporal_params ${tmpssm} --cache_signkey_ssm ${cachessm} --chunkbucket ${bucket} --nix_pubkey ${pubkey} --nix_pubkey ${nixoskey} --styx_signkey_ssm ${styxssm}";
       Restart = "always";
     };
   };
