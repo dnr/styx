@@ -1,7 +1,9 @@
 package main
 
 import (
+	"context"
 	"log"
+	"reflect"
 
 	"github.com/spf13/cobra"
 	"golang.org/x/exp/slices"
@@ -40,4 +42,29 @@ func cmd(c *cobra.Command, stuff ...any) *cobra.Command {
 		}
 	}
 	return c
+}
+
+type ckey struct {
+	t reflect.Type
+	k any
+}
+
+func store[T any](c *cobra.Command, v T) {
+	t := reflect.TypeOf((*T)(nil)).Elem()
+	c.SetContext(context.WithValue(c.Context(), ckey{t: t}, v))
+}
+
+func get[T any](c *cobra.Command) T {
+	t := reflect.TypeOf((*T)(nil)).Elem()
+	return c.Context().Value(ckey{t: t}).(T)
+}
+
+func storeKeyed[T any](c *cobra.Command, v T, key any) {
+	t := reflect.TypeOf((*T)(nil)).Elem()
+	c.SetContext(context.WithValue(c.Context(), ckey{t: t, k: key}, v))
+}
+
+func getKeyed[T any](c *cobra.Command, key any) T {
+	t := reflect.TypeOf((*T)(nil)).Elem()
+	return c.Context().Value(ckey{t: t, k: key}).(T)
 }

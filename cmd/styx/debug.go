@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"io"
 	"os"
 
@@ -18,7 +17,7 @@ func withInFile(c *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	c.SetContext(context.WithValue(c.Context(), ctxInFile, in))
+	storeKeyed(c, in, "in")
 	c.PostRunE = chainRunE(c.PostRunE, func(c *cobra.Command, args []string) error {
 		return in.Close()
 	})
@@ -30,7 +29,7 @@ func withOutFile(c *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	c.SetContext(context.WithValue(c.Context(), ctxOutFile, out))
+	storeKeyed(c, out, "out")
 	c.PostRunE = chainRunE(c.PostRunE, func(c *cobra.Command, args []string) error {
 		return out.Close()
 	})
@@ -49,9 +48,9 @@ func debugCmd() *cobra.Command {
 			withInFile,
 			withOutFile,
 			func(c *cobra.Command, args []string) error {
-				in := c.Context().Value(ctxInFile).(*os.File)
-				out := c.Context().Value(ctxOutFile).(*os.File)
-				keys := c.Context().Value(ctxSignKeys).([]signature.SecretKey)
+				in := getKeyed[*os.File](c, "in")
+				out := getKeyed[*os.File](c, "out")
+				keys := get[[]signature.SecretKey](c)
 				var params pb.DaemonParams
 				var sb []byte
 				if b, err := io.ReadAll(in); err != nil {

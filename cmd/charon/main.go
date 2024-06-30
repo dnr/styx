@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"fmt"
 	"log"
 	"time"
@@ -9,11 +8,6 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/dnr/styx/ci"
-)
-
-const (
-	ctxWorkerConfig = iota
-	ctxStartConfig
 )
 
 func withWorkerConfig(c *cobra.Command) runE {
@@ -42,7 +36,7 @@ func withWorkerConfig(c *cobra.Command) runE {
 	c.Flags().IntVar(&cfg.CSWCfg.ZstdEncoderLevel, "zstd_level", 9, "encoder level for zstd chunks")
 
 	return func(c *cobra.Command, args []string) error {
-		c.SetContext(context.WithValue(c.Context(), ctxWorkerConfig, cfg))
+		store(c, cfg)
 		return nil
 	}
 }
@@ -69,7 +63,7 @@ func withStartConfig(c *cobra.Command) runE {
 	c.Flags().StringVar(&cfg.Args.PublicCacheUpstream, "public_upstream", "https://cache.nixos.org/", "read-only url for public cache")
 
 	return func(c *cobra.Command, args []string) error {
-		c.SetContext(context.WithValue(c.Context(), ctxStartConfig, cfg))
+		store(c, cfg)
 		return nil
 	}
 }
@@ -84,16 +78,14 @@ func main() {
 			&cobra.Command{Use: "worker", Short: "act as temporal worker"},
 			withWorkerConfig,
 			func(c *cobra.Command, args []string) error {
-				cfg := c.Context().Value(ctxWorkerConfig).(ci.WorkerConfig)
-				return ci.RunWorker(c.Context(), cfg)
+				return ci.RunWorker(c.Context(), get[ci.WorkerConfig](c))
 			},
 		),
 		cmd(
 			&cobra.Command{Use: "start", Short: "start ci workflow"},
 			withStartConfig,
 			func(c *cobra.Command, args []string) error {
-				cfg := c.Context().Value(ctxStartConfig).(ci.StartConfig)
-				return ci.Start(c.Context(), cfg)
+				return ci.Start(c.Context(), get[ci.StartConfig](c))
 			},
 		),
 	)

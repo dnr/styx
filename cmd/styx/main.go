@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"log"
 	"os"
 	"strings"
@@ -13,19 +12,6 @@ import (
 	"github.com/dnr/styx/common/client"
 	"github.com/dnr/styx/daemon"
 	"github.com/dnr/styx/manifester"
-)
-
-const (
-	ctxChunkStoreWrite = iota
-	ctxManifestBuilder
-	ctxDaemonConfig
-	ctxManifesterConfig
-	ctxInFile
-	ctxOutFile
-	ctxSignKeys
-	ctxStyxPubKeys
-	ctxStyxClient
-	ctxDebugReq
 )
 
 func withChunkStoreWrite(c *cobra.Command) runE {
@@ -40,7 +26,7 @@ func withChunkStoreWrite(c *cobra.Command) runE {
 		if err != nil {
 			return err
 		}
-		c.SetContext(context.WithValue(c.Context(), ctxChunkStoreWrite, cs))
+		store(c, cs)
 		return nil
 	}
 }
@@ -63,13 +49,13 @@ func withManifestBuilder(c *cobra.Command) runE {
 			if mbcfg.PublicKeys, err = common.LoadPubKeys(*pubkeys); err != nil {
 				return err
 			}
-			mbcfg.SigningKeys = c.Context().Value(ctxSignKeys).([]signature.SecretKey)
-			cs := c.Context().Value(ctxChunkStoreWrite).(manifester.ChunkStoreWrite)
+			mbcfg.SigningKeys = get[[]signature.SecretKey](c)
+			cs := get[manifester.ChunkStoreWrite](c)
 			mb, err := manifester.NewManifestBuilder(mbcfg, cs)
 			if err != nil {
 				return err
 			}
-			c.SetContext(context.WithValue(c.Context(), ctxManifestBuilder, mb))
+			store(c, mb)
 			return nil
 		},
 	)
@@ -92,13 +78,13 @@ func withDaemonConfig(c *cobra.Command) runE {
 	return chainRunE(
 		withStyxPubKeys(c),
 		func(c *cobra.Command, args []string) error {
-			cfg.StyxPubKeys = c.Context().Value(ctxStyxPubKeys).([]signature.PublicKey)
+			cfg.StyxPubKeys = get[[]signature.PublicKey](c)
 			if paramsBytes, err := common.LoadFromFileOrHttpUrl(*paramsUrl); err != nil {
 				return err
 			} else if err = common.VerifyInlineMessage(cfg.StyxPubKeys, common.DaemonParamsContext, paramsBytes, &cfg.Params); err != nil {
 				return err
 			}
-			c.SetContext(context.WithValue(c.Context(), ctxDaemonConfig, cfg))
+			store(c, cfg)
 			return nil
 		},
 	)
@@ -112,7 +98,7 @@ func withManifesterConfig(c *cobra.Command) runE {
 		[]string{"cache.nixos.org"}, "allowed upstream binary caches")
 
 	return func(c *cobra.Command, args []string) error {
-		c.SetContext(context.WithValue(c.Context(), ctxManifesterConfig, cfg))
+		store(c, cfg)
 		return nil
 	}
 }
@@ -131,7 +117,7 @@ func withSignKeys(c *cobra.Command) runE {
 		if err != nil {
 			return err
 		}
-		c.SetContext(context.WithValue(c.Context(), ctxSignKeys, keys))
+		store(c, keys)
 		return nil
 	}
 }
@@ -145,7 +131,7 @@ func withStyxPubKeys(c *cobra.Command) runE {
 		if err != nil {
 			return err
 		}
-		c.SetContext(context.WithValue(c.Context(), ctxStyxPubKeys, keys))
+		store(c, keys)
 		return nil
 	}
 }
@@ -153,7 +139,7 @@ func withStyxPubKeys(c *cobra.Command) runE {
 func withStyxClient(c *cobra.Command) runE {
 	socket := c.Flags().String("addr", "/var/cache/styx/styx.sock", "path to local styx socket")
 	return func(c *cobra.Command, args []string) error {
-		c.SetContext(context.WithValue(c.Context(), ctxStyxClient, client.NewClient(*socket)))
+		store(c, client.NewClient(*socket))
 		return nil
 	}
 }
@@ -170,7 +156,7 @@ func withDebugReq(c *cobra.Command) runE {
 			img, _, _ = strings.Cut(img, "-")
 			req.IncludeImages[i] = img
 		}
-		c.SetContext(context.WithValue(c.Context(), ctxDebugReq, &req))
+		store(c, &req)
 		return nil
 	}
 }
@@ -192,8 +178,7 @@ func main() {
 			&cobra.Command{Use: "daemon", Short: "act as local daemon"},
 			withDaemonConfig,
 			func(c *cobra.Command, args []string) error {
-				cfg := c.Context().Value(ctxDaemonConfig).(daemon.Config)
-				err := daemon.CachefilesServer(cfg).Start()
+				err := daemon.CachefilesServer(get[daemon.Config](c)).Start()
 				if err != nil {
 					return err
 				}
@@ -208,8 +193,8 @@ func main() {
 			withManifesterConfig,
 			withManifestBuilder,
 			func(c *cobra.Command, args []string) error {
-				cfg := c.Context().Value(ctxManifesterConfig).(manifester.Config)
-				mb := c.Context().Value(ctxManifestBuilder).(*manifester.ManifestBuilder)
+				cfg := get[manifester.Config](c)
+				mb := get[*manifester.ManifestBuilder](c)
 				m, err := manifester.NewManifestServer(cfg, mb)
 				if err != nil {
 					return err
@@ -231,7 +216,7 @@ func main() {
 				},
 				withStyxClient,
 				func(c *cobra.Command, args []string) error {
-					return c.Context().Value(ctxStyxClient).(*client.StyxClient).CallAndPrint(
+					return get[*client.StyxClient](c).CallAndPrint(
 						daemon.MountPath, &daemon.MountReq{
 							Upstream:   args[0],
 							StorePath:  args[1],
@@ -248,7 +233,7 @@ func main() {
 				},
 				withStyxClient,
 				func(c *cobra.Command, args []string) error {
-					return c.Context().Value(ctxStyxClient).(*client.StyxClient).CallAndPrint(
+					return get[*client.StyxClient](c).CallAndPrint(
 						daemon.UmountPath, &daemon.UmountReq{
 							StorePath: args[0],
 						},
@@ -263,8 +248,8 @@ func main() {
 				withStyxClient,
 				withDebugReq,
 				func(c *cobra.Command, args []string) error {
-					return c.Context().Value(ctxStyxClient).(*client.StyxClient).CallAndPrint(
-						daemon.DebugPath, c.Context().Value(ctxDebugReq).(*daemon.DebugReq))
+					return get[*client.StyxClient](c).CallAndPrint(
+						daemon.DebugPath, get[*daemon.DebugReq](c))
 				},
 			),
 		),
