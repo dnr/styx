@@ -18,9 +18,14 @@ import (
 	"github.com/nix-community/go-nix/pkg/hash"
 	"golang.org/x/exp/slices"
 	"golang.org/x/sys/unix"
+	"google.golang.org/protobuf/proto"
 
 	"github.com/dnr/styx/common"
 	"github.com/dnr/styx/pb"
+)
+
+const (
+	BarePath = "/___bare___"
 )
 
 // larger block sizes don't seem to work with erofs yet
@@ -66,6 +71,12 @@ type (
 	}
 )
 
+func IsBare(fs []byte) bool {
+	// See comment in BuildFromManifestWithSlab.
+	const volIdOffset = 64
+	return fs[EROFS_SUPER_OFFSET+volIdOffset+3]&32 == 0
+}
+
 func NewBuilder(cfg BuilderConfig) *Builder {
 	if cfg.BlockShift > maxBlockShift {
 		panic("larger block size not supported yet")
@@ -86,6 +97,30 @@ func (b *Builder) BuildFromManifestWithSlab(
 
 	if err := sm.VerifyParams(digestBytes, b.blk, chunkShift); err != nil {
 		return err
+	}
+
+	if len(m.Entries) == 0 {
+		return errors.New("no entries")
+	}
+
+	isBare := false
+	if e0 := m.Entries[0]; e0.Type != pb.EntryType_DIRECTORY {
+		if len(m.Entries) != 1 {
+			return errors.New("bare file must be only entry")
+		} else if e0.Type != pb.EntryType_REGULAR {
+			return errors.New("bare file can't be symlink")
+		}
+		// this is a bare file. fake a directory for it
+		isBare = true
+		e1 := proto.Clone(e0).(*pb.Entry)
+		e1.Path = BarePath
+		m.Entries = []*pb.Entry{
+			&pb.Entry{
+				Path: "/",
+				Type: pb.EntryType_DIRECTORY,
+			},
+			e1,
+		}
 	}
 
 	const layoutCompact = EROFS_INODE_LAYOUT_COMPACT << EROFS_I_VERSION_BIT
@@ -182,7 +217,11 @@ func (b *Builder) BuildFromManifestWithSlab(
 			i.i.INlink = 2
 			parent := i
 			if e.Path != "/" {
-				parent = dirsmap[path.Dir(e.Path)].i
+				pdir := dirsmap[path.Dir(e.Path)]
+				if pdir == nil {
+					return errors.New("found entry before parent dir")
+				}
+				parent = pdir.i
 			}
 			db := &dirbuilder{
 				ents: []dbent{
@@ -437,6 +476,10 @@ func (b *Builder) BuildFromManifestWithSlab(
 	}
 	copy(super.Uuid[:], narhash)
 	copy(super.VolumeName[:], "styx-"+base64.RawURLEncoding.EncodeToString(narhash)[:10])
+	if isBare {
+		// This is gross but okay for now: use one fixed bit to indicate bare. See IsBare.
+		super.VolumeName[3] = 'X'
+	}
 
 	c := crc32.NewIEEE()
 	pack(c, &super)

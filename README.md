@@ -458,7 +458,6 @@ with `nix-shell -p ...` and see what happens.
     - Consider how to make diffs more cacheable
 - Prefetch {file, package} command
 - Expanding compressed files (in-progress)
-- Support for bare files (in-progress)
 - Combine multiple store paths into images to reduce overhead
 - GC
 - Respond to cachefiles culling requests

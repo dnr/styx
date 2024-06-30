@@ -109,6 +109,7 @@ type (
 
 	mountContext struct {
 		imageSize int64
+		isBare    bool
 		imageData []byte
 	}
 
@@ -533,6 +534,7 @@ func (s *server) handleMountReq(ctx context.Context, r *MountReq) (*Status, erro
 	cookie, _, _ := strings.Cut(r.StorePath, "-")
 
 	var haveImageSize int64
+	var haveIsBare bool
 	err := s.imageTx(cookie, func(img *pb.DbImage) error {
 		if img.MountState == pb.MountState_Mounted {
 			// nix thinks it's not mounted but it is. return success so nix can enter in db.
@@ -544,6 +546,7 @@ func (s *server) handleMountReq(ctx context.Context, r *MountReq) (*Status, erro
 		img.MountPoint = r.MountPoint
 		img.LastMountError = ""
 		haveImageSize = img.ImageSize
+		haveIsBare = img.IsBare
 		return nil
 	})
 	if err != nil {
@@ -553,10 +556,10 @@ func (s *server) handleMountReq(ctx context.Context, r *MountReq) (*Status, erro
 		return nil, err
 	}
 
-	return nil, s.tryMount(ctx, r, haveImageSize)
+	return nil, s.tryMount(ctx, r, haveImageSize, haveIsBare)
 }
 
-func (s *server) tryMount(ctx context.Context, req *MountReq, haveImageSize int64) error {
+func (s *server) tryMount(ctx context.Context, req *MountReq, haveImageSize int64, haveIsBare bool) error {
 	cookie, _, _ := strings.Cut(req.StorePath, "-")
 
 	mountCtx := &mountContext{}
@@ -571,6 +574,7 @@ func (s *server) tryMount(ctx context.Context, req *MountReq, haveImageSize int6
 	if haveImageSize > 0 {
 		// if we have an image we can proceed right to mounting
 		mountCtx.imageSize = haveImageSize
+		mountCtx.isBare = haveIsBare
 	} else {
 		// if no image yet, get the manifest and build it
 		image, err := s.getManifestAndBuildImage(ctx, req)
@@ -578,12 +582,36 @@ func (s *server) tryMount(ctx context.Context, req *MountReq, haveImageSize int6
 			return err
 		}
 		mountCtx.imageSize = int64(len(image))
+		mountCtx.isBare = erofs.IsBare(image)
 		mountCtx.imageData = image
 	}
 
-	_ = os.MkdirAll(req.MountPoint, 0o755)
+	var mountErr error
 	opts := fmt.Sprintf("domain_id=%s,fsid=%s", s.cfg.CacheDomain, cookie)
-	mountErr := unix.Mount("none", req.MountPoint, "erofs", 0, opts)
+	if mountCtx.isBare {
+		// set up empty file on target mount point
+		if st, err := os.Lstat(req.MountPoint); err != nil || !st.Mode().IsRegular() {
+			if err = os.RemoveAll(req.MountPoint); err != nil {
+				return fmt.Errorf("error clearing mount point for bare file: %w", err)
+			} else if err = os.WriteFile(req.MountPoint, nil, 0o644); err != nil {
+				return fmt.Errorf("error creating mount point for bare file: %w", err)
+			}
+		}
+		// mount to private dir
+		privateMp := filepath.Join(s.cfg.CachePath, "bare", cookie)
+		_ = os.MkdirAll(privateMp, 0o755)
+		mountErr = unix.Mount("none", privateMp, "erofs", 0, opts)
+		if mountErr == nil {
+			// now bind the bare file where it should go
+			mountErr = unix.Mount(privateMp+erofs.BarePath, req.MountPoint, "none", unix.MS_BIND, "")
+		}
+		// whether we succeeded or failed, unmount the original and clean up
+		_ = unix.Unmount(privateMp, 0)
+		_ = os.Remove(privateMp)
+	} else {
+		_ = os.MkdirAll(req.MountPoint, 0o755)
+		mountErr = unix.Mount("none", req.MountPoint, "erofs", 0, opts)
+	}
 
 	_ = s.imageTx(cookie, func(img *pb.DbImage) error {
 		if mountErr == nil {
@@ -592,6 +620,7 @@ func (s *server) tryMount(ctx context.Context, req *MountReq, haveImageSize int6
 			// if the mount succeeded then we must have written the image.
 			// record size here so we skip it next time.
 			img.ImageSize = mountCtx.imageSize
+			img.IsBare = mountCtx.isBare
 		} else {
 			img.MountState = pb.MountState_MountError
 			img.LastMountError = mountErr.Error()
@@ -670,7 +699,7 @@ func (s *server) restoreMounts() {
 			StorePath:  img.StorePath,
 			MountPoint: img.MountPoint,
 			// the image has been written so we don't need upstream/narsize
-		}, img.ImageSize)
+		}, img.ImageSize, img.IsBare)
 		if err == nil {
 			log.Print("restoring: ", img.StorePath, " restored to ", img.MountPoint)
 		} else {

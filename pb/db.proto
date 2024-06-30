@@ -42,6 +42,7 @@ message DbImage {
 
   // size of erofs image
   int64 image_size = 1;
+  bool is_bare = 10;
 
   reserved 8 to 9;
 }

@@ -342,9 +342,8 @@ func (b *ManifestBuilder) entry(ctx context.Context, args *BuildArgs, m *pb.Mani
 		return err
 	} else if err = h.Validate(); err != nil {
 		return err
-	} else if h.Path == "/" && h.Type != nar.TypeDirectory {
-		// TODO: allow these in manifests, use bind mounts in daemon
-		return errors.New("can't handle bare file nars yet")
+	} else if h.Path == "/" && h.Type == nar.TypeSymlink {
+		return errors.New("root can't be symlink")
 	}
 
 	e := &pb.Entry{
