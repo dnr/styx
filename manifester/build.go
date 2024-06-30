@@ -94,7 +94,6 @@ func (b *ManifestBuilder) Build(
 ) ([]byte, error) {
 	// get narinfo
 
-	// FIXME: consolidate url parsing?
 	upstreamUrl, err := url.Parse(upstream)
 	if err != nil {
 		return nil, err

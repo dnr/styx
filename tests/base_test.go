@@ -118,6 +118,10 @@ func (tb *testBase) startManifester() {
 		DigestAlgo:         digestAlgo,
 		DigestBits:         digestBits,
 	}
+	mbcfg.PublicKeys, err = common.LoadPubKeys([]string{upstreamKeys})
+	require.NoError(tb.t, err)
+	mbcfg.SigningKeys, err = common.LoadSecretKeys([]string{"../keys/testsuite.secret"})
+	require.NoError(tb.t, err)
 	mb, err := manifester.NewManifestBuilder(mbcfg, cs)
 
 	hostport := fmt.Sprintf("localhost:%d", port)
@@ -125,14 +129,9 @@ func (tb *testBase) startManifester() {
 	cfg := manifester.Config{
 		Bind:             hostport,
 		AllowedUpstreams: []string{upstreamHost},
-		ManifestBuilder:  mb,
 	}
-	cfg.PublicKeys, err = common.LoadPubKeys([]string{upstreamKeys})
-	require.NoError(tb.t, err)
-	cfg.SigningKeys, err = common.LoadSecretKeys([]string{"../keys/testsuite.secret"})
-	require.NoError(tb.t, err)
 
-	m, err := manifester.NewManifestServer(cfg)
+	m, err := manifester.NewManifestServer(cfg, mb)
 	require.NoError(tb.t, err)
 
 	go m.Run()

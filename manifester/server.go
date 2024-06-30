@@ -28,9 +28,7 @@ import (
 
 const (
 	defaultSmallFileCutoff = 224
-	// maxSmallFileCutoff     = 480
-	// TODO: fix and turn on by default
-	defaultExpandManFiles = false
+	// maxSmallFileCutoff = 480
 
 	smallManifestCutoff = 32 * 1024
 )
