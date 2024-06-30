@@ -19,12 +19,23 @@ rec {
     "-X github.com/dnr/styx/common.Version=${base.version}"
   ];
   daemonLdFlags = baseLdFlags ++ [
-      "-X github.com/dnr/styx/common.GzipBin=${pkgs.gzip}/bin/gzip"
-      "-X github.com/dnr/styx/common.ModprobeBin=${pkgs.kmod}/bin/modprobe"
+    "-X github.com/dnr/styx/common.GzipBin=${pkgs.gzip}/bin/gzip"
+    "-X github.com/dnr/styx/common.ModprobeBin=${pkgs.kmod}/bin/modprobe"
+  ];
+  staticLdFlags = [
+    # "-s" "-w"  # only saves 3.6% of image size
+    "-X github.com/dnr/styx/common.XzBin=${xzStaticBin}/bin/xz"
+    # GzipBin is not used by manifester or differ, only local
+    "-X github.com/dnr/styx/common.Version=${base.version}"
   ];
 
   styx-local = pkgs.buildGoModule (base // {
     ldflags = daemonLdFlags;
+  });
+
+  styx-lambda = pkgs.buildGoModule (base // {
+    tags = [ "lambda.norpc" ];
+    ldflags = staticLdFlags;;
   });
 
   styx-test = pkgs.buildGoModule (base // {
@@ -38,16 +49,6 @@ rec {
       cp keys/testsuite* $out/keys/
     '';
     ldflags = daemonLdFlags;
-  });
-
-  styx-lambda = pkgs.buildGoModule (base // {
-    tags = [ "lambda.norpc" ];
-    ldflags = [
-      # "-s" "-w"  # only saves 3.6% of image size
-      "-X github.com/dnr/styx/common.XzBin=${xzStaticBin}/bin/xz"
-      # GzipBin is not used by manifester or differ, only local
-      "-X github.com/dnr/styx/common.Version=${base.version}"
-    ];
   });
 
   # built by deploy-ci, for heavy CI worker on EC2
