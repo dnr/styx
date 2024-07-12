@@ -10,6 +10,8 @@ import (
 	"github.com/google/btree"
 	"github.com/nix-community/go-nix/pkg/nixbase32"
 	"github.com/nix-community/go-nix/pkg/storepath"
+
+	"github.com/dnr/styx/common/sysid"
 )
 
 type (
@@ -19,6 +21,7 @@ type (
 		rest string
 		hash Sph
 		// TODO: get "system" information in here
+		sys sysid.Id
 	}
 
 	catalog struct {
@@ -54,7 +57,7 @@ func newCatalog() *catalog {
 }
 
 // name is "hash-name"
-func (c *catalog) add(name string) error {
+func (c *catalog) add(name string, sys sysid.Id) error {
 	c.lock.Lock()
 	defer c.lock.Unlock()
 
@@ -64,7 +67,7 @@ func (c *catalog) add(name string) error {
 	} else if nixbase32.DecodedLen(len(hash)) > len(btItem{}.hash) {
 		return fmt.Errorf("bad hash %q", hash)
 	}
-	item := btItem{rest: rest}
+	item := btItem{rest: rest, sys: sys}
 	n, err := nixbase32.Decode(item.hash[:], []byte(hash))
 	if err != nil || n != len(item.hash) {
 		return fmt.Errorf("bad hash %q", hash)
@@ -82,7 +85,7 @@ func (c *catalog) findName(reqHash Sph) string {
 }
 
 // given a hash, find another hash that we think is the most similar candidate
-func (c *catalog) findBase(reqHash Sph) (catalogResult, error) {
+func (c *catalog) findBase(reqHash Sph, sys sysid.Id) (catalogResult, error) {
 	c.lock.Lock()
 	defer c.lock.Unlock()
 
@@ -124,7 +127,7 @@ func (c *catalog) findBase(reqHash Sph) (catalogResult, error) {
 		btItem{rest: start},
 		btItem{rest: start + "\xff"},
 		func(i btItem) bool {
-			if i.hash != reqHash && len(findDashes(i.rest)) == len(dashes) {
+			if i.hash != reqHash && i.sys == sys && len(findDashes(i.rest)) == len(dashes) {
 				// take last best instead of first since it's probably more recent
 				if match := matchLen(reqName, i.rest); match >= bestmatch {
 					bestmatch = match

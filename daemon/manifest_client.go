@@ -74,12 +74,12 @@ func (s *server) getManifestAndBuildImage(ctx context.Context, req *MountReq) ([
 		return nil, err
 	}
 	// update catalog with this envelope (and manifest entry). should match code in initCatalog.
-	s.catalog.add(storePath)
+	s.catalog.add(storePath, FIXMEsysid)
 
 	// get payload or load from chunks
 	data := entry.InlineData
 	if len(data) == 0 {
-		s.catalog.add(manifestSph.String() + "-" + isManifestPrefix + spName)
+		s.catalog.add(manifestSph.String()+"-"+isManifestPrefix+spName, FIXMEsysid)
 
 		log.Printf("loading chunked manifest for %s", storePath)
 

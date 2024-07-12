@@ -236,14 +236,14 @@ func (s *server) initCatalog() (err error) {
 			storePath := strings.TrimPrefix(sm.Msg.Path, common.ManifestContext+"/")
 			spHash, spName, _ := strings.Cut(storePath, "-")
 
-			s.catalog.add(storePath)
+			s.catalog.add(storePath, FIXMEsysid)
 
 			if len(sm.Msg.InlineData) == 0 {
 				var sph Sph
 				if n, err := nixbase32.Decode(sph[:], []byte(spHash)); err != nil || n != len(sph) {
 					continue
 				}
-				s.catalog.add(makeManifestSph(sph).String() + "-" + isManifestPrefix + spName)
+				s.catalog.add(makeManifestSph(sph).String()+"-"+isManifestPrefix+spName, FIXMEsysid)
 			}
 		}
 		return nil
