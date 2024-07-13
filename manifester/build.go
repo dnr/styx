@@ -124,7 +124,7 @@ func (b *ManifestBuilder) Build(
 		return nil, fmt.Errorf("%w: signature validation failed for %s; narinfo %#v", ErrReq, narinfoUrl, ni)
 	}
 
-	log.Println("req", storePathHash, "got narinfo", ni.StorePath[44:], ni.FileSize, ni.NarSize)
+	log.Println("manifest", storePathHash, "got narinfo", ni.StorePath[44:], ni.FileSize, ni.NarSize)
 
 	// download nar
 	var narOut io.Reader
@@ -137,7 +137,12 @@ func (b *ManifestBuilder) Build(
 		if err = dump.Start(); err != nil {
 			return nil, err
 		}
-		defer dump.Wait()
+		defer func() {
+			if dump != nil {
+				dump.Process.Kill()
+				dump.Wait()
+			}
+		}()
 	} else {
 		// start := time.Now()
 		narUrl := upstreamUrl.JoinPath(ni.URL).String()
@@ -174,6 +179,12 @@ func (b *ManifestBuilder) Build(
 			if err = decompress.Start(); err != nil {
 				return nil, fmt.Errorf("%w: nar decompress start error: %w", ErrInternal, err)
 			}
+			defer func() {
+				if decompress != nil {
+					decompress.Process.Kill()
+					decompress.Wait()
+				}
+			}()
 		}
 	}
 
@@ -205,6 +216,7 @@ func (b *ManifestBuilder) Build(
 		if err = decompress.Wait(); err != nil {
 			return nil, fmt.Errorf("%w: nar decompress error: %w", ErrInternal, err)
 		}
+		decompress = nil
 		// elapsed := time.Since(start)
 		// ps := decompress.ProcessState
 		// log.Printf("downloaded %s [%d bytes] in %s [decmp %s user, %s sys]: %.3f MB/s",
@@ -216,7 +228,9 @@ func (b *ManifestBuilder) Build(
 		if err = dump.Wait(); err != nil {
 			return nil, fmt.Errorf("%w: nar dump error: %w", ErrInternal, err)
 		}
+		dump = nil
 	}
+	log.Println("manifest", storePathHash, "built manifest")
 
 	// if we're not shard 0, we're done
 	if shardIndex != 0 {
@@ -288,6 +302,7 @@ func (b *ManifestBuilder) Build(
 			return nil, fmt.Errorf("%w: manifest compress error: %w", ErrInternal, err)
 		}
 	}
+	log.Println("manifest", storePathHash, "added to cache")
 	return cmpSb, nil
 }
 
@@ -392,7 +407,9 @@ func (b *ManifestBuilder) chunkData(ctx context.Context, args *BuildArgs, dataSi
 	digests := fullDigests
 	remaining := dataSize
 	for remaining > 0 {
-		b.chunksem.Acquire(ctx, 1)
+		if err := b.chunksem.Acquire(ctx, 1); err != nil {
+			return nil, err
+		}
 
 		size := min(remaining, b.chunk.Size())
 		remaining -= size
