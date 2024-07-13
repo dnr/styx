@@ -60,7 +60,7 @@
     gnome-icon-theme
     gnupg
     gocryptfs
-    google-chrome
+    #google-chrome
     guvcview
     hdparm
     hugin
