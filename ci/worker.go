@@ -23,7 +23,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/autoscaling"
-	ssm "github.com/aws/aws-sdk-go-v2/service/ssm"
+	"github.com/aws/aws-sdk-go-v2/service/ssm"
 	"github.com/nix-community/go-nix/pkg/narinfo/signature"
 	"go.temporal.io/api/workflowservice/v1"
 	"go.temporal.io/sdk/activity"
@@ -40,6 +40,7 @@ import (
 type (
 	WorkerConfig struct {
 		TemporalParams string
+		SmtpParams     string
 
 		RunWorker      bool
 		RunScaler      bool
@@ -205,10 +206,21 @@ func ci(ctx workflow.Context, args *CiArgs) error {
 		})
 		if err != nil {
 			l.Error("build error", "error", err)
+			ciNotify(ctx, &notifyReq{
+				Args:  args,
+				Error: err.Error(),
+			})
 			workflow.Sleep(ctx, time.Hour)
 			continue
 		}
 		l.Info("build succeeded", "relid", args.LastRelID, "styx", args.LastStyxCommit)
+
+		// notify
+		ciNotify(ctx, &notifyReq{
+			Args:       args,
+			RelID:      args.LastRelID,
+			StyxCommit: args.LastStyxCommit,
+		})
 	}
 	return workflow.NewContinueAsNewError(ctx, ci, args)
 }
@@ -234,6 +246,14 @@ func ciBuild(ctx workflow.Context, req *buildReq) (*buildRes, error) {
 	var res buildRes
 	var a *heavyActivities
 	return &res, workflow.ExecuteActivity(actx, a.HeavyBuild, req).Get(ctx, &res)
+}
+
+func ciNotify(ctx workflow.Context, req *notifyReq) error {
+	actx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
+		StartToCloseTimeout: time.Minute,
+	})
+	var a *activities
+	return workflow.ExecuteActivity(actx, a.Notify, req).Get(ctx, nil)
 }
 
 func pokeScaler(ctx workflow.Context) {

@@ -57,4 +57,11 @@ type (
 	buildRes struct {
 		// TODO: add stats?
 	}
+
+	notifyReq struct {
+		Args       *CiArgs
+		RelID      string
+		StyxCommit string
+		Error      string
+	}
 )

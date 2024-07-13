@@ -24,7 +24,7 @@ func Start(ctx context.Context, cfg StartConfig) error {
 		ID:        fmt.Sprintf("ci-%s-%s", cfg.Args.StyxRepo.Branch, cfg.Args.Channel),
 		TaskQueue: taskQueue,
 	}
-	run, err := c.ExecuteWorkflow(context.Background(), opts, ci, cfg.Args)
+	run, err := c.ExecuteWorkflow(context.Background(), opts, ci, &cfg.Args)
 	if err != nil {
 		return err
 	}

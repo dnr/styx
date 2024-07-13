@@ -14,6 +14,7 @@ func withWorkerConfig(c *cobra.Command) runE {
 	var cfg ci.WorkerConfig
 
 	c.Flags().StringVar(&cfg.TemporalParams, "temporal_params", "", "source for temporal params")
+	c.Flags().StringVar(&cfg.SmtpParams, "smtp_params", "", "source for smtp params")
 
 	c.Flags().BoolVar(&cfg.RunWorker, "worker", false, "run temporal workflow+activity worker")
 	c.Flags().BoolVar(&cfg.RunScaler, "scaler", true, "run scaler on worker")
@@ -44,10 +45,10 @@ func withWorkerConfig(c *cobra.Command) runE {
 func withStartConfig(c *cobra.Command) runE {
 	var cfg ci.StartConfig
 
-	c.Flags().StringVar(&cfg.TemporalParams, "temporal_params", "", "source for temporal params")
+	c.Flags().StringVar(&cfg.TemporalParams, "temporal_params", "keys/temporal-creds-charon.secret", "source for temporal params")
 
 	// might use these:
-	c.Flags().StringVar(&cfg.Args.Channel, "nix_channel", "nixos-23.11", "nix channel to watch/build")
+	c.Flags().StringVar(&cfg.Args.Channel, "nix_channel", "nixos-24.05", "nix channel to watch/build")
 	c.Flags().StringVar(&cfg.Args.StyxRepo.Branch, "styx_branch", "release", "branch of styx repo to watch/build")
 
 	// probably don't use these:

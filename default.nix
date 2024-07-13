@@ -3,7 +3,7 @@ rec {
   base = {
     pname = "styx";
     version = "0.0.6";
-    vendorHash = "sha256-lJ4jmTFQlHJpspq3XVCgNPQli+PO68hLsGM4JYDbH4s=";
+    vendorHash = "sha256-5bGVxgSbk+R4ioc8Kx2VVwPv0Q/GaxbY5vPiLNDauPA=";
     src = pkgs.lib.sourceByRegex ./. [
       "^go\.(mod|sum)$"
       "^(ci|cmd|common|daemon|erofs|manifester|pb|keys|tests)($|/.*)"
@@ -35,7 +35,7 @@ rec {
 
   styx-lambda = pkgs.buildGoModule (base // {
     tags = [ "lambda.norpc" ];
-    ldflags = staticLdFlags;;
+    ldflags = staticLdFlags;
   });
 
   styx-test = pkgs.buildGoModule (base // {

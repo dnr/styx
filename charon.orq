@@ -10,10 +10,12 @@
       "worker",
       "--worker",
       "--temporal_params=/secrets/temporal-creds-charon.secret",
+      "--smtp_params=/secrets/smtp-creds-charon.secret",
       "--scale_group_name=charon-asg"
     ],
     "env": {
-      "AWS_SHARED_CREDENTIALS_FILE": "/secrets/charon-asg-scaler-creds.secret"
+      "AWS_SHARED_CREDENTIALS_FILE": "/secrets/charon-asg-scaler-creds.secret",
+      "AWS_REGION": "us-east-1"
     },
     "host": "dd5"
   }
