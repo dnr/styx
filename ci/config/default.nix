@@ -1,6 +1,7 @@
-# Stripped-down version of my (dnr)'s basic nix config:
+# Stripped-down version of my (dnr)'s basic nix config.
+# If you're actually using this and want more stuff in here, let me know.
 
-{ pkgs, ... }:
+{ config, pkgs, ... }:
 {
   imports = [
     <styx/module>
@@ -8,6 +9,14 @@
 
   # builds custom kernel, patched nix, styx binary
   services.styx.enable = true;
+
+  # build with latest kernel to get >= 6.8
+  boot.kernelPackages = pkgs.linuxPackages_latest;
+  # some kernel modules that I use that depend on the custom kernel:
+  boot.extraModulePackages = with config.boot.kernelPackages; [
+    acpi_call
+    v4l2loopback
+  ];
 
   # just enough to make nix-build not complain:
   fileSystems."/".device = "/dev/dummy";
@@ -60,7 +69,7 @@
     gnome-icon-theme
     gnupg
     gocryptfs
-    #google-chrome
+    (google-chrome.override { speechd = snappy; })  # hack to avoid bringing in speech deps
     guvcview
     hdparm
     hugin
@@ -144,5 +153,5 @@
 
   documentation.nixos.enable = false;
 
-  system.stateVersion = "20.09";
+  system.stateVersion = "24.05";
 }

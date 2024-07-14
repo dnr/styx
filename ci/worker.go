@@ -474,6 +474,7 @@ func (a *heavyActivities) HeavyBuild(ctx context.Context, req *buildReq) (*build
 	out, err := cmd.Output()
 	if err != nil {
 		l.Error("build error", "error", err)
+		// TODO: return as nonretriable error with error details from log
 		return nil, err
 	}
 
@@ -594,6 +595,7 @@ func (a *heavyActivities) HeavyBuild(ctx context.Context, req *buildReq) (*build
 		return nil, err
 	}
 
+	l.Info("build done")
 	return &buildRes{}, nil
 }
 

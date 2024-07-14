@@ -18,4 +18,5 @@
       Restart = "always";
     };
   };
+  system.stateVersion = "24.05";
 }

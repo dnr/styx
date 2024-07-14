@@ -55,7 +55,10 @@ in with lib; {
 
     (mkIf (cfg.enable || cfg.enableKernelOptions) {
       # Need to turn on these kernel config options. This requires building the whole kernel :(
-      boot.kernelPackages = pkgs.linuxPackages_latest;
+      assertions = [ {
+          assertion = lib.versionAtLeast config.boot.kernelPackages.kernel.version "6.8";
+          message = "Styx requires at least a 6.8 kernel";
+      } ];
       boot.kernelPatches = [ {
         name = "styx";
         patch = null;
