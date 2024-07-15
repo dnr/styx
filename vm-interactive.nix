@@ -30,4 +30,10 @@
   environment.variables = {
     TMPDIR = "/tmp"; # tmpfs is too small to build stuff
   };
+  environment.systemPackages = with pkgs; [
+    file
+    jq
+    psmisc
+    vim
+  ];
 }

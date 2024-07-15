@@ -55,7 +55,9 @@ type (
 		StyxCommit string
 	}
 	buildRes struct {
-		// TODO: add stats?
+		// TODO:
+		// - stats: total size, new chunks vs existing chunks, etc.
+		// - add output of nix store diff-closures against the previous
 	}
 
 	notifyReq struct {
