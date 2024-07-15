@@ -75,6 +75,7 @@ in with lib; {
       systemd.services.styx = {
         description = "Nix storage manager";
         wantedBy = [ "multi-user.target" ];
+        wants = [ "network-online.target" ];
         after = [ "network-online.target" ];
         serviceConfig = {
           ExecStart = let

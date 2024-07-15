@@ -465,7 +465,6 @@ func (a *heavyActivities) HeavyBuild(ctx context.Context, req *buildReq) (*build
 		"--no-out-link",
 		"--timeout", strconv.Itoa(int(time.Until(info.Deadline).Seconds())),
 		"--keep-going",
-		// "-j", strconf.Itoa(max(1, runtime.NumCPU()/4)),
 		"-I", "nixpkgs="+makeNixexprsUrl(req.Args.Channel, req.RelID),
 		"-I", "styx="+makeGithubUrl(req.Args.StyxRepo, req.StyxCommit),
 	)
@@ -474,7 +473,9 @@ func (a *heavyActivities) HeavyBuild(ctx context.Context, req *buildReq) (*build
 	out, err := cmd.Output()
 	if err != nil {
 		l.Error("build error", "error", err)
-		// TODO: return as nonretriable error with error details from log
+		// TODO: if this fails, look at log output to figure out if it's retryable or not, and
+		// return an appropriate error (with attached logs).
+		// note we can't rely on exit code: https://github.com/NixOS/nix/issues/4813
 		return nil, err
 	}
 

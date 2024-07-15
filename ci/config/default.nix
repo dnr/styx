@@ -68,8 +68,9 @@
     git-absorb
     gnome-icon-theme
     gnupg
+    go
     gocryptfs
-    (google-chrome.override { speechd = snappy; })  # hack to avoid bringing in speech deps
+    (google-chrome.override { speechd = snappy; })  # hack to avoid bringing in speech deps. non-redistributable?
     guvcview
     hdparm
     hugin
@@ -83,7 +84,6 @@
     luminanceHDR
     lzma
     magic-wormhole
-    mercurial
     moreutils
     mplayer
     nix-direnv
@@ -109,13 +109,14 @@
     scrot
     smem
     socat
-    spotify
+    spotify # non-redistributable?
     sqlite
     starship
     strace
     sxiv
     sysstat
     tcpdump
+    terraform # non-redistributable?
     tig
     tree
     unzip
@@ -131,7 +132,7 @@
     xsettingsd
     xxd
     zip
-    zoom-us
+    zoom-us # non-redistributable?
     zoxide
     zstd
 
@@ -141,7 +142,7 @@
   services.fwupd.enable = true;
   services.tlp.enable = true;
   services.xserver.enable = true;
-  services.zerotierone.enable = true;
+  services.zerotierone.enable = true; # non-redistributable?
 
   fonts.packages = [
     pkgs.noto-fonts
