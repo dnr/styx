@@ -49,7 +49,7 @@ func (s *server) handleDebugReq(ctx context.Context, r *DebugReq) (*DebugResp, e
 						if _, present := s.digestPresent(tx, digests[:s.digestBytes]); present {
 							ent.StatsPresentChunks++
 							if len(digests) == s.digestBytes { // last
-								ent.StatsPresentBlocks += int32(s.blockShift.Roundup(s.chunkShift.Leftover(ent.Size)))
+								ent.StatsPresentBlocks += int32(s.blockShift.Roundup(s.chunkShift.Leftover(ent.Size)) >> s.blockShift)
 							} else {
 								ent.StatsPresentBlocks += int32(1 << (s.chunkShift - s.blockShift))
 							}
