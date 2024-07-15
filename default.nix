@@ -5,7 +5,7 @@ rec {
     version = "0.0.6";
     vendorHash = "sha256-5bGVxgSbk+R4ioc8Kx2VVwPv0Q/GaxbY5vPiLNDauPA=";
     src = pkgs.lib.sourceByRegex ./. [
-      "^go\.(mod|sum)$"
+      "^go\\.(mod|sum)$"
       "^(ci|cmd|common|daemon|erofs|manifester|pb|keys|tests)($|/.*)"
     ];
     subPackages = [ "cmd/styx" ];
@@ -56,6 +56,12 @@ rec {
     pname = "charon";
     subPackages = [ "cmd/charon" ];
   });
+  # for light CI worker on non-AWS server (dd5):
+  charon-light = pkgs.buildGoModule (base // {
+    pname = "charon";
+    subPackages = [ "cmd/charon" ];
+    ldflags = [ ];
+  });
 
   # Use static binaries and take only the main binaries to make the image as
   # small as possible:
@@ -87,7 +93,7 @@ rec {
     ];
     config = {
       User = "1000:1000";
-      Entrypoint = [ "${charon}/bin/charon" ];
+      Entrypoint = [ "${charon-light}/bin/charon" ];
     };
   };
 }
