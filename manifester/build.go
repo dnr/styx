@@ -2,6 +2,7 @@ package manifester
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"errors"
@@ -72,7 +73,7 @@ var (
 func NewManifestBuilder(cfg ManifestBuilderConfig, cs ChunkStoreWrite) (*ManifestBuilder, error) {
 	return &ManifestBuilder{
 		cs:       cs,
-		chunksem: semaphore.NewWeighted(int64(common.Or(cfg.ConcurrentChunkOps, 200))),
+		chunksem: semaphore.NewWeighted(int64(cmp.Or(cfg.ConcurrentChunkOps, 200))),
 		params: &pb.GlobalParams{
 			ChunkShift: int32(cfg.ChunkShift),
 			DigestAlgo: cfg.DigestAlgo,
@@ -325,7 +326,7 @@ func (b *ManifestBuilder) BuildFromNar(ctx context.Context, args *BuildArgs, r i
 		err = nil
 	}
 
-	return common.ValOrErr(m, common.Or(err, eg.Wait()))
+	return common.ValOrErr(m, cmp.Or(err, eg.Wait()))
 }
 
 func (b *ManifestBuilder) ManifestAsEntry(ctx context.Context, args *BuildArgs, path string, manifest *pb.Manifest) (*pb.Entry, error) {
@@ -348,7 +349,7 @@ func (b *ManifestBuilder) ManifestAsEntry(ctx context.Context, args *BuildArgs, 
 	eg, gCtx := errgroup.WithContext(ctx)
 	entry.Digests, err = b.chunkData(gCtx, args, int64(len(mb)), bytes.NewReader(mb), eg)
 
-	return common.ValOrErr(entry, common.Or(err, eg.Wait()))
+	return common.ValOrErr(entry, cmp.Or(err, eg.Wait()))
 }
 
 func (b *ManifestBuilder) entry(ctx context.Context, args *BuildArgs, m *pb.Manifest, nr *nar.Reader, eg *errgroup.Group) error {

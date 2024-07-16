@@ -2,6 +2,7 @@ package manifester
 
 import (
 	"bytes"
+	"cmp"
 	"compress/gzip"
 	"context"
 	"encoding/json"
@@ -257,7 +258,7 @@ func (s *server) expand(ctx context.Context, digests []byte, parallel int, expan
 			pw.Close()
 		}()
 		out, readErr := io.ReadAll(pr)
-		return common.ValOrErr(out, common.Or(decompress.Wait(), readErr))
+		return common.ValOrErr(out, cmp.Or(decompress.Wait(), readErr))
 
 	default:
 		var out bytes.Buffer
@@ -296,7 +297,7 @@ func (s *server) fetchChunkSeries(ctx context.Context, digests []byte, parallel 
 			}
 		}
 	}
-	return common.Or(eg.Wait(), wErr)
+	return cmp.Or(eg.Wait(), wErr)
 }
 
 func (s *server) handleChunk(w http.ResponseWriter, r *http.Request) {

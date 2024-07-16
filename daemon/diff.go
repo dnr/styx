@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -606,7 +607,7 @@ func (s *server) diffRecompress(ctx context.Context, data []byte, args []string)
 			return nil, err
 		}
 		newData, readErr := io.ReadAll(out)
-		return common.ValOrErr(newData, common.Or(gz.Wait(), readErr))
+		return common.ValOrErr(newData, cmp.Or(gz.Wait(), readErr))
 
 	case manifester.ExpandXz:
 		xz := exec.Command(common.XzBin, append([]string{"-c"}, args[1:]...)...)
@@ -619,7 +620,7 @@ func (s *server) diffRecompress(ctx context.Context, data []byte, args []string)
 			return nil, err
 		}
 		newData, readErr := io.ReadAll(out)
-		return common.ValOrErr(newData, common.Or(xz.Wait(), readErr))
+		return common.ValOrErr(newData, cmp.Or(xz.Wait(), readErr))
 
 	default:
 		return nil, fmt.Errorf("unknown expander %q", args[0])
