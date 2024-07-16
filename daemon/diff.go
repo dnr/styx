@@ -32,8 +32,8 @@ type (
 		ents       []*pb.Entry
 		digestLen  int
 		chunkShift common.BlkShift
-		e          int // _current_ index in ents
-		d          int // _next_ digest offset
+		e          int // current index in ents
+		d          int // current digest offset (bytes)
 	}
 
 	opType int
@@ -232,19 +232,16 @@ func (s *server) buildDiffOp(
 
 	// find entry
 	reqIdx := 0
-	for {
-		ok := reqIter.next(1)
+	for !bytes.Equal(reqIter.digest(), targetDigest) {
+		reqIter.next(1)
 		reqIdx++
-		if !ok {
-			// shouldn't happen
-			return nil, fmt.Errorf("req digest not found in manifest")
-		}
-		if bytes.Equal(reqIter.digest(), targetDigest) {
-			break
-		}
 	}
 
-	reqEnt := reqIter.ent() // must not be nil here
+	reqEnt := reqIter.ent()
+	if reqEnt == nil {
+		// shouldn't happen
+		return nil, fmt.Errorf("req digest not found in manifest")
+	}
 	expandManPage := isManPageGz(reqEnt)
 	expandLinuxKo := isLinuxKoXz(reqEnt)
 
@@ -273,7 +270,7 @@ func (s *server) buildDiffOp(
 			// FIXME: figure out size
 			op.addReq(reqDigest, reqSize, reqLoc)
 			// FIXME: what if loc is already in diffMap :(
-			s.diffMap[loc] = op
+			s.diffMap[reqLoc] = op
 		}
 
 		if usingBase {
@@ -298,18 +295,17 @@ func (s *server) buildDiffOp(
 			reqDigest := reqIter.digest()
 			if baseDigest != nil && len(op.baseDigests) < maxDigestLen {
 				if baseLoc, basePresent := s.digestPresent(tx, baseDigest); basePresent {
-					op.addBase(baseDigest, baseSize, baseLoc)
+					op.addBase(baseDigest, baseIter.size(), baseLoc)
 				}
 			}
 			if reqDigest != nil && len(op.reqDigests) < maxDigestLen {
 				if reqLoc, reqPresent := s.digestPresent(tx, reqDigest); !reqPresent && reqLoc.Addr > 0 && s.diffMap[reqLoc] == nil {
-					op.addReq(reqDigest, reqSize, reqLoc)
+					op.addReq(reqDigest, reqIter.size(), reqLoc)
 					// record we're diffing this one in the map
 					s.diffMap[reqLoc] = op
 				}
 			}
-			baseOk := baseIter.next()
-			reqOk := reqIter.next()
+			baseOk, reqOk := baseIter.next(1), reqIter.next(1)
 			if !baseOk && !reqOk {
 				break
 			}
@@ -712,10 +708,17 @@ func (s *server) digestPresent(tx *bbolt.Tx, digest []byte) (erofs.SlabLoc, bool
 	return loc, s.locPresent(tx, loc)
 }
 
+// digestIterator is positioned at first chunk
 func (s *server) newDigestIterator(entries []*pb.Entry) digestIterator {
-	return digestIterator{ents: entries, digestLen: s.digestBytes, chunkShift: s.chunkShift}
+	i := digestIterator{ents: entries, digestLen: s.digestBytes, chunkShift: s.chunkShift}
+	// move to first actual digest
+	if i.digest() == nil {
+		i.next(1)
+	}
+	return i
 }
 
+// entry that the current chunk belongs to
 func (i *digestIterator) ent() *pb.Entry {
 	if i.e >= len(i.ents) {
 		return nil
@@ -723,29 +726,32 @@ func (i *digestIterator) ent() *pb.Entry {
 	return i.ents[i.e]
 }
 
+// digest of the current chunk
 func (i *digestIterator) digest() []byte {
 	ent := i.ent()
 	if ent == nil {
 		return nil
 	}
-	if i.d > len(ent.Digests) {
+	if i.d+i.digestLen > len(ent.Digests) {
 		// shouldn't happen, we shouldn't have stopped here
 		return nil
 	}
-	return ent.Digests[i.d-i.digestLen : i.d]
+	return ent.Digests[i.d : i.d+i.digestLen]
 }
 
+// size of this chunk
 func (i *digestIterator) size() int64 {
 	ent := i.ent()
 	if ent == nil {
-		return nil
+		return -1
 	}
-	if i.d >= len(ent.Digests) { // last chunk
+	if i.d+i.digestLen >= len(ent.Digests) { // last chunk
 		return i.chunkShift.Leftover(ent.Size)
 	}
 	return i.chunkShift.Size()
 }
 
+// moves forward n chunks. returns true if valid.
 func (i *digestIterator) next(n int) bool {
 	// FIXME: implement jump by n more efficiently
 	for {
@@ -753,12 +759,12 @@ func (i *digestIterator) next(n int) bool {
 		if ent == nil {
 			return false
 		}
+		i.d += i.digestLen
 		if i.d >= len(ent.Digests) {
 			i.e++
 			i.d = 0
 			continue
 		}
-		i.d += i.digestLen
 		n--
 		if n == 0 {
 			return true
@@ -766,15 +772,17 @@ func (i *digestIterator) next(n int) bool {
 	}
 }
 
+// moves back to start of the current entry. returns true if valid.
 func (i *digestIterator) toFileStart() bool {
 	ent := i.ent()
 	if ent == nil {
 		return false
 	}
-	i.d = i.digestLen
-	return i.d <= len(ent.Digests)
+	i.d = 0
+	return len(ent.Digests) > 0
 }
 
+// finds file matching path. only moves forward. returns true if valid.
 func (i *digestIterator) findFile(path string) bool {
 	for {
 		ent := i.ent()
@@ -784,7 +792,7 @@ func (i *digestIterator) findFile(path string) bool {
 		if ent.Path == path {
 			return i.toFileStart()
 		}
-		e++
+		i.e++
 	}
 }
 
