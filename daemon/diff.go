@@ -11,6 +11,7 @@ import (
 	"log"
 	"net/http"
 	"os/exec"
+	"path"
 	"regexp"
 	"strings"
 	"unsafe"
@@ -31,8 +32,8 @@ type (
 		ents       []*pb.Entry
 		digestLen  int
 		chunkShift common.BlkShift
-		e          int
-		d          int
+		e          int // _current_ index in ents
+		d          int // _next_ digest offset
 	}
 
 	opType int
@@ -230,52 +231,87 @@ func (s *server) buildDiffOp(
 	// build diff
 
 	// find entry
-	var foundEnt *pb.Entry
-	for foundEnt == nil {
-		reqEnt, reqDigest, _, reqOk := reqIter.next()
-		if !reqOk {
+	reqIdx := 0
+	for {
+		ok := reqIter.next(1)
+		reqIdx++
+		if !ok {
 			// shouldn't happen
 			return nil, fmt.Errorf("req digest not found in manifest")
 		}
-		if bytes.Equal(reqDigest, targetDigest) {
-			foundEnt = reqEnt
+		if bytes.Equal(reqIter.digest(), targetDigest) {
+			break
 		}
 	}
 
-	if isManPageGz(foundEnt) {
-		// single file with recompression
-		op.diffRecompress = []string{manifester.ExpandGz}
-		// FIXME
-	} else if isLinuxKoXz(foundEnt) {
-		// TODO: maybe get these args from looking at the base? or the chunk differ can look at
-		// req and return them? or try several values and take the matching one?
-		op.diffRecompress = []string{manifester.ExpandXz, "--check=crc32", "--lzma2=dict=1MiB"}
-		// FIXME
+	reqEnt := reqIter.ent() // must not be nil here
+	expandManPage := isManPageGz(reqEnt)
+	expandLinuxKo := isLinuxKoXz(reqEnt)
+
+	if expandManPage || expandLinuxKo {
+		// diff with expanding and recompression
+
+		switch {
+		case expandManPage:
+			// single file with recompression
+			op.diffRecompress = []string{manifester.ExpandGz}
+		case expandLinuxKo:
+			// note: currently largest kernel module on my system (excluding kheaders) is
+			// amdgpu.ko.xz at 3,538,004 bytes, 54 chunks (64kb), and expands to 25,589,856 bytes,
+			// which is reasonable to pass through the chunk differ.
+			// TODO: maybe get these args from looking at the base? or the chunk differ can look at
+			// req and return them? or try several values and take the matching one?
+			op.diffRecompress = []string{manifester.ExpandXz, "--check=crc32", "--lzma2=dict=1MiB"}
+		}
+
+		for i := 0; i < len(reqEnt.Digests); i += s.digestBytes {
+			reqDigest := reqEnt.Digests[i : i+s.digestBytes]
+			reqLoc, _ := s.digestPresent(tx, reqDigest)
+			if reqLoc.Addr == 0 {
+				// FIXME: shouldn't happen
+			}
+			// FIXME: figure out size
+			op.addReq(reqDigest, reqSize, reqLoc)
+			// FIXME: what if loc is already in diffMap :(
+			s.diffMap[loc] = op
+		}
+
+		if usingBase {
+			if baseIter.findFile(reqEnt.Path) {
+				baseEnt := baseIter.ent()
+				// FIXME: do same as loop above for base
+			} else {
+				log.Println("missing corresponding file", reqEnt.Path, "in", res.baseHash.String()[:5], res.baseName)
+			}
+		}
 	} else {
-		// position baseIter at approximately the same place
-		// FIXME
+		// normal diff
 
 		// TODO: this algorithm is kind of awful
 
+		// position baseIter at approximately the same place
+		baseIter.next(reqIdx)
+
 		maxDigestLen := s.digestBytes * s.cfg.ReadaheadChunks
 		for len(op.baseDigests) < maxDigestLen || len(op.reqDigests) < maxDigestLen {
-			_, baseDigest, baseSize, baseOk := baseIter.next()
-			_, reqDigest, reqSize, reqOk := reqIter.next()
-			if !baseOk && !reqOk {
-				break
-			}
-
-			if baseOk && len(op.baseDigests) < maxDigestLen {
+			baseDigest := baseIter.digest()
+			reqDigest := reqIter.digest()
+			if baseDigest != nil && len(op.baseDigests) < maxDigestLen {
 				if baseLoc, basePresent := s.digestPresent(tx, baseDigest); basePresent {
 					op.addBase(baseDigest, baseSize, baseLoc)
 				}
 			}
-			if reqOk && len(op.reqDigests) < maxDigestLen {
+			if reqDigest != nil && len(op.reqDigests) < maxDigestLen {
 				if reqLoc, reqPresent := s.digestPresent(tx, reqDigest); !reqPresent && reqLoc.Addr > 0 && s.diffMap[reqLoc] == nil {
 					op.addReq(reqDigest, reqSize, reqLoc)
 					// record we're diffing this one in the map
 					s.diffMap[reqLoc] = op
 				}
+			}
+			baseOk := baseIter.next()
+			reqOk := reqIter.next()
+			if !baseOk && !reqOk {
+				break
 			}
 		}
 	}
@@ -680,23 +716,75 @@ func (s *server) newDigestIterator(entries []*pb.Entry) digestIterator {
 	return digestIterator{ents: entries, digestLen: s.digestBytes, chunkShift: s.chunkShift}
 }
 
-func (i *digestIterator) next() (*pb.Entry, []byte, int64, bool) {
+func (i *digestIterator) ent() *pb.Entry {
+	if i.e >= len(i.ents) {
+		return nil
+	}
+	return i.ents[i.e]
+}
+
+func (i *digestIterator) digest() []byte {
+	ent := i.ent()
+	if ent == nil {
+		return nil
+	}
+	if i.d > len(ent.Digests) {
+		// shouldn't happen, we shouldn't have stopped here
+		return nil
+	}
+	return ent.Digests[i.d-i.digestLen : i.d]
+}
+
+func (i *digestIterator) size() int64 {
+	ent := i.ent()
+	if ent == nil {
+		return nil
+	}
+	if i.d >= len(ent.Digests) { // last chunk
+		return i.chunkShift.Leftover(ent.Size)
+	}
+	return i.chunkShift.Size()
+}
+
+func (i *digestIterator) next(n int) bool {
+	// FIXME: implement jump by n more efficiently
 	for {
-		if i.e >= len(i.ents) {
-			return nil, nil, 0, false
+		ent := i.ent()
+		if ent == nil {
+			return false
 		}
-		ent := i.ents[i.e]
 		if i.d >= len(ent.Digests) {
 			i.e++
 			i.d = 0
 			continue
 		}
 		i.d += i.digestLen
-		size := i.chunkShift.Size()
-		if i.d >= len(ent.Digests) { // last chunk
-			size = i.chunkShift.Leftover(ent.Size)
+		n--
+		if n == 0 {
+			return true
 		}
-		return ent, ent.Digests[i.d-i.digestLen : i.d], size, true
+	}
+}
+
+func (i *digestIterator) toFileStart() bool {
+	ent := i.ent()
+	if ent == nil {
+		return false
+	}
+	i.d = i.digestLen
+	return i.d <= len(ent.Digests)
+}
+
+func (i *digestIterator) findFile(path string) bool {
+	for {
+		ent := i.ent()
+		if ent == nil {
+			return false
+		}
+		if ent.Path == path {
+			return i.toFileStart()
+		}
+		e++
 	}
 }
 
@@ -726,5 +814,7 @@ func isManPageGz(ent *pb.Entry) bool {
 	return ent.Type == pb.EntryType_REGULAR && reManPage.MatchString(ent.Path)
 }
 func isLinuxKoXz(ent *pb.Entry) bool {
-	return ent.Type == pb.EntryType_REGULAR && reLinuxKoXz.MatchString(ent.Path)
+	// kheaders.ko.xz is mostly an embedded .tar.xz file (yes, again), so expanding it won't help.
+	return ent.Type == pb.EntryType_REGULAR && reLinuxKoXz.MatchString(ent.Path) &&
+		path.Base(ent.Path) != "kheaders.ko.xz"
 }
