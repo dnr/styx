@@ -646,28 +646,12 @@ func (s *server) diffRecompress(ctx context.Context, data []byte, args []string)
 	case manifester.ExpandGz:
 		gz := exec.Command(common.GzipBin, "-nc")
 		gz.Stdin = bytes.NewReader(data)
-		out, err := gz.StdoutPipe()
-		if err != nil {
-			return nil, err
-		}
-		if err := gz.Start(); err != nil {
-			return nil, err
-		}
-		newData, readErr := io.ReadAll(out)
-		return common.ValOrErr(newData, cmp.Or(gz.Wait(), readErr))
+		return gz.Output()
 
 	case manifester.ExpandXz:
 		xz := exec.Command(common.XzBin, append([]string{"-c"}, args[1:]...)...)
 		xz.Stdin = bytes.NewReader(data)
-		out, err := xz.StdoutPipe()
-		if err != nil {
-			return nil, err
-		}
-		if err := xz.Start(); err != nil {
-			return nil, err
-		}
-		newData, readErr := io.ReadAll(out)
-		return common.ValOrErr(newData, cmp.Or(xz.Wait(), readErr))
+		return xz.Output()
 
 	default:
 		return nil, fmt.Errorf("unknown expander %q", args[0])

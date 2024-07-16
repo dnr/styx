@@ -149,6 +149,8 @@ func (s *server) handleChunkDiff(w http.ResponseWriter, req *http.Request) {
 	var wg sync.WaitGroup
 
 	// fetch both in parallel
+	// TODO: use errgroup for this entire operation (including fetches and expands) so we can
+	// cancel it cleanly all at once
 	wg.Add(2)
 	go func() {
 		baseData, baseErr = s.expand(req.Context(), r.Bases, chunksInParallel/2, r.ExpandBeforeDiff)
