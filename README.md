@@ -334,7 +334,7 @@ The idea of Styx is to partially decouple local storage sharing from network
 transfer sharing. Local storage uses aligned fixed size chunks for performance
 (this part isn't really changeable), but as long as we can reconstruct the data,
 we can inject anything into Styx: whole nar files, CDC-reconstituted nars,
-differentially-compressed nars, or (the current choice)
+differentially-compressed nars, or (the current implementation)
 differentially-compressed/individually-retrieved chunks.
 
 There are some nice properties of using the same chunks for transfer that we do
@@ -343,7 +343,7 @@ we have and what we're missing, and makes building manifests simpler. But it's
 not strictly required.
 
 
-### Expanding compressed files
+### Diffing compressed files
 
 If you've poked around in your Nix store, you might have noticed some packages
 contain compressed files. Prominent examples are man pages (compressed with
@@ -351,25 +351,28 @@ gzip), Linux kernel module files (compressed with xz), and Linux firmware
 (compressed with xz). This makes some sense for normal substitution, since those
 files aren't often used and can be smaller on disk.
 
-For Styx, though, this is actually conterproductive: Files that are not used are
+For Styx, though, this is actually counterproductive: Files that are not used are
 simply never downloaded, so it doesn't matter whether they're compressed or not.
-Per-file also interferes with Styx's differential compression (and nar
-compression for that matter): A small change in a file will produce a large
-change in the compressed version of that file, at least after the first point
-where they differ.
+Per-file compression also interferes with Styx's differential compression (and
+nar compression too for that matter): A small change in a file will produce a
+large change in the compressed version of that file, at least after the first
+point where they differ.
 
-So it would be nice to undo this compression so we can get better binary diffs.
-Actually we can: the manifester can simply un-gzip or un-xz the files in the nar
-as it reads it, and present to Styx a package made of uncompressed files.
-There's only two issues:
+Can we still get some benefits of differential compression? Yes, we just have to
+do it on the uncompressed data: To construct a diff, we decompress a whole
+target file and a whole base file, and diff those. The tricky part is that when
+we reconstruct the target, we get it in uncompressed form, but we need the
+compressed form. So we have to recompress it. In general, this may not be
+possible: compression algorithms may not be deterministic, and even if they are,
+they may have many parameters that affect the output and we may not know the
+exact parameters used the first time.
 
-- We should probably rename the files by removing the .gz/.xz extension so
-  programs don't get confused. We'll also have to be careful to rewrite
-  symlinks.
-- If we modify the contents of the package, it will no longer match the nar and
-  Nix will fail to verify it. This is fine as long as we understand what's
-  happening. We could re-generate the nar signature with our own key if we
-  really wanted.
+It turns out that in the most common cases, it is possible:
+
+- Man pages are compressed with gzip with default settings (level 6), and gzip
+  is very stable.
+- Linux kernel modules are compressed with xz with non-standard but known
+  settings, which are deterministic and seem stable from version to version.
 
 (This isn't fully implemented yet.)
 
@@ -396,6 +399,19 @@ For now, don't let the disk get full or things will probably go badly.
 (This isn't implemented yet.)
 
 
+### CI
+
+There's a CI system (named Charon, on theme) that builds a basic NixOS
+configuration with the custom kernel options and patched Nix, and pushes it to a
+binary cache on S3.
+It re-builds on any update to either the NixOS channel or to the Styx release
+branch.
+This makes it possible to try Styx without building your own patched kernel.
+
+It also builds Styx manifests and pushes all the required chunks into the chunk
+store, so that requests can be satisfied quickly from the manifest cache.
+
+
 ### Cost of server components
 
 TBD
@@ -404,13 +420,15 @@ TBD
 ## How to use it
 
 Note that Styx requires two "experimental" kernel options to be enabled, so all
-of the following commands will build a custom kernel. I'll set up a binary cache
-with kernel builds soon.
+of the following commands will build a custom kernel. You can use the Styx
+binary cache to avoid building it yourself.
 
-At least kernel 6.8 is recommended since some bugs were fixed. These commands
-will use `linuxPackages_latest`.
+At least kernel 6.8 is required since some bugs were fixed. For now
+(nixos-24.05), you can use `boot.kernelPackages = pkgs.linuxPackages_latest;` to
+get a 6.9+ kernel.
 
-This will also build a patched Nix.
+This will also replace the system Nix with a patched Nix, also available on the
+binary cache.
 
 #### Run the test suite in a VM
 
@@ -436,9 +454,13 @@ with `nix-shell -p ...` and see what happens.
 
 ```
    imports = [
-      ./path/to/this/repo/module
+     "${fetchTarball "https://github.com/dnr/styx/archive/release.tar.gz"}/module"
+     # or use your preferred pinning method
    ];
+   # This enables all features and patches.
+   # Look at module/defualt.nix for more fine-grained enable options if desired.
    services.styx.enable = true;
+   # This sets a list of regexes to consider using Styx.
    nix.settings.styx-include = [ "list" "of" "package" "name" "regexp-.*" ];
 ```
 
@@ -457,7 +479,7 @@ with `nix-shell -p ...` and see what happens.
     - Exploring other approaches like simhash
     - Consider how to make diffs more cacheable
 - Prefetch {file, package} command
-- Expanding compressed files (in-progress)
+- Diffing compressed files (in-progress)
 - Combine multiple store paths into images to reduce overhead
 - GC
 - Respond to cachefiles culling requests

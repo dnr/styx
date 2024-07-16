@@ -588,11 +588,11 @@ func (a *heavyActivities) HeavyBuild(ctx context.Context, req *buildReq) (*build
 		eg.Go(func() error {
 			sph := m.storePath[11:43]
 			_, err := a.b.Build(gCtx, m.upstream, sph, 0, 0, m.storePath)
-			err = nil // TODO: return err here after we can handle bare file
 			return err
 		})
 	}
 	if err := eg.Wait(); err != nil {
+		l.Error("manifest error", "error", err)
 		return nil, err
 	}
 
