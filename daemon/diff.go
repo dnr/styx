@@ -242,44 +242,50 @@ func (s *server) buildDiffOp(
 		// shouldn't happen
 		return nil, fmt.Errorf("req digest not found in manifest")
 	}
-	expandManPage := isManPageGz(reqEnt)
-	expandLinuxKo := isLinuxKoXz(reqEnt)
+	switch {
+	case isManPageGz(reqEnt):
+		op.diffRecompress = []string{manifester.ExpandGz}
+	case isLinuxKoXz(reqEnt):
+		// note: currently largest kernel module on my system (excluding kheaders) is
+		// amdgpu.ko.xz at 3.4mb, 54 chunks (64kb), and expands to 24.4mb, which is
+		// reasonable to pass through the chunk differ.
+		// TODO: maybe get these args from looking at the base? or the chunk differ can look at
+		// req and return them? or try several values and take the matching one?
+		op.diffRecompress = []string{manifester.ExpandXz, "--check=crc32", "--lzma2=dict=1MiB"}
+	}
 
-	if expandManPage || expandLinuxKo {
+	if len(op.diffRecompress) > 0 {
 		// diff with expanding and recompression
 
-		switch {
-		case expandManPage:
-			// single file with recompression
-			op.diffRecompress = []string{manifester.ExpandGz}
-		case expandLinuxKo:
-			// note: currently largest kernel module on my system (excluding kheaders) is
-			// amdgpu.ko.xz at 3,538,004 bytes, 54 chunks (64kb), and expands to 25,589,856 bytes,
-			// which is reasonable to pass through the chunk differ.
-			// TODO: maybe get these args from looking at the base? or the chunk differ can look at
-			// req and return them? or try several values and take the matching one?
-			op.diffRecompress = []string{manifester.ExpandXz, "--check=crc32", "--lzma2=dict=1MiB"}
-		}
-
-		for i := 0; i < len(reqEnt.Digests); i += s.digestBytes {
-			reqDigest := reqEnt.Digests[i : i+s.digestBytes]
-			reqLoc, _ := s.digestPresent(tx, reqDigest)
+		for reqIter.toFileStart(); reqIter.ent() == reqEnt; reqIter.next(1) {
+			reqDigest := reqIter.digest()
+			reqLoc := s.digestLoc(tx, reqDigest)
 			if reqLoc.Addr == 0 {
-				// FIXME: shouldn't happen
+				return nil, fmt.Errorf("digest in entry of requested digest is not mapped")
 			}
-			// FIXME: figure out size
-			op.addReq(reqDigest, reqSize, reqLoc)
-			// FIXME: what if loc is already in diffMap :(
-			s.diffMap[reqLoc] = op
+			op.addReq(reqDigest, reqIter.size(), reqLoc)
+			// We have to request the whole file, even chunks we already have or are already
+			// diffing (though that's very unlikely). Enter into diffMap if we can, otherwise
+			// don't bother.
+			if s.diffMap[reqLoc] == nil {
+				s.diffMap[reqLoc] = op
+			}
 		}
 
-		if usingBase {
-			if baseIter.findFile(reqEnt.Path) {
-				baseEnt := baseIter.ent()
-				// FIXME: do same as loop above for base
-			} else {
-				log.Println("missing corresponding file", reqEnt.Path, "in", res.baseHash.String()[:5], res.baseName)
+		if baseIter.findFile(reqEnt.Path) {
+			baseEnt := baseIter.ent()
+			for baseIter.toFileStart(); baseIter.ent() == baseEnt; baseIter.next(1) {
+				baseDigest := baseIter.digest()
+				baseLoc := s.digestLoc(tx, baseDigest)
+				if baseLoc.Addr == 0 {
+					return nil, fmt.Errorf("digest in entry of base digest is not mapped")
+				}
+				op.addBase(baseDigest, baseIter.size(), baseLoc)
 			}
+		} else if usingBase {
+			log.Println("missing corresponding file", reqEnt.Path,
+				"req", reqHash.String()[:5], res.reqName,
+				"base", res.baseHash.String()[:5], res.baseName)
 		}
 	} else {
 		// normal diff
@@ -312,8 +318,13 @@ func (s *server) buildDiffOp(
 		}
 	}
 
+	recompress := ""
+	if len(op.diffRecompress) > 0 {
+		recompress = " <" + op.diffRecompress[0] + ">"
+	}
+
 	if usingBase {
-		log.Printf("diffing %s…-%s -> %s…-%s [%d/%d -> %d/%d]",
+		log.Printf("diffing %s…-%s -> %s…-%s [%d/%d -> %d/%d]%s",
 			res.baseHash.String()[:5],
 			res.baseName,
 			reqHash.String()[:5],
@@ -322,13 +333,15 @@ func (s *server) buildDiffOp(
 			len(op.baseInfo),
 			op.reqTotalSize,
 			len(op.reqInfo),
+			recompress,
 		)
 	} else {
-		log.Printf("requesting %s…-%s [%d/%d]",
+		log.Printf("requesting %s…-%s [%d/%d]%s",
 			reqHash.String()[:5],
 			res.reqName,
 			op.reqTotalSize,
 			len(op.reqInfo),
+			recompress,
 		)
 	}
 
@@ -360,10 +373,14 @@ func (s *server) startOp(ctx context.Context, op *diffOp) {
 		switch op.tp {
 		case opTypeDiff:
 			for _, i := range op.reqInfo {
-				delete(s.diffMap, i.loc)
+				if s.diffMap[i.loc] == op {
+					delete(s.diffMap, i.loc)
+				}
 			}
 		case opTypeSingle:
-			delete(s.diffMap, op.singleLoc)
+			if s.diffMap[op.singleLoc] == op {
+				delete(s.diffMap, op.singleLoc)
+			}
 		}
 		s.diffLock.Unlock()
 
@@ -699,22 +716,23 @@ func (s *server) locPresent(tx *bbolt.Tx, loc erofs.SlabLoc) bool {
 	return db.Get(addrKey(loc.Addr|presentMask)) != nil
 }
 
-func (s *server) digestPresent(tx *bbolt.Tx, digest []byte) (erofs.SlabLoc, bool) {
+func (s *server) digestLoc(tx *bbolt.Tx, digest []byte) erofs.SlabLoc {
 	v := tx.Bucket(chunkBucket).Get(digest)
 	if v == nil {
-		return erofs.SlabLoc{}, false // shouldn't happen
+		return erofs.SlabLoc{} // shouldn't happen
 	}
-	loc := loadLoc(v)
+	return loadLoc(v)
+}
+
+func (s *server) digestPresent(tx *bbolt.Tx, digest []byte) (erofs.SlabLoc, bool) {
+	loc := s.digestLoc(tx, digest)
 	return loc, s.locPresent(tx, loc)
 }
 
 // digestIterator is positioned at first chunk
 func (s *server) newDigestIterator(entries []*pb.Entry) digestIterator {
-	i := digestIterator{ents: entries, digestLen: s.digestBytes, chunkShift: s.chunkShift}
-	// move to first actual digest
-	if i.digest() == nil {
-		i.next(1)
-	}
+	i := digestIterator{ents: entries, digestLen: s.digestBytes, chunkShift: s.chunkShift, d: -s.digestBytes}
+	i.next(1) // move to first actual digest
 	return i
 }
 
@@ -753,22 +771,16 @@ func (i *digestIterator) size() int64 {
 
 // moves forward n chunks. returns true if valid.
 func (i *digestIterator) next(n int) bool {
-	// FIXME: implement jump by n more efficiently
+	i.d += n * i.digestLen
 	for {
 		ent := i.ent()
 		if ent == nil {
 			return false
-		}
-		i.d += i.digestLen
-		if i.d >= len(ent.Digests) {
-			i.e++
-			i.d = 0
-			continue
-		}
-		n--
-		if n == 0 {
+		} else if i.d+i.digestLen <= len(ent.Digests) {
 			return true
 		}
+		i.e++
+		i.d -= len(ent.Digests)
 	}
 }
 
