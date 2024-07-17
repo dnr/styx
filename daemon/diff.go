@@ -276,9 +276,16 @@ func (s *server) buildDiffOp(
 			baseEnt := baseIter.ent()
 			for baseIter.toFileStart(); baseIter.ent() == baseEnt; baseIter.next(1) {
 				baseDigest := baseIter.digest()
-				baseLoc := s.digestLoc(tx, baseDigest)
+				baseLoc, basePresent := s.digestPresent(tx, baseDigest)
 				if baseLoc.Addr == 0 {
 					return nil, fmt.Errorf("digest in entry of base digest is not mapped")
+				} else if !basePresent {
+					// This base is not present, fall back to recompress with no base.
+					// TODO: try another base instead
+					log.Println("base not present", res.baseHash.String()[:5], res.baseName)
+					op.resetBase()
+					usingBase = false
+					break
 				}
 				op.addBase(baseDigest, baseIter.size(), baseLoc)
 			}
@@ -819,6 +826,12 @@ func (op *diffOp) addBase(digest []byte, size int64, loc erofs.SlabLoc) {
 	op.baseDigests = append(op.baseDigests, digest...)
 	op.baseInfo = append(op.baseInfo, info{size, loc})
 	op.baseTotalSize += size
+}
+
+func (op *diffOp) resetBase() {
+	op.baseDigests = nil
+	op.baseInfo = nil
+	op.baseTotalSize = 0
 }
 
 func (op *diffOp) addReq(digest []byte, size int64, loc erofs.SlabLoc) {
