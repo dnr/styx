@@ -286,12 +286,9 @@ func (s *server) buildDiffOp(
 				if baseLoc.Addr == 0 {
 					return nil, fmt.Errorf("digest in entry of base digest is not mapped")
 				} else if !basePresent {
-					// This base is not present, fall back to recompress with no base.
+					// Base is not present, don't bother with a batch (data is already compressed).
 					// TODO: try another base instead
-					log.Println("base not present", abbrBaseName)
-					op.resetBase()
-					usingBase = false
-					break
+					return nil, fmt.Errorf("base not present", abbrBaseName)
 				}
 				op.addBase(baseDigest, baseIter.size(), baseLoc)
 			}
@@ -849,12 +846,6 @@ func (op *diffOp) addBase(digest []byte, size int64, loc erofs.SlabLoc) {
 	op.baseDigests = append(op.baseDigests, digest...)
 	op.baseInfo = append(op.baseInfo, info{size, loc})
 	op.baseTotalSize += size
-}
-
-func (op *diffOp) resetBase() {
-	op.baseDigests = nil
-	op.baseInfo = nil
-	op.baseTotalSize = 0
 }
 
 func (op *diffOp) addReq(digest []byte, size int64, loc erofs.SlabLoc) {
