@@ -180,6 +180,7 @@ func (s *server) readSingle(ctx context.Context, loc erofs.SlabLoc, digest []byt
 	} else if len(chunk) > len(buf) || &buf[0] != &chunk[0] {
 		return fmt.Errorf("chunk overflowed chunk size: %d > %d", len(chunk), len(buf))
 	}
+	s.stats.singleBytes.Add(int64(len(chunk)))
 
 	if err = s.gotNewChunk(loc, digest, chunk); err != nil {
 		return fmt.Errorf("gotNewChunk error (single): %w", err)
@@ -260,6 +261,9 @@ func (s *server) buildDiffOp(
 
 	if len(op.diffRecompress) > 0 {
 		// diff with expanding and recompression
+		if !usingBase {
+			return nil, fmt.Errorf("digest in entry of requested digest is not mapped")
+		}
 
 		for reqIter.toFileStart(); reqIter.ent() == reqEnt; reqIter.next(1) {
 			reqDigest := reqIter.digest()
@@ -276,8 +280,8 @@ func (s *server) buildDiffOp(
 			}
 		}
 
-		// findFile will only return true if it found an entry and it has digests, i.e.
-		// missing, symlink, inline, etc. will all skip this.
+		// findFile will only return true if it found an entry and it has digests,
+		// i.e. missing, symlink, inline, etc. will all return false.
 		if baseIter.findFile(reqEnt.Path) {
 			baseEnt := baseIter.ent()
 			for baseIter.toFileStart(); baseIter.ent() == baseEnt; baseIter.next(1) {
@@ -288,13 +292,12 @@ func (s *server) buildDiffOp(
 				} else if !basePresent {
 					// Base is not present, don't bother with a batch (data is already compressed).
 					// TODO: try another base instead
-					return nil, fmt.Errorf("base not present", abbrBaseName)
+					return nil, fmt.Errorf("recompress base chunk not present")
 				}
 				op.addBase(baseDigest, baseIter.size(), baseLoc)
 			}
-		} else if usingBase {
-			log.Println("missing corresponding file", reqEnt.Path,
-				"req", abbrReqName, "base", abbrBaseName)
+		} else {
+			return nil, fmt.Errorf("recompress base missing corresponding file")
 		}
 	} else {
 		// normal diff
@@ -441,12 +444,15 @@ func (s *server) doDiffOp(ctx context.Context, op *diffOp) error {
 	}
 
 	// decompress from diff
-	reqData, err := io.ReadAll(zstd.NewReaderPatcher(diff, baseData))
+	diffCounter := countReader{r: diff}
+	reqData, err := io.ReadAll(zstd.NewReaderPatcher(&diffCounter, baseData))
 	if err != nil {
 		return fmt.Errorf("expandChunkDiff error: %w", err)
 	}
-	if len(reqData) < int(op.reqTotalSize) {
-		return fmt.Errorf("decompressed data is too short: %d < %d", len(reqData), op.reqTotalSize)
+	if len(op.baseInfo) == 0 {
+		s.stats.batchBytes.Add(diffCounter.c)
+	} else {
+		s.stats.diffBytes.Add(diffCounter.c)
 	}
 
 	var statsBytes []byte
@@ -466,12 +472,13 @@ func (s *server) doDiffOp(ctx context.Context, op *diffOp) error {
 		}
 	}
 
+	if len(reqData) < int(op.reqTotalSize) {
+		return fmt.Errorf("decompressed data is too short: %d < %d", len(reqData), op.reqTotalSize)
+	}
+
 	// write out to slab
 	p = 0
 	for idx, i := range op.reqInfo {
-		if p+i.size > int64(len(reqData)) {
-			return fmt.Errorf("eof in diff data")
-		}
 		// slice with cap to force copy if less than block size
 		b := reqData[p : p+i.size : p+i.size]
 		digest := op.reqDigests[idx*s.digestBytes : (idx+1)*s.digestBytes]
