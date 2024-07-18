@@ -211,12 +211,8 @@ func (s *server) buildDiffOp(
 	}
 	defer tx.Rollback()
 
-	abbrReqName := reqHash.String()[:5] + "…-" + res.reqName
-	var abbrBaseName string
-
 	var baseIter digestIterator
 	if usingBase {
-		abbrBaseName = res.baseHash.String()[:5] + "…-" + res.baseName
 		baseEntries, err := s.getDigestsFromImage(ctx, tx, res.baseHash, isManifest)
 		if err != nil {
 			log.Println("failed to get digests for", res.baseHash, res.baseName)
@@ -336,16 +332,23 @@ func (s *server) buildDiffOp(
 	}
 
 	if usingBase {
-		log.Printf("diffing %s -> %s [%d/%d -> %d/%d]%s",
-			abbrBaseName, abbrReqName,
-			op.baseTotalSize, len(op.baseInfo),
-			op.reqTotalSize, len(op.reqInfo),
+		log.Printf("diffing %s…-%s -> %s…-%s [%d/%d -> %d/%d]%s",
+			res.baseHash.String()[:5],
+			res.baseName,
+			reqHash.String()[:5],
+			res.reqName,
+			op.baseTotalSize,
+			len(op.baseInfo),
+			op.reqTotalSize,
+			len(op.reqInfo),
 			recompress,
 		)
 	} else {
-		log.Printf("requesting %s [%d/%d]%s",
-			abbrReqName,
-			op.reqTotalSize, len(op.reqInfo),
+		log.Printf("requesting %s…-%s [%d/%d]%s",
+			reqHash.String()[:5],
+			res.reqName,
+			op.reqTotalSize,
+			len(op.reqInfo),
 			recompress,
 		)
 	}
