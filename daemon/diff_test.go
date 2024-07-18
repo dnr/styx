@@ -82,6 +82,10 @@ func TestDigestIterator_FindFile(t *testing.T) {
 	r.Equal(testEntries[4], i.ent())
 	r.Equal("11223344", string(i.digest()))
 	r.EqualValues(500, i.size())
+
+	r.False(i.findFile("/symlink"), "false even though file is present")
+	r.True(i.findFile("/lastfile"))
+	r.False(i.findFile("/dir/nextfile"), "doesn't go backwards")
 }
 
 func TestDigestIterator_ToFileStart(t *testing.T) {

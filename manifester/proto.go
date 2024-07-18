@@ -53,6 +53,10 @@ type (
 	// Bases and Reqs do not need to be the same length.
 	// (Caller must know the lengths of reqs ahead of time to be able to split the result.)
 	// Max number of digests in each is 256. With 64KiB chunks, that makes 16MiB total data.
+	//
+	// ChunkDiffStats must contain only integers! (For now, since we sometimes scan backwards
+	// to find the start of the stats. We can relax this requirement if we write a reverse json
+	// parser.)
 	ChunkDiffStats struct {
 		BaseChunks int   `json:"baseC"`
 		BaseBytes  int   `json:"baseB`

@@ -276,6 +276,8 @@ func (s *server) buildDiffOp(
 			}
 		}
 
+		// findFile will only return true if it found an entry and it has digests, i.e.
+		// missing, symlink, inline, etc. will all skip this.
 		if baseIter.findFile(reqEnt.Path) {
 			baseEnt := baseIter.ent()
 			for baseIter.toFileStart(); baseIter.ent() == baseEnt; baseIter.next(1) {
@@ -422,19 +424,23 @@ func (s *server) doDiffOp(ctx context.Context, op *diffOp) error {
 	}
 	defer diff.Close()
 
-	baseData := make([]byte, op.baseTotalSize)
-	p := int64(0)
-	for _, i := range op.baseInfo {
-		if err := s.getKnownChunk(i.loc, baseData[p:p+i.size]); err != nil {
-			return fmt.Errorf("getKnownChunk error: %w", err)
-		}
-		p += i.size
-	}
+	var p int64
+	var baseData []byte
 
-	// decompress if needed
-	baseData, err = s.diffDecompress(ctx, baseData, op.diffRecompress)
-	if err != nil {
-		return fmt.Errorf("decompress error: %w", err)
+	if len(op.baseInfo) > 0 {
+		baseData = make([]byte, op.baseTotalSize)
+		for _, i := range op.baseInfo {
+			if err := s.getKnownChunk(i.loc, baseData[p:p+i.size]); err != nil {
+				return fmt.Errorf("getKnownChunk error: %w", err)
+			}
+			p += i.size
+		}
+
+		// decompress if needed
+		baseData, err = s.diffDecompress(ctx, baseData, op.diffRecompress)
+		if err != nil {
+			return fmt.Errorf("decompress error: %w", err)
+		}
 	}
 
 	// decompress from diff
@@ -446,21 +452,36 @@ func (s *server) doDiffOp(ctx context.Context, op *diffOp) error {
 		return fmt.Errorf("decompressed data is too short: %d < %d", len(reqData), op.reqTotalSize)
 	}
 
-	// recompress if needed
-	reqData, err = s.diffRecompress(ctx, reqData, op.diffRecompress)
-	if err != nil {
-		return fmt.Errorf("recompress error: %w", err)
+	var statsBytes []byte
+	if len(op.diffRecompress) > 0 {
+		// reqData contains the concatenation of _un_compressed data plus stats.
+		// we need to recompress the data but not the stats, so strip off the stats.
+		// note: this only works since stats are only ints. if we have nested objects or
+		// strings we'll need a more complicated parser.
+		statsStart := bytes.LastIndexByte(reqData, '{')
+		if statsStart < 0 {
+			return fmt.Errorf("diff data has bad stats")
+		}
+		statsBytes = reqData[statsStart:]
+		reqData, err = s.diffRecompress(ctx, reqData[:statsStart], op.diffRecompress)
+		if err != nil {
+			return fmt.Errorf("recompress error: %w", err)
+		}
 	}
 
 	// write out to slab
 	p = 0
 	for idx, i := range op.reqInfo {
+		if p+i.size > int64(len(reqData)) {
+			return fmt.Errorf("eof in diff data")
+		}
 		// slice with cap to force copy if less than block size
 		b := reqData[p : p+i.size : p+i.size]
 		digest := op.reqDigests[idx*s.digestBytes : (idx+1)*s.digestBytes]
 		if err := s.gotNewChunk(i.loc, digest, b); err != nil {
 			if len(op.diffRecompress) > 0 && strings.Contains(err.Error(), "digest mismatch") {
 				// we didn't recompress correctly, fall back to single
+				// TODO: be able to try with different parameter variants
 				return fmt.Errorf("recompress mismatch")
 			}
 			return fmt.Errorf("gotNewChunk error (diff): %w", err)
@@ -470,10 +491,16 @@ func (s *server) doDiffOp(ctx context.Context, op *diffOp) error {
 
 	// rest is json stats
 	var st manifester.ChunkDiffStats
-	if err = json.Unmarshal(reqData[p:], &st); err == nil {
+	if statsBytes == nil {
+		// if we didn't recompress, stats follow immediately after data.
+		statsBytes = reqData[p:]
+	}
+	if err = json.Unmarshal(statsBytes, &st); err == nil {
 		log.Printf("diff %d/%d -> %d/%d = %d (%.1f%%)",
 			st.BaseBytes, st.BaseChunks, st.ReqBytes, st.ReqChunks,
 			st.DiffBytes, 100*float64(st.DiffBytes)/float64(st.ReqBytes))
+	} else {
+		log.Println("diff data has bad stats", err)
 	}
 
 	return nil
