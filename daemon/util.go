@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -95,4 +96,15 @@ func retryHttpRequest(ctx context.Context, method, url, cType string, body []byt
 		retry.OnRetry(func(n uint, err error) {
 			log.Printf("http error (%d): %v, retrying", n, err)
 		}))
+}
+
+type countReader struct {
+	r io.Reader
+	c int64
+}
+
+func (cr *countReader) Read(p []byte) (int, error) {
+	n, err := cr.r.Read(p)
+	cr.c += int64(n)
+	return n, err
 }

@@ -374,8 +374,6 @@ It turns out that in the most common cases, it is possible:
 - Linux kernel modules are compressed with xz with non-standard but known
   settings, which are deterministic and seem stable from version to version.
 
-(This isn't fully implemented yet.)
-
 
 ### GC
 
@@ -479,7 +477,6 @@ with `nix-shell -p ...` and see what happens.
     - Exploring other approaches like simhash
     - Consider how to make diffs more cacheable
 - Prefetch {file, package} command
-- Diffing compressed files (in-progress)
 - Combine multiple store paths into images to reduce overhead
 - GC
 - Respond to cachefiles culling requests
