@@ -22,9 +22,9 @@ import (
 	"github.com/DataDog/zstd"
 	"github.com/aws/aws-lambda-go/lambdaurl"
 	"golang.org/x/exp/slices"
-	"golang.org/x/sync/errgroup"
 
 	"github.com/dnr/styx/common"
+	"github.com/dnr/styx/common/errgroup"
 )
 
 const (
@@ -149,13 +149,15 @@ func (s *server) handleChunkDiff(w http.ResponseWriter, req *http.Request) {
 	var wg sync.WaitGroup
 
 	// fetch both in parallel
+	egCtx := errgroup.WithContext(req.Context())
+	egCtx.SetLimit(chunksInParallel)
 	wg.Add(2)
 	go func() {
-		baseData, baseErr = s.expand(req.Context(), r.Bases, chunksInParallel/2, r.ExpandBeforeDiff)
+		baseData, baseErr = s.expand(egCtx, r.Bases, r.ExpandBeforeDiff)
 		wg.Done()
 	}()
 	go func() {
-		reqData, reqErr = s.expand(req.Context(), r.Reqs, chunksInParallel/2, r.ExpandBeforeDiff)
+		reqData, reqErr = s.expand(egCtx, r.Reqs, r.ExpandBeforeDiff)
 		wg.Done()
 	}()
 	// wait for both
@@ -222,7 +224,7 @@ func (s *server) handleChunkDiff(w http.ResponseWriter, req *http.Request) {
 	log.Printf("diff done %#v", stats)
 }
 
-func (s *server) expand(ctx context.Context, digests []byte, parallel int, expand string) ([]byte, error) {
+func (s *server) expand(egCtx *errgroup.Group, digests []byte, expand string) ([]byte, error) {
 	if len(digests) == 0 {
 		return nil, nil
 	}
@@ -231,7 +233,7 @@ func (s *server) expand(ctx context.Context, digests []byte, parallel int, expan
 	case ExpandGz:
 		pr, pw := io.Pipe()
 		go func() {
-			pw.CloseWithError(s.fetchChunkSeries(ctx, digests, parallel, pw))
+			pw.CloseWithError(s.fetchChunkSeries(egCtx, digests, pw))
 		}()
 		gzr, err := gzip.NewReader(pr)
 		if err != nil {
@@ -241,7 +243,7 @@ func (s *server) expand(ctx context.Context, digests []byte, parallel int, expan
 		return io.ReadAll(gzr)
 
 	case ExpandXz:
-		decompress := exec.Command(common.XzBin, "-d")
+		decompress := exec.CommandContext(egCtx, common.XzBin, "-d")
 		pw, err := decompress.StdinPipe()
 		if err != nil {
 			return nil, err
@@ -254,7 +256,7 @@ func (s *server) expand(ctx context.Context, digests []byte, parallel int, expan
 			return nil, err
 		}
 		go func() {
-			s.fetchChunkSeries(ctx, digests, parallel, pw)
+			s.fetchChunkSeries(egCtx, digests, pw)
 			pw.Close()
 		}()
 		out, readErr := io.ReadAll(pr)
@@ -263,25 +265,24 @@ func (s *server) expand(ctx context.Context, digests []byte, parallel int, expan
 	default:
 		var out bytes.Buffer
 		out.Grow((len(digests) / s.digestBytes) << (s.mb.params.ChunkShift - 1))
-		err := s.fetchChunkSeries(ctx, digests, parallel, &out)
+		err := s.fetchChunkSeries(egCtx, digests, &out)
 		return common.ValOrErr(out.Bytes(), err)
 	}
 }
 
-func (s *server) fetchChunkSeries(ctx context.Context, digests []byte, parallel int, out io.Writer) error {
+func (s *server) fetchChunkSeries(egCtx *errgroup.Group, digests []byte, out io.Writer) error {
 	// TODO: ew, use separate setting?
 	cs := s.mb.cs
 
-	eg, gCtx := errgroup.WithContext(ctx)
-	chs := make(chan chan []byte, parallel)
+	chs := make(chan chan []byte, egCtx.Limit())
 	go func() {
-		for len(digests) > 0 {
+		for len(digests) > 0 && egCtx.Err() == nil {
 			digestStr := common.DigestStr(digests[:s.digestBytes])
 			digests = digests[s.digestBytes:]
 			ch := make(chan []byte)
 			chs <- ch
-			eg.Go(func() error {
-				b, err := cs.Get(gCtx, ChunkReadPath, digestStr, nil)
+			egCtx.Go(func() error {
+				b, err := cs.Get(egCtx, ChunkReadPath, digestStr, nil)
 				ch <- b
 				return err
 			})
@@ -289,15 +290,14 @@ func (s *server) fetchChunkSeries(ctx context.Context, digests []byte, parallel 
 		close(chs)
 	}()
 
-	var wErr error
 	for ch := range chs {
-		if b := <-ch; len(b) > 0 && wErr == nil {
+		if b := <-ch; len(b) > 0 && egCtx.Err() == nil {
 			if _, err := out.Write(b); err != nil {
-				wErr = err
+				egCtx.Cancel(err)
 			}
 		}
 	}
-	return cmp.Or(eg.Wait(), wErr)
+	return context.Cause(egCtx)
 }
 
 func (s *server) handleChunk(w http.ResponseWriter, r *http.Request) {

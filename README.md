@@ -509,3 +509,7 @@ with the Linux syscall exception, so theoretically Styx would not have to use
 GPL-2.0, but that's the simplest option for now. If you're interested in using
 this code under different terms, let me know.
 
+## Exceptions:
+
+- `common/errgroup` is copied and modified from <https://golang.org/x/sync/errgroup> with a BSD licence.
+
