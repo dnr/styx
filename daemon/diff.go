@@ -200,14 +200,35 @@ func (s *server) buildDiffOp(
 	}
 	defer tx.Rollback()
 
+	// local map to make sure we only ask for any chunk once when extending (both base and req)
+	// s.diffMap applies across requests
+	usingDigests := make(map[string]bool)
+
 	// find an image with a base with similar data. go backwards on the assumption that recent
 	// images with this chunk will be more similar.
-	for i := len(sphs) - 1; i >= 0; i-- {
+	var goodOp *diffOp
+	extendLimit := 3
+	for i := len(sphs) - 1; i >= 0 && extendLimit > 0; i-- {
 		if res, err := s.catalog.findBase(sphs[i]); err == nil {
-			if op, err := s.tryBuildDiffOp(ctx, tx, targetDigest, res); err == nil {
-				return op, nil
+			if goodOp == nil {
+				if op, err := s.tryBuildDiffOp(ctx, tx, targetDigest, res, usingDigests); err == nil {
+					goodOp = op
+				}
+			} else {
+				s.tryExtendDiffOp(ctx, tx, targetDigest, res, goodOp, usingDigests)
+				extendLimit--
+			}
+
+			if goodOp != nil {
+				// can't extend recompress op or full op
+				if len(goodOp.diffRecompress) > 0 || s.opFullBase(goodOp) && s.opFullReq(goodOp) {
+					break
+				}
 			}
 		}
+	}
+	if goodOp != nil {
+		return goodOp, nil
 	}
 
 	// can't find any base, diff latest against nothing
@@ -218,7 +239,7 @@ func (s *server) buildDiffOp(
 		baseName: noBaseName,
 		reqHash:  sph,
 	}
-	return s.tryBuildDiffOp(ctx, tx, targetDigest, res)
+	return s.tryBuildDiffOp(ctx, tx, targetDigest, res, usingDigests)
 }
 
 func (s *server) tryBuildDiffOp(
@@ -226,6 +247,7 @@ func (s *server) tryBuildDiffOp(
 	tx *bbolt.Tx,
 	targetDigest []byte,
 	res catalogResult,
+	usingDigests map[string]bool,
 ) (*diffOp, error) {
 	usingBase := res.baseName != noBaseName
 
@@ -331,16 +353,17 @@ func (s *server) tryBuildDiffOp(
 		// position baseIter at approximately the same place
 		baseIter.next(reqIdx)
 
-		maxDigestLen := s.digestBytes * s.cfg.ReadaheadChunks
-		for len(op.baseDigests) < maxDigestLen || len(op.reqDigests) < maxDigestLen {
+		for !s.opFullBase(op) || !s.opFullReq(op) {
 			baseDigest := baseIter.digest()
 			reqDigest := reqIter.digest()
-			if baseDigest != nil && len(op.baseDigests) < maxDigestLen {
+			if baseDigest != nil && !s.opFullBase(op) && !usingDigests[string(baseDigest)] {
+				usingDigests[string(baseDigest)] = true
 				if baseLoc, basePresent := s.digestPresent(tx, baseDigest); basePresent {
 					op.addBase(baseDigest, baseIter.size(), baseLoc)
 				}
 			}
-			if reqDigest != nil && len(op.reqDigests) < maxDigestLen {
+			if reqDigest != nil && !s.opFullReq(op) && !usingDigests[string(reqDigest)] {
+				usingDigests[string(reqDigest)] = true
 				if reqLoc, reqPresent := s.digestPresent(tx, reqDigest); !reqPresent && reqLoc.Addr > 0 && s.diffMap[reqLoc] == nil {
 					op.addReq(reqDigest, reqIter.size(), reqLoc)
 					// record we're diffing this one in the map
@@ -382,6 +405,90 @@ func (s *server) tryBuildDiffOp(
 	}
 
 	return op, nil
+}
+
+func (s *server) tryExtendDiffOp(
+	ctx context.Context,
+	tx *bbolt.Tx,
+	targetDigest []byte,
+	res catalogResult,
+	op *diffOp,
+	usingDigests map[string]bool,
+) {
+	// TODO: this is mostly a copy of code in tryBuildDiffOp. consolidate these.
+
+	if strings.HasPrefix(res.reqName, isManifestPrefix) {
+		// this is very unlikely to be useful for manifests
+		return
+	}
+	baseEntries, err := s.getDigestsFromImage(ctx, tx, res.baseHash, false)
+	if err != nil {
+		log.Println("failed to get digests for", res.baseHash, res.baseName)
+		return
+	}
+	baseIter := s.newDigestIterator(baseEntries)
+	reqEntries, err := s.getDigestsFromImage(ctx, tx, res.reqHash, false)
+	if err != nil {
+		log.Println("failed to get digests for", res.reqHash, res.reqName)
+		return
+	}
+	reqIter := s.newDigestIterator(reqEntries)
+
+	// find entry
+	reqIdx := 0
+	for !bytes.Equal(reqIter.digest(), targetDigest) {
+		reqIter.next(1)
+		reqIdx++
+	}
+
+	reqEnt := reqIter.ent()
+	if reqEnt == nil {
+		return // shouldn't happen
+	}
+
+	// position baseIter at approximately the same place
+	baseIter.next(reqIdx)
+
+	for !s.opFullBase(op) || !s.opFullReq(op) {
+		baseDigest := baseIter.digest()
+		reqDigest := reqIter.digest()
+		if baseDigest != nil && !s.opFullBase(op) && !usingDigests[string(baseDigest)] {
+			usingDigests[string(baseDigest)] = true
+			if baseLoc, basePresent := s.digestPresent(tx, baseDigest); basePresent {
+				op.addBase(baseDigest, baseIter.size(), baseLoc)
+			}
+		}
+		if reqDigest != nil && !s.opFullReq(op) && !usingDigests[string(reqDigest)] {
+			usingDigests[string(reqDigest)] = true
+			if reqLoc, reqPresent := s.digestPresent(tx, reqDigest); !reqPresent && reqLoc.Addr > 0 && s.diffMap[reqLoc] == nil {
+				op.addReq(reqDigest, reqIter.size(), reqLoc)
+				// record we're diffing this one in the map
+				s.diffMap[reqLoc] = op
+			}
+		}
+		baseOk, reqOk := baseIter.next(1), reqIter.next(1)
+		if !baseOk && !reqOk {
+			break
+		}
+	}
+
+	log.Printf("    +++ %s…-%s -> %s…-%s [%d/%d -> %d/%d]",
+		res.baseHash.String()[:5],
+		res.baseName,
+		res.reqHash.String()[:5],
+		res.reqName,
+		op.baseTotalSize,
+		len(op.baseInfo),
+		op.reqTotalSize,
+		len(op.reqInfo),
+	)
+}
+
+func (s *server) opFullBase(op *diffOp) bool {
+	return len(op.baseInfo) >= s.cfg.ReadaheadChunks
+}
+func (s *server) opFullReq(op *diffOp) bool {
+	return len(op.reqInfo) >= s.cfg.ReadaheadChunks
 }
 
 // call with diffLock held
@@ -660,7 +767,7 @@ func (s *server) getDigestsFromImage(ctx context.Context, tx *bbolt.Tx, sph Sph,
 	return common.ValOrErr(m.Entries, err)
 }
 
-// simplied form of getDigestsFromImage (TODO: consolidate)
+// simplified form of getDigestsFromImage (TODO: consolidate)
 func (s *server) getManifestLocal(ctx context.Context, tx *bbolt.Tx, key []byte) (*pb.Manifest, error) {
 	v := tx.Bucket(manifestBucket).Get(key)
 	if v == nil {
