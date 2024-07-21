@@ -195,7 +195,7 @@ func (s *server) buildDiffOp(
 	sphs []Sph,
 ) (*diffOp, error) {
 	// TODO: able to use multiple bases at once
-	res, reqHash := s.findBase(sphs)
+	res := s.findBase(sphs)
 	usingBase := res.baseName != noBaseName
 
 	isManifest := strings.HasPrefix(res.reqName, isManifestPrefix)
@@ -220,9 +220,9 @@ func (s *server) buildDiffOp(
 		}
 		baseIter = s.newDigestIterator(baseEntries)
 	}
-	reqEntries, err := s.getDigestsFromImage(ctx, tx, reqHash, isManifest)
+	reqEntries, err := s.getDigestsFromImage(ctx, tx, res.reqHash, isManifest)
 	if err != nil {
-		log.Println("failed to get digests for", reqHash, res.reqName)
+		log.Println("failed to get digests for", res.reqHash, res.reqName)
 		return nil, err
 	}
 	reqIter := s.newDigestIterator(reqEntries)
@@ -268,12 +268,6 @@ func (s *server) buildDiffOp(
 				return nil, fmt.Errorf("digest in entry of requested digest is not mapped")
 			}
 			op.addReq(reqDigest, reqIter.size(), reqLoc)
-			// We have to request the whole file, even chunks we already have or are already
-			// diffing (though that's very unlikely). Enter into diffMap if we can, otherwise
-			// don't bother.
-			if s.diffMap[reqLoc] == nil {
-				s.diffMap[reqLoc] = op
-			}
 		}
 
 		// findFile will only return true if it found an entry and it has digests,
@@ -295,6 +289,16 @@ func (s *server) buildDiffOp(
 		} else {
 			return nil, fmt.Errorf("recompress base missing corresponding file")
 		}
+
+		// No errors, we can enter into diff map. For recompress diff we need to ask for the
+		// whole file so we may include chunks we already have, or are already being diffed
+		// (though that's very unlikely). In that case just leave the existing entry.
+		for _, i := range op.reqInfo {
+			if s.diffMap[i.loc] == nil {
+				s.diffMap[i.loc] = op
+			}
+		}
+
 	} else {
 		// normal diff
 
@@ -335,7 +339,7 @@ func (s *server) buildDiffOp(
 		log.Printf("diffing %s…-%s -> %s…-%s [%d/%d -> %d/%d]%s",
 			res.baseHash.String()[:5],
 			res.baseName,
-			reqHash.String()[:5],
+			res.reqHash.String()[:5],
 			res.reqName,
 			op.baseTotalSize,
 			len(op.baseInfo),
@@ -345,7 +349,7 @@ func (s *server) buildDiffOp(
 		)
 	} else {
 		log.Printf("requesting %s…-%s [%d/%d]%s",
-			reqHash.String()[:5],
+			res.reqHash.String()[:5],
 			res.reqName,
 			op.reqTotalSize,
 			len(op.reqInfo),
@@ -513,21 +517,23 @@ func (s *server) doDiffOp(ctx context.Context, op *diffOp) error {
 	return nil
 }
 
-func (s *server) findBase(sphs []Sph) (catalogResult, Sph) {
+func (s *server) findBase(sphs []Sph) catalogResult {
 	// find an image with a base with similar data. go backwards on the assumption that recent
 	// images with this chunk will be more similar.
 	for i := len(sphs) - 1; i >= 0; i-- {
 		if res, err := s.catalog.findBase(sphs[i]); err == nil {
-			return res, sphs[i]
+			return res
 		}
 	}
+
 	// can't find any base, diff latest against nothing
 	sph := sphs[len(sphs)-1]
 	name := s.catalog.findName(sph)
 	return catalogResult{
 		reqName:  name,
 		baseName: noBaseName,
-	}, sph
+		reqHash:  sph,
+	}
 }
 
 // gotNewChunk may reslice b up to block size and zero up to the new size!
