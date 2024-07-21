@@ -34,6 +34,7 @@ type (
 		baseName string
 		matchLen int
 		baseHash Sph
+		reqHash  Sph
 	}
 )
 
@@ -142,6 +143,7 @@ func (c *catalog) findBase(reqHash Sph) (catalogResult, error) {
 		baseName: best.rest,
 		matchLen: bestmatch,
 		baseHash: best.hash,
+		reqHash:  reqHash,
 	}, nil
 }
 
