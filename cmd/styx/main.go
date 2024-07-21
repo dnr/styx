@@ -19,7 +19,7 @@ func withChunkStoreWrite(c *cobra.Command) runE {
 
 	c.Flags().StringVar(&cscfg.ChunkBucket, "chunkbucket", "", "s3 bucket to put chunks")
 	c.Flags().StringVar(&cscfg.ChunkLocalDir, "chunklocaldir", "", "local directory to put chunks")
-	c.Flags().IntVar(&cscfg.ZstdEncoderLevel, "zstd_level", 5, "encoder level for zstd chunks")
+	c.Flags().IntVar(&cscfg.ZstdEncoderLevel, "chunk_store_zstd_level", 5, "encoder level for zstd chunks")
 
 	return func(c *cobra.Command, args []string) error {
 		cs, err := manifester.NewChunkStoreWrite(cscfg)
@@ -96,6 +96,8 @@ func withManifesterConfig(c *cobra.Command) runE {
 	c.Flags().StringVar(&cfg.Bind, "bind", ":7420", "address to listen on")
 	c.Flags().StringArrayVar(&cfg.AllowedUpstreams, "allowed-upstream",
 		[]string{"cache.nixos.org"}, "allowed upstream binary caches")
+	c.Flags().IntVar(&cfg.ChunkDiffZstdLevel, "chunk_diff_zstd_level", 3, "encoder level for chunk diffs")
+	c.Flags().IntVar(&cfg.ChunkDiffParallel, "chunk_diff_parallel", 60, "parallelism for loading chunks for diff")
 
 	return func(c *cobra.Command, args []string) error {
 		store(c, cfg)

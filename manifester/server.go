@@ -51,6 +51,9 @@ type (
 	Config struct {
 		Bind             string
 		AllowedUpstreams []string
+
+		ChunkDiffZstdLevel int
+		ChunkDiffParallel  int
 	}
 )
 
@@ -131,9 +134,6 @@ func (s *server) handleManifest(w http.ResponseWriter, req *http.Request) {
 }
 
 func (s *server) handleChunkDiff(w http.ResponseWriter, req *http.Request) {
-	const level = 3             // TODO: configurable
-	const chunksInParallel = 60 // TODO: configurable
-
 	var r ChunkDiffReq
 	if err := json.NewDecoder(req.Body).Decode(&r); err != nil {
 		log.Println("json parse error:", err)
@@ -150,7 +150,7 @@ func (s *server) handleChunkDiff(w http.ResponseWriter, req *http.Request) {
 
 	// fetch both in parallel
 	egCtx := errgroup.WithContext(req.Context())
-	egCtx.SetLimit(chunksInParallel)
+	egCtx.SetLimit(s.cfg.ChunkDiffParallel)
 	wg.Add(2)
 	go func() {
 		baseData, baseErr = s.expand(egCtx, r.Bases, r.ExpandBeforeDiff)
@@ -180,7 +180,7 @@ func (s *server) handleChunkDiff(w http.ResponseWriter, req *http.Request) {
 	const statsSpace = 256
 
 	cw := countWriter{w: w}
-	zw := zstd.NewWriterPatcher(&cw, level, baseData, int64(len(reqData))+statsSpace)
+	zw := zstd.NewWriterPatcher(&cw, s.cfg.ChunkDiffZstdLevel, baseData, int64(len(reqData))+statsSpace)
 	if _, err := zw.Write(reqData); err != nil {
 		log.Printf("zstd write error %v", err)
 		w.WriteHeader(http.StatusInternalServerError) // this will fail if zstd wrote anything
