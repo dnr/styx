@@ -127,8 +127,10 @@ func (tb *testBase) startManifester() {
 	hostport := fmt.Sprintf("localhost:%d", port)
 	tb.manifesterAddr = fmt.Sprintf("http://%s/", hostport)
 	cfg := manifester.Config{
-		Bind:             hostport,
-		AllowedUpstreams: []string{upstreamHost},
+		Bind:               hostport,
+		AllowedUpstreams:   []string{upstreamHost},
+		ChunkDiffZstdLevel: 3,
+		ChunkDiffParallel:  60,
 	}
 
 	m, err := manifester.NewManifestServer(cfg, mb)
