@@ -194,8 +194,39 @@ func (s *server) buildDiffOp(
 	targetDigest []byte,
 	sphs []Sph,
 ) (*diffOp, error) {
-	// TODO: able to use multiple bases at once
-	res := s.findBase(sphs)
+	tx, err := s.db.Begin(false)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+
+	// find an image with a base with similar data. go backwards on the assumption that recent
+	// images with this chunk will be more similar.
+	for i := len(sphs) - 1; i >= 0; i-- {
+		if res, err := s.catalog.findBase(sphs[i]); err == nil {
+			if op, err := s.tryBuildDiffOp(ctx, tx, targetDigest, res); err == nil {
+				return op, nil
+			}
+		}
+	}
+
+	// can't find any base, diff latest against nothing
+	sph := sphs[len(sphs)-1]
+	name := s.catalog.findName(sph)
+	res := catalogResult{
+		reqName:  name,
+		baseName: noBaseName,
+		reqHash:  sph,
+	}
+	return s.tryBuildDiffOp(ctx, tx, targetDigest, res)
+}
+
+func (s *server) tryBuildDiffOp(
+	ctx context.Context,
+	tx *bbolt.Tx,
+	targetDigest []byte,
+	res catalogResult,
+) (*diffOp, error) {
 	usingBase := res.baseName != noBaseName
 
 	isManifest := strings.HasPrefix(res.reqName, isManifestPrefix)
@@ -204,12 +235,6 @@ func (s *server) buildDiffOp(
 			panic("catalog should not match manifest with data")
 		}
 	}
-
-	tx, err := s.db.Begin(false)
-	if err != nil {
-		return nil, err
-	}
-	defer tx.Rollback()
 
 	var baseIter digestIterator
 	if usingBase {
@@ -258,14 +283,14 @@ func (s *server) buildDiffOp(
 	if len(op.diffRecompress) > 0 {
 		// diff with expanding and recompression
 		if !usingBase {
-			return nil, fmt.Errorf("digest in entry of requested digest is not mapped")
+			return nil, errors.New("recompress requires a base")
 		}
 
 		for reqIter.toFileStart(); reqIter.ent() == reqEnt; reqIter.next(1) {
 			reqDigest := reqIter.digest()
 			reqLoc := s.digestLoc(tx, reqDigest)
 			if reqLoc.Addr == 0 {
-				return nil, fmt.Errorf("digest in entry of requested digest is not mapped")
+				return nil, errors.New("digest in entry of requested digest is not mapped")
 			}
 			op.addReq(reqDigest, reqIter.size(), reqLoc)
 		}
@@ -278,16 +303,15 @@ func (s *server) buildDiffOp(
 				baseDigest := baseIter.digest()
 				baseLoc, basePresent := s.digestPresent(tx, baseDigest)
 				if baseLoc.Addr == 0 {
-					return nil, fmt.Errorf("digest in entry of base digest is not mapped")
+					return nil, errors.New("digest in entry of base digest is not mapped")
 				} else if !basePresent {
 					// Base is not present, don't bother with a batch (data is already compressed).
-					// TODO: try another base instead
-					return nil, fmt.Errorf("recompress base chunk not present")
+					return nil, errors.New("recompress base chunk not present")
 				}
 				op.addBase(baseDigest, baseIter.size(), baseLoc)
 			}
 		} else {
-			return nil, fmt.Errorf("recompress base missing corresponding file")
+			return nil, errors.New("recompress base missing corresponding file")
 		}
 
 		// No errors, we can enter into diff map. For recompress diff we need to ask for the
@@ -515,25 +539,6 @@ func (s *server) doDiffOp(ctx context.Context, op *diffOp) error {
 	}
 
 	return nil
-}
-
-func (s *server) findBase(sphs []Sph) catalogResult {
-	// find an image with a base with similar data. go backwards on the assumption that recent
-	// images with this chunk will be more similar.
-	for i := len(sphs) - 1; i >= 0; i-- {
-		if res, err := s.catalog.findBase(sphs[i]); err == nil {
-			return res
-		}
-	}
-
-	// can't find any base, diff latest against nothing
-	sph := sphs[len(sphs)-1]
-	name := s.catalog.findName(sph)
-	return catalogResult{
-		reqName:  name,
-		baseName: noBaseName,
-		reqHash:  sph,
-	}
 }
 
 // gotNewChunk may reslice b up to block size and zero up to the new size!
