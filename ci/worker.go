@@ -31,9 +31,9 @@ import (
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/worker"
 	"go.temporal.io/sdk/workflow"
-	"golang.org/x/sync/errgroup"
 
 	"github.com/dnr/styx/common"
+	"github.com/dnr/styx/common/errgroup"
 	"github.com/dnr/styx/manifester"
 )
 
@@ -581,17 +581,17 @@ func (a *heavyActivities) HeavyBuild(ctx context.Context, req *buildReq) (*build
 	// manifest
 
 	stage.Store("manifest")
-	eg, gCtx := errgroup.WithContext(ctx)
-	eg.SetLimit(runtime.NumCPU())
+	egCtx := errgroup.WithContext(ctx)
+	egCtx.SetLimit(runtime.NumCPU())
 	for _, m := range toManifest {
 		m := m
-		eg.Go(func() error {
+		egCtx.Go(func() error {
 			sph := m.storePath[11:43]
-			_, err := a.b.Build(gCtx, m.upstream, sph, 0, 0, m.storePath)
+			_, err := a.b.Build(egCtx, m.upstream, sph, 0, 0, m.storePath)
 			return err
 		})
 	}
-	if err := eg.Wait(); err != nil {
+	if err := egCtx.Wait(); err != nil {
 		l.Error("manifest error", "error", err)
 		return nil, err
 	}

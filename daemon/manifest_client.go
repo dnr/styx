@@ -15,10 +15,10 @@ import (
 	"github.com/DataDog/zstd"
 	"github.com/nix-community/go-nix/pkg/nixbase32"
 	"go.etcd.io/bbolt"
-	"golang.org/x/sync/errgroup"
 	"google.golang.org/protobuf/proto"
 
 	"github.com/dnr/styx/common"
+	"github.com/dnr/styx/common/errgroup"
 	"github.com/dnr/styx/manifester"
 	"github.com/dnr/styx/pb"
 )
@@ -167,12 +167,11 @@ func (s *server) getNewManifest(ctx context.Context, url string, req manifester.
 
 	shards := max(min(int((narSize+shardBy-1)/shardBy), 40), 1)
 	log.Printf("requesting manifest for %s with %d shards", req.StorePathHash, shards)
-	eg, gCtx := errgroup.WithContext(ctx)
+	egCtx := errgroup.WithContext(ctx)
 
 	var shard0 []byte
 	for i := 0; i < shards; i++ {
-		i := i
-		eg.Go(func() error {
+		egCtx.Go(func() error {
 			thisReq := req
 			thisReq.ShardTotal = shards
 			thisReq.ShardIndex = i
@@ -180,7 +179,7 @@ func (s *server) getNewManifest(ctx context.Context, url string, req manifester.
 			if err != nil {
 				return err
 			}
-			res, err := retryHttpRequest(gCtx, http.MethodPost, url, "application/json", reqBytes)
+			res, err := retryHttpRequest(egCtx, http.MethodPost, url, "application/json", reqBytes)
 			if err != nil {
 				return fmt.Errorf("manifester http error: %w", err)
 			}
@@ -198,7 +197,7 @@ func (s *server) getNewManifest(ctx context.Context, url string, req manifester.
 		})
 	}
 
-	err := eg.Wait()
+	err := egCtx.Wait()
 	if err != nil {
 		return nil, err
 	}

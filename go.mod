@@ -1,6 +1,6 @@
 module github.com/dnr/styx
 
-go 1.21.5
+go 1.22
 
 replace github.com/DataDog/zstd => github.com/dnr/datadog-zstd-go v0.0.0-20240512084359-465ecf226843
 

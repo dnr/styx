@@ -20,11 +20,11 @@ import (
 	"github.com/nix-community/go-nix/pkg/nar"
 	"github.com/nix-community/go-nix/pkg/narinfo"
 	"github.com/nix-community/go-nix/pkg/narinfo/signature"
-	"golang.org/x/sync/errgroup"
 	"golang.org/x/sync/semaphore"
 	"google.golang.org/protobuf/proto"
 
 	"github.com/dnr/styx/common"
+	"github.com/dnr/styx/common/errgroup"
 	"github.com/dnr/styx/pb"
 )
 
@@ -318,15 +318,15 @@ func (b *ManifestBuilder) BuildFromNar(ctx context.Context, args *BuildArgs, r i
 		return nil, err
 	}
 
-	eg, gCtx := errgroup.WithContext(ctx)
-	for err == nil && gCtx.Err() == nil {
-		err = b.entry(gCtx, args, m, nr, eg)
+	egCtx := errgroup.WithContext(ctx)
+	for err == nil && egCtx.Err() == nil {
+		err = b.entry(egCtx, args, m, nr)
 	}
 	if err == io.EOF {
 		err = nil
 	}
 
-	return common.ValOrErr(m, cmp.Or(err, eg.Wait()))
+	return common.ValOrErr(m, cmp.Or(err, egCtx.Wait()))
 }
 
 func (b *ManifestBuilder) ManifestAsEntry(ctx context.Context, args *BuildArgs, path string, manifest *pb.Manifest) (*pb.Entry, error) {
@@ -346,13 +346,13 @@ func (b *ManifestBuilder) ManifestAsEntry(ctx context.Context, args *BuildArgs, 
 		return entry, nil
 	}
 
-	eg, gCtx := errgroup.WithContext(ctx)
-	entry.Digests, err = b.chunkData(gCtx, args, int64(len(mb)), bytes.NewReader(mb), eg)
+	egCtx := errgroup.WithContext(ctx)
+	entry.Digests, err = b.chunkData(egCtx, args, int64(len(mb)), bytes.NewReader(mb))
 
-	return common.ValOrErr(entry, cmp.Or(err, eg.Wait()))
+	return common.ValOrErr(entry, cmp.Or(err, egCtx.Wait()))
 }
 
-func (b *ManifestBuilder) entry(ctx context.Context, args *BuildArgs, m *pb.Manifest, nr *nar.Reader, eg *errgroup.Group) error {
+func (b *ManifestBuilder) entry(egCtx *errgroup.Group, args *BuildArgs, m *pb.Manifest, nr *nar.Reader) error {
 	h, err := nr.Next()
 	if err != nil { // including io.EOF
 		return err
@@ -385,7 +385,7 @@ func (b *ManifestBuilder) entry(ctx context.Context, args *BuildArgs, m *pb.Mani
 			}
 		} else {
 			var err error
-			e.Digests, err = b.chunkData(ctx, args, e.Size, dataR, eg)
+			e.Digests, err = b.chunkData(egCtx, args, e.Size, dataR)
 			if err != nil {
 				return err
 			}
@@ -402,13 +402,13 @@ func (b *ManifestBuilder) entry(ctx context.Context, args *BuildArgs, m *pb.Mani
 	return nil
 }
 
-func (b *ManifestBuilder) chunkData(ctx context.Context, args *BuildArgs, dataSize int64, r io.Reader, eg *errgroup.Group) ([]byte, error) {
+func (b *ManifestBuilder) chunkData(egCtx *errgroup.Group, args *BuildArgs, dataSize int64, r io.Reader) ([]byte, error) {
 	nChunks := int((dataSize + b.chunk.Size() - 1) >> b.chunk)
 	fullDigests := make([]byte, nChunks*b.digestBytes)
 	digests := fullDigests
 	remaining := dataSize
 	for remaining > 0 {
-		if err := b.chunksem.Acquire(ctx, 1); err != nil {
+		if err := b.chunksem.Acquire(egCtx, 1); err != nil {
 			return nil, err
 		}
 
@@ -432,7 +432,7 @@ func (b *ManifestBuilder) chunkData(ctx context.Context, args *BuildArgs, dataSi
 			args.chunkIndex++
 		}
 
-		eg.Go(func() error {
+		egCtx.Go(func() error {
 			defer b.chunksem.Release(1)
 			defer b.chunkPool.Put(_data)
 			h := sha256.New()
@@ -442,7 +442,7 @@ func (b *ManifestBuilder) chunkData(ctx context.Context, args *BuildArgs, dataSi
 			if !putChunk {
 				return nil
 			}
-			_, err := b.cs.PutIfNotExists(ctx, ChunkReadPath, common.DigestStr(digest), data)
+			_, err := b.cs.PutIfNotExists(egCtx, ChunkReadPath, common.DigestStr(digest), data)
 			return err
 		})
 	}
