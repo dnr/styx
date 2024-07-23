@@ -1135,7 +1135,7 @@ func (s *server) handleReadSlab(state *openFileState, ln, off uint64) (retErr er
 	}
 
 	ctx := context.Background()
-	return s.requestChunk(ctx, erofs.SlabLoc{slabId, addr}, digest, splitSphs(sphs), false)
+	return s.requestChunk(ctx, erofs.SlabLoc{slabId, addr}, digest, splitSphs(sphs))
 }
 
 func (s *server) mountSlabImage(slabId int) {

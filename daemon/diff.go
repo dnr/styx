@@ -67,13 +67,13 @@ const (
 	opTypeSingle
 )
 
-func (s *server) requestChunk(ctx context.Context, loc erofs.SlabLoc, digest []byte, sphs []Sph, forceSingle bool) error {
+func (s *server) requestChunk(ctx context.Context, loc erofs.SlabLoc, digest []byte, sphs []Sph) error {
 	if _, ok := s.readKnownMap.Get(loc); ok {
 		// We think we have this chunk and are trying to use it as a base, but we got asked for
 		// it again. This shouldn't happen, but at least try to recover by doing a single read
 		// instead of diffing more.
 		log.Printf("bug: got request for supposedly-known chunk %s at %v", common.DigestStr(digest), loc)
-		forceSingle = true
+		sphs = nil
 	}
 
 	var op *diffOp
@@ -81,7 +81,7 @@ func (s *server) requestChunk(ctx context.Context, loc erofs.SlabLoc, digest []b
 	s.diffLock.Lock()
 	if haveOp, ok := s.diffMap[loc]; ok {
 		op = haveOp
-	} else if forceSingle {
+	} else if len(sphs) == 0 {
 		op, _ = s.buildSingleOp(ctx, loc, digest)
 		go s.startOp(ctx, op)
 	} else {
@@ -105,7 +105,7 @@ func (s *server) requestChunk(ctx context.Context, loc erofs.SlabLoc, digest []b
 
 	if op.err != nil && op.tp != opTypeSingle {
 		log.Printf("diff failed (%v), doing plain read", op.err)
-		return s.requestChunk(ctx, loc, digest, sphs, true)
+		return s.requestChunk(ctx, loc, digest, nil)
 	}
 
 	return op.err
@@ -148,7 +148,7 @@ func (s *server) readChunks(
 
 		// request first missing one. the differ will do some readahead.
 		digest := digests[firstMissing*s.digestBytes : (firstMissing+1)*s.digestBytes]
-		err := s.requestChunk(ctx, locs[firstMissing], digest, sphs, false)
+		err := s.requestChunk(ctx, locs[firstMissing], digest, sphs)
 		if err != nil {
 			return nil, err
 		}
