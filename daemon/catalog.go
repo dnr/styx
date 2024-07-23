@@ -17,6 +17,9 @@ import (
 type (
 	Sph [storepath.PathHashSize]byte
 
+	// TODO: replace with buckets in db
+	// catalog: "<rest><0x00><sph>" -> "<sysid>"
+	// for backwards, can use existing manifest bucket
 	btItem struct {
 		rest string
 		hash Sph
@@ -25,7 +28,7 @@ type (
 
 	catalog struct {
 		lock sync.Mutex
-		// bt is sorted map of btITem (sorted by rest)
+		// bt is sorted map of btITem (sorted by <rest, hash>)
 		bt *btree.BTreeG[btItem]
 		// m is map of hash -> rest
 		m map[Sph]string

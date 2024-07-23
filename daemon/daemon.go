@@ -226,6 +226,7 @@ func (s *server) openDb() (err error) {
 }
 
 func (s *server) initCatalog() (err error) {
+	// TODO: move catalog into db and remove this
 	return s.db.View(func(tx *bbolt.Tx) error {
 		imgb := tx.Bucket(imageBucket)
 		cur := tx.Bucket(manifestBucket).Cursor()
@@ -233,10 +234,6 @@ func (s *server) initCatalog() (err error) {
 		getSysid := func(k []byte, storePath string) sysid.Id {
 			var img pb.DbImage
 			if v := imgb.Get(k); v == nil {
-				// FIXME: we add the entry to manifestBucket before mounting the image, so this
-				// isn't really an error, but it will end up with the wrong sysid in the
-				// catalog. instead, we could read the full manifest (slow for chunked
-				// manifests), or we could stash the sysid somewhre more convenient.
 				log.Print("image not found when iterating manifests", storePath)
 				return sysid.Unknown
 			} else if err := proto.Unmarshal(v, &img); err != nil {

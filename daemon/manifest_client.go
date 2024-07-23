@@ -113,7 +113,7 @@ func (s *server) getManifestAndBuildImage(ctx context.Context, req *MountReq) ([
 		return nil, 0, err
 	}
 	// update catalog with this envelope (and manifest entry). should match code in initCatalog.
-	sysId := sysIdFromManifest(&m)
+	sysId := s.sysIdFromManifest(&m)
 	s.catalog.add(storePath, sysId)
 
 	// transform manifest into image (allocate chunks)
