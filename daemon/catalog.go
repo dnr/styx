@@ -20,8 +20,7 @@ type (
 	btItem struct {
 		rest string
 		hash Sph
-		// TODO: get "system" information in here
-		sys sysid.Id
+		sys  sysid.Id
 	}
 
 	catalog struct {
@@ -84,8 +83,8 @@ func (c *catalog) findName(reqHash Sph) string {
 	return c.m[reqHash]
 }
 
-// given a hash, find another hash that we think is the most similar candidate
-func (c *catalog) findBase(reqHash Sph, sys sysid.Id) (catalogResult, error) {
+// given a store path (hash), find another store path that we think is the most similar candidate
+func (c *catalog) findBase(reqHash Sph) (catalogResult, error) {
 	c.lock.Lock()
 	defer c.lock.Unlock()
 
@@ -98,6 +97,19 @@ func (c *catalog) findBase(reqHash Sph, sys sysid.Id) (catalogResult, error) {
 		// TODO: need contents similarity for this one
 		return catalogResult{}, errors.New("can't handle 'source'")
 	}
+
+	// look up reqName to find sysid. if somehow this fails, leave reqSys as Unknown
+	reqSys := sysid.Unknown
+	c.bt.AscendRange(
+		btItem{rest: reqName},
+		btItem{rest: reqName + "\x00"},
+		func(i btItem) bool {
+			if i.hash == reqHash {
+				reqSys = i.sys
+				return false
+			}
+			return true
+		})
 
 	// The "name" part of store paths sometimes has a nice pname-version split like
 	// "rsync-3.2.6". But also can be something like "rtl8723bs-firmware-2017-04-06-xz" or
@@ -127,7 +139,7 @@ func (c *catalog) findBase(reqHash Sph, sys sysid.Id) (catalogResult, error) {
 		btItem{rest: start},
 		btItem{rest: start + "\xff"},
 		func(i btItem) bool {
-			if i.hash != reqHash && i.sys == sys && len(findDashes(i.rest)) == len(dashes) {
+			if i.hash != reqHash && i.sys == reqSys && len(findDashes(i.rest)) == len(dashes) {
 				// take last best instead of first since it's probably more recent
 				if match := matchLen(reqName, i.rest); match >= bestmatch {
 					bestmatch = match

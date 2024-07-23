@@ -33,7 +33,7 @@ message DbImage {
   // which upstream this was from
   string upstream = 3;
   // system id from syschecker
-  int64 syschecker_system = 4;
+  int64 system_id = 4;
 
   // is it mounted and where?
   MountState mount_state = 5;

@@ -35,9 +35,7 @@ func checkChunkDigest(got, digest []byte) error {
 func splitSphs(sphs []byte) []Sph {
 	out := make([]Sph, len(sphs)/storepath.PathHashSize)
 	for i := range out {
-		var sph Sph
-		copy(sph[:], sphs[i*storepath.PathHashSize:(i+1)*storepath.PathHashSize])
-		out[i] = sph
+		copy(out[i][:], sphs[i*storepath.PathHashSize:(i+1)*storepath.PathHashSize])
 	}
 	return out
 }

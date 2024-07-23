@@ -19,17 +19,18 @@ import (
 
 	"github.com/dnr/styx/common"
 	"github.com/dnr/styx/common/errgroup"
+	"github.com/dnr/styx/common/sysid"
 	"github.com/dnr/styx/manifester"
 	"github.com/dnr/styx/pb"
 )
 
-func (s *server) getManifestAndBuildImage(ctx context.Context, req *MountReq) ([]byte, error) {
+func (s *server) getManifestAndBuildImage(ctx context.Context, req *MountReq) ([]byte, sysid.Id, error) {
 	cookie, _, _ := strings.Cut(req.StorePath, "-")
 
 	// convert to binary
 	var sph Sph
 	if n, err := nixbase32.Decode(sph[:], []byte(cookie)); err != nil || n != len(sph) {
-		return nil, fmt.Errorf("cookie is not a valid nix store path hash")
+		return nil, 0, fmt.Errorf("cookie is not a valid nix store path hash")
 	}
 	// use a separate "sph" for the manifest itself (a single entry). only used if manifest is chunked.
 	manifestSph := makeManifestSph(sph)
@@ -39,13 +40,13 @@ func (s *server) getManifestAndBuildImage(ctx context.Context, req *MountReq) ([
 	// get manifest
 	envelopeBytes, err := s.getManifestFromManifester(ctx, req.Upstream, cookie, req.NarSize)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 
 	// verify signature and params
 	entry, smParams, err := common.VerifyMessageAsEntry(s.cfg.StyxPubKeys, common.ManifestContext, envelopeBytes)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	if smParams != nil {
 		gParams := s.cfg.Params.Params
@@ -53,33 +54,26 @@ func (s *server) getManifestAndBuildImage(ctx context.Context, req *MountReq) ([
 			smParams.DigestBits == gParams.DigestBits &&
 			smParams.DigestAlgo == gParams.DigestAlgo
 		if !match {
-			return nil, fmt.Errorf("chunked manifest global params mismatch")
+			return nil, 0, fmt.Errorf("chunked manifest global params mismatch")
 		}
 	}
 
 	// check entry path to get storepath
 	storePath := strings.TrimPrefix(entry.Path, common.ManifestContext+"/")
 	if storePath != req.StorePath {
-		return nil, fmt.Errorf("envelope storepath != requested storepath: %q != %q", storePath, req.StorePath)
+		return nil, 0, fmt.Errorf("envelope storepath != requested storepath: %q != %q", storePath, req.StorePath)
 	}
 	spHash, spName, _ := strings.Cut(storePath, "-")
 	if spHash != cookie || len(spName) == 0 {
-		return nil, fmt.Errorf("invalid or mismatched name in manifest %q", storePath)
+		return nil, 0, fmt.Errorf("invalid or mismatched name in manifest %q", storePath)
 	}
-
-	// record signed manifest message in db
-	if err = s.db.Update(func(tx *bbolt.Tx) error {
-		return tx.Bucket(manifestBucket).Put([]byte(cookie), envelopeBytes)
-	}); err != nil {
-		return nil, err
-	}
-	// update catalog with this envelope (and manifest entry). should match code in initCatalog.
-	s.catalog.add(storePath, FIXMEsysid)
 
 	// get payload or load from chunks
 	data := entry.InlineData
 	if len(data) == 0 {
-		s.catalog.add(manifestSph.String()+"-"+isManifestPrefix+spName, FIXMEsysid)
+		// we have to add this to the catalog now otherwise readChunks won't be able to use
+		// diffs to get these chunks.
+		s.catalog.add(manifestSph.String()+"-"+isManifestPrefix+spName, sysid.Manifest)
 
 		log.Printf("loading chunked manifest for %s", storePath)
 
@@ -90,13 +84,13 @@ func (s *server) getManifestAndBuildImage(ctx context.Context, req *MountReq) ([
 		ctxForManifestChunks := context.WithValue(ctx, "sph", manifestSph)
 		locs, err := s.AllocateBatch(ctxForManifestChunks, blocks, entry.Digests, true)
 		if err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 
 		// read them out
 		data, err = s.readChunks(ctx, nil, entry.Size, locs, entry.Digests, []Sph{manifestSph}, true)
 		if err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 	}
 
@@ -104,23 +98,33 @@ func (s *server) getManifestAndBuildImage(ctx context.Context, req *MountReq) ([
 	var m pb.Manifest
 	err = proto.Unmarshal(data, &m)
 	if err != nil {
-		return nil, fmt.Errorf("manifest unmarshal error: %w", err)
+		return nil, 0, fmt.Errorf("manifest unmarshal error: %w", err)
 	}
 
 	// make sure this matches the name in the envelope and original request
 	if niStorePath := path.Base(m.Meta.GetNarinfo().GetStorePath()); niStorePath != storePath {
-		return nil, fmt.Errorf("narinfo storepath != envelope storepath: %q != %q", niStorePath, storePath)
+		return nil, 0, fmt.Errorf("narinfo storepath != envelope storepath: %q != %q", niStorePath, storePath)
 	}
+
+	// record signed manifest message in db
+	if err = s.db.Update(func(tx *bbolt.Tx) error {
+		return tx.Bucket(manifestBucket).Put([]byte(cookie), envelopeBytes)
+	}); err != nil {
+		return nil, 0, err
+	}
+	// update catalog with this envelope (and manifest entry). should match code in initCatalog.
+	sysId := sysIdFromManifest(&m)
+	s.catalog.add(storePath, sysId)
 
 	// transform manifest into image (allocate chunks)
 	var image bytes.Buffer
 	err = s.builder.BuildFromManifestWithSlab(ctx, &m, &image, s)
 	if err != nil {
-		return nil, fmt.Errorf("build image error: %w", err)
+		return nil, 0, fmt.Errorf("build image error: %w", err)
 	}
 
 	log.Printf("new image %s: %d envelope, %d manifest, %d erofs", storePath, len(envelopeBytes), entry.Size, image.Len())
-	return image.Bytes(), nil
+	return image.Bytes(), sysId, nil
 }
 
 func (s *server) getManifestFromManifester(ctx context.Context, upstream, sph string, narSize int64) ([]byte, error) {

@@ -28,6 +28,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"github.com/dnr/styx/common"
+	"github.com/dnr/styx/common/sysid"
 	"github.com/dnr/styx/common/systemd"
 	"github.com/dnr/styx/erofs"
 	"github.com/dnr/styx/manifester"
@@ -111,6 +112,7 @@ type (
 		imageSize int64
 		isBare    bool
 		imageData []byte
+		sysId     sysid.Id
 	}
 
 	Config struct {
@@ -225,7 +227,25 @@ func (s *server) openDb() (err error) {
 
 func (s *server) initCatalog() (err error) {
 	return s.db.View(func(tx *bbolt.Tx) error {
+		imgb := tx.Bucket(imageBucket)
 		cur := tx.Bucket(manifestBucket).Cursor()
+
+		getSysid := func(k []byte, storePath string) sysid.Id {
+			var img pb.DbImage
+			if v := imgb.Get(k); v == nil {
+				// FIXME: we add the entry to manifestBucket before mounting the image, so this
+				// isn't really an error, but it will end up with the wrong sysid in the
+				// catalog. instead, we could read the full manifest (slow for chunked
+				// manifests), or we could stash the sysid somewhre more convenient.
+				log.Print("image not found when iterating manifests", storePath)
+				return sysid.Unknown
+			} else if err := proto.Unmarshal(v, &img); err != nil {
+				log.Print("unmarshal error iterating images", storePath, err)
+				return sysid.Unknown
+			}
+			return sysid.Id(img.SystemId)
+		}
+
 		for k, v := cur.First(); k != nil; k, v = cur.Next() {
 			var sm pb.SignedMessage
 			if err := proto.Unmarshal(v, &sm); err != nil {
@@ -236,14 +256,14 @@ func (s *server) initCatalog() (err error) {
 			storePath := strings.TrimPrefix(sm.Msg.Path, common.ManifestContext+"/")
 			spHash, spName, _ := strings.Cut(storePath, "-")
 
-			s.catalog.add(storePath, FIXMEsysid)
+			s.catalog.add(storePath, getSysid(k, storePath))
 
 			if len(sm.Msg.InlineData) == 0 {
 				var sph Sph
 				if n, err := nixbase32.Decode(sph[:], []byte(spHash)); err != nil || n != len(sph) {
 					continue
 				}
-				s.catalog.add(makeManifestSph(sph).String()+"-"+isManifestPrefix+spName, FIXMEsysid)
+				s.catalog.add(makeManifestSph(sph).String()+"-"+isManifestPrefix+spName, sysid.Manifest)
 			}
 		}
 		return nil
@@ -535,6 +555,7 @@ func (s *server) handleMountReq(ctx context.Context, r *MountReq) (*Status, erro
 
 	var haveImageSize int64
 	var haveIsBare bool
+	var haveSysId sysid.Id
 	err := s.imageTx(cookie, func(img *pb.DbImage) error {
 		if img.MountState == pb.MountState_Mounted {
 			// nix thinks it's not mounted but it is. return success so nix can enter in db.
@@ -547,6 +568,7 @@ func (s *server) handleMountReq(ctx context.Context, r *MountReq) (*Status, erro
 		img.LastMountError = ""
 		haveImageSize = img.ImageSize
 		haveIsBare = img.IsBare
+		haveSysId = sysid.Id(img.SystemId)
 		return nil
 	})
 	if err != nil {
@@ -556,10 +578,10 @@ func (s *server) handleMountReq(ctx context.Context, r *MountReq) (*Status, erro
 		return nil, err
 	}
 
-	return nil, s.tryMount(ctx, r, haveImageSize, haveIsBare)
+	return nil, s.tryMount(ctx, r, haveImageSize, haveIsBare, haveSysId)
 }
 
-func (s *server) tryMount(ctx context.Context, req *MountReq, haveImageSize int64, haveIsBare bool) error {
+func (s *server) tryMount(ctx context.Context, req *MountReq, haveImageSize int64, haveIsBare bool, haveSysId sysid.Id) error {
 	cookie, _, _ := strings.Cut(req.StorePath, "-")
 
 	mountCtx := &mountContext{}
@@ -575,15 +597,17 @@ func (s *server) tryMount(ctx context.Context, req *MountReq, haveImageSize int6
 		// if we have an image we can proceed right to mounting
 		mountCtx.imageSize = haveImageSize
 		mountCtx.isBare = haveIsBare
+		mountCtx.sysId = haveSysId
 	} else {
 		// if no image yet, get the manifest and build it
-		image, err := s.getManifestAndBuildImage(ctx, req)
+		image, sysId, err := s.getManifestAndBuildImage(ctx, req)
 		if err != nil {
 			return err
 		}
 		mountCtx.imageSize = int64(len(image))
 		mountCtx.isBare = erofs.IsBare(image)
 		mountCtx.imageData = image
+		mountCtx.sysId = sysId
 	}
 
 	var mountErr error
@@ -621,6 +645,7 @@ func (s *server) tryMount(ctx context.Context, req *MountReq, haveImageSize int6
 			// record size here so we skip it next time.
 			img.ImageSize = mountCtx.imageSize
 			img.IsBare = mountCtx.isBare
+			img.SystemId = int64(mountCtx.sysId)
 		} else {
 			img.MountState = pb.MountState_MountError
 			img.LastMountError = mountErr.Error()
@@ -699,11 +724,12 @@ func (s *server) restoreMounts() {
 			StorePath:  img.StorePath,
 			MountPoint: img.MountPoint,
 			// the image has been written so we don't need upstream/narsize
-		}, img.ImageSize, img.IsBare)
+		}, img.ImageSize, img.IsBare, sysid.Id(img.SystemId))
 		if err == nil {
 			log.Print("restoring: ", img.StorePath, " restored to ", img.MountPoint)
 		} else {
 			log.Print("restoring: ", img.StorePath, " error: ", err)
+			// TODO: modify db to indicate remount failed
 		}
 	}
 }
