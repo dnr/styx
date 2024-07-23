@@ -111,8 +111,8 @@ type (
 	mountContext struct {
 		imageSize int64
 		isBare    bool
-		imageData []byte
 		sysId     sysid.Id
+		imageData []byte
 	}
 
 	Config struct {
@@ -553,9 +553,7 @@ func (s *server) handleMountReq(ctx context.Context, r *MountReq) (*Status, erro
 	}
 	cookie, _, _ := strings.Cut(r.StorePath, "-")
 
-	var haveImageSize int64
-	var haveIsBare bool
-	var haveSysId sysid.Id
+	var haveImage *mountContext
 	err := s.imageTx(cookie, func(img *pb.DbImage) error {
 		if img.MountState == pb.MountState_Mounted {
 			// nix thinks it's not mounted but it is. return success so nix can enter in db.
@@ -566,9 +564,13 @@ func (s *server) handleMountReq(ctx context.Context, r *MountReq) (*Status, erro
 		img.MountState = pb.MountState_Requested
 		img.MountPoint = r.MountPoint
 		img.LastMountError = ""
-		haveImageSize = img.ImageSize
-		haveIsBare = img.IsBare
-		haveSysId = sysid.Id(img.SystemId)
+
+		haveImage = &mountContext{
+			imageSize: img.ImageSize,
+			isBare:    img.IsBare,
+			sysId:     sysid.Id(img.SystemId),
+		}
+
 		return nil
 	})
 	if err != nil {
@@ -578,10 +580,10 @@ func (s *server) handleMountReq(ctx context.Context, r *MountReq) (*Status, erro
 		return nil, err
 	}
 
-	return nil, s.tryMount(ctx, r, haveImageSize, haveIsBare, haveSysId)
+	return nil, s.tryMount(ctx, r, haveImage)
 }
 
-func (s *server) tryMount(ctx context.Context, req *MountReq, haveImageSize int64, haveIsBare bool, haveSysId sysid.Id) error {
+func (s *server) tryMount(ctx context.Context, req *MountReq, haveImage *mountContext) error {
 	cookie, _, _ := strings.Cut(req.StorePath, "-")
 
 	mountCtx := &mountContext{}
@@ -593,11 +595,9 @@ func (s *server) tryMount(ctx context.Context, req *MountReq, haveImageSize int6
 	}
 	defer s.mountCtxMap.Del(cookie)
 
-	if haveImageSize > 0 {
+	if haveImage != nil && haveImage.imageSize > 0 {
 		// if we have an image we can proceed right to mounting
-		mountCtx.imageSize = haveImageSize
-		mountCtx.isBare = haveIsBare
-		mountCtx.sysId = haveSysId
+		*mountCtx = *haveImage
 	} else {
 		// if no image yet, get the manifest and build it
 		image, sysId, err := s.getManifestAndBuildImage(ctx, req)
@@ -606,8 +606,8 @@ func (s *server) tryMount(ctx context.Context, req *MountReq, haveImageSize int6
 		}
 		mountCtx.imageSize = int64(len(image))
 		mountCtx.isBare = erofs.IsBare(image)
-		mountCtx.imageData = image
 		mountCtx.sysId = sysId
+		mountCtx.imageData = image
 	}
 
 	var mountErr error
@@ -724,7 +724,11 @@ func (s *server) restoreMounts() {
 			StorePath:  img.StorePath,
 			MountPoint: img.MountPoint,
 			// the image has been written so we don't need upstream/narsize
-		}, img.ImageSize, img.IsBare, sysid.Id(img.SystemId))
+		}, &mountContext{
+			imageSize: img.ImageSize,
+			isBare:    img.IsBare,
+			sysId:     sysid.Id(img.SystemId),
+		})
 		if err == nil {
 			log.Print("restoring: ", img.StorePath, " restored to ", img.MountPoint)
 		} else {
