@@ -67,20 +67,38 @@ func (s *server) getManifestAndBuildImage(ctx context.Context, req *MountReq) ([
 		return nil, fmt.Errorf("invalid or mismatched name in manifest %q", storePath)
 	}
 
-	// record signed manifest message in db
+	// record signed manifest message in db and add names to catalog
 	if err = s.db.Update(func(tx *bbolt.Tx) error {
-		return tx.Bucket(manifestBucket).Put([]byte(cookie), envelopeBytes)
+		mb := tx.Bucket(manifestBucket)
+		if err := mb.Put([]byte(cookie), envelopeBytes); err != nil {
+			return err
+		}
+
+		cfb := tx.Bucket(catalogFBucket)
+		crb := tx.Bucket(catalogRBucket)
+		key := bytes.Join([][]byte{[]byte(spName), []byte{0}, sph[:]}, nil)
+		val := []byte{} // TODO: put sysid in here
+		if err := cfb.Put(key, val); err != nil {
+			return err
+		} else if err = crb.Put(sph[:], []byte(spName)); err != nil {
+			return err
+		}
+		if len(entry.InlineData) == 0 {
+			mkey := bytes.Join([][]byte{[]byte(isManifestPrefix), []byte(spName), []byte{0}, manifestSph[:]}, nil)
+			if err := cfb.Put(mkey, nil); err != nil {
+				return err
+			} else if err = crb.Put(manifestSph[:], []byte(isManifestPrefix+spName)); err != nil {
+				return err
+			}
+		}
+		return nil
 	}); err != nil {
 		return nil, err
 	}
-	// update catalog with this envelope (and manifest entry). should match code in initCatalog.
-	s.catalog.add(storePath)
 
 	// get payload or load from chunks
 	data := entry.InlineData
 	if len(data) == 0 {
-		s.catalog.add(manifestSph.String() + "-" + isManifestPrefix + spName)
-
 		log.Printf("loading chunked manifest for %s", storePath)
 
 		// allocate space for manifest chunks in slab

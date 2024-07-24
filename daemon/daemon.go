@@ -21,7 +21,6 @@ import (
 
 	"github.com/lunixbochs/struc"
 	"github.com/nix-community/go-nix/pkg/narinfo/signature"
-	"github.com/nix-community/go-nix/pkg/nixbase32"
 	"github.com/nix-community/go-nix/pkg/storepath"
 	"go.etcd.io/bbolt"
 	"golang.org/x/sys/unix"
@@ -63,7 +62,6 @@ type (
 		chunkShift  common.BlkShift
 		csread      manifester.ChunkStoreRead
 		mcread      manifester.ChunkStoreRead
-		catalog     *catalog
 		db          *bbolt.DB
 		msgPool     *sync.Pool
 		chunkPool   *common.ChunkPool
@@ -145,7 +143,6 @@ func CachefilesServer(cfg Config) *server {
 		chunkShift:   common.BlkShift(cfg.Params.Params.ChunkShift),
 		csread:       manifester.NewChunkStoreReadUrl(cfg.Params.ChunkReadUrl, manifester.ChunkReadPath),
 		mcread:       manifester.NewChunkStoreReadUrl(cfg.Params.ManifestCacheUrl, manifester.ManifestCachePath),
-		catalog:      newCatalog(),
 		msgPool:      &sync.Pool{New: func() any { return make([]byte, CACHEFILES_MSG_MAX_SIZE) }},
 		chunkPool:    common.NewChunkPool(int(cfg.Params.Params.ChunkShift)),
 		builder:      erofs.NewBuilder(erofs.BuilderConfig{BlockShift: cfg.ErofsBlockShift}),
@@ -214,37 +211,14 @@ func (s *server) openDb() (err error) {
 			return err
 		} else if _, err = tx.CreateBucketIfNotExists(manifestBucket); err != nil {
 			return err
+		} else if _, err = tx.CreateBucketIfNotExists(catalogFBucket); err != nil {
+			return err
+		} else if _, err = tx.CreateBucketIfNotExists(catalogRBucket); err != nil {
+			return err
 		} else if err = checkSchemaVer(mb); err != nil {
 			return err
 		} else if err = checkParams(mb); err != nil {
 			return err
-		}
-		return nil
-	})
-}
-
-func (s *server) initCatalog() (err error) {
-	return s.db.View(func(tx *bbolt.Tx) error {
-		cur := tx.Bucket(manifestBucket).Cursor()
-		for k, v := cur.First(); k != nil; k, v = cur.Next() {
-			var sm pb.SignedMessage
-			if err := proto.Unmarshal(v, &sm); err != nil {
-				log.Print("unmarshal error iterating manifests", err)
-				continue
-			}
-
-			storePath := strings.TrimPrefix(sm.Msg.Path, common.ManifestContext+"/")
-			spHash, spName, _ := strings.Cut(storePath, "-")
-
-			s.catalog.add(storePath)
-
-			if len(sm.Msg.InlineData) == 0 {
-				var sph Sph
-				if n, err := nixbase32.Decode(sph[:], []byte(spHash)); err != nil || n != len(sph) {
-					continue
-				}
-				s.catalog.add(makeManifestSph(sph).String() + "-" + isManifestPrefix + spName)
-			}
 		}
 		return nil
 	})
@@ -715,9 +689,6 @@ func (s *server) Start() error {
 		return err
 	}
 	if err := s.openDb(); err != nil {
-		return err
-	}
-	if err := s.initCatalog(); err != nil {
 		return err
 	}
 	if err := s.setupManifestSlab(); err != nil {

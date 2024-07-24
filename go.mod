@@ -13,7 +13,6 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/autoscaling v1.40.11
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.51.0
 	github.com/aws/aws-sdk-go-v2/service/ssm v1.49.5
-	github.com/google/btree v1.1.2
 	github.com/lunixbochs/struc v0.0.0-20200707160740-784aaebc1d40
 	github.com/nix-community/go-nix v0.0.0-20231219074122-93cb24a86856
 	github.com/phayes/freeport v0.0.0-20220201140144-74d24b5ae9f5

@@ -209,7 +209,7 @@ func (s *server) buildDiffOp(
 	var goodOp *diffOp
 	extendLimit := 3
 	for i := len(sphs) - 1; i >= 0 && extendLimit > 0; i-- {
-		if res, err := s.catalog.findBase(sphs[i]); err == nil {
+		if res, err := s.catalogFindBase(tx, sphs[i]); err == nil {
 			if goodOp == nil {
 				if op, err := s.tryBuildDiffOp(ctx, tx, targetDigest, res, usingDigests); err == nil {
 					goodOp = op
@@ -233,7 +233,10 @@ func (s *server) buildDiffOp(
 
 	// can't find any base, diff latest against nothing
 	sph := sphs[len(sphs)-1]
-	name := s.catalog.findName(sph)
+	name := s.catalogFindName(tx, sph)
+	if len(name) == 0 {
+		return nil, errors.New("store path hash not found")
+	}
 	res := catalogResult{
 		reqName:  name,
 		baseName: noBaseName,
