@@ -22,8 +22,7 @@ enum MountState {
 // present if data has been fetched
 
 // key: "chunk" / <hash_bits of digest>
-// value: <u16 BE slab id> <u32 BE block address> ( <sph bits> )*
-// TODO: sph is 20 bytes/160 bits each, maybe we should shrink it?
+// value: <u16 BE slab id> <u32 BE block address> ( <sph prefix bits> )*
 
 // key: "image" / <store path hash (nix base32)>
 // value:

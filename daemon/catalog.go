@@ -10,8 +10,15 @@ import (
 	"go.etcd.io/bbolt"
 )
 
+const (
+	// Use only 80 bits for reverse references to save space in db.
+	// Collisions may be possible but would only lead to suboptimal diff base choices.
+	sphPrefixBytes = 10
+)
+
 type (
-	Sph [storepath.PathHashSize]byte
+	Sph       [storepath.PathHashSize]byte
+	SphPrefix [sphPrefixBytes]byte
 
 	catalogResult struct {
 		reqName  string
@@ -31,14 +38,23 @@ func SphFromBytes(b []byte) (sph Sph) {
 	return
 }
 
-// hash -> rest of name
-func (s *server) catalogFindName(tx *bbolt.Tx, reqHash Sph) string {
-	return string(tx.Bucket(catalogRBucket).Get(reqHash[:]))
+func SphPrefixFromBytes(b []byte) (sphp SphPrefix) {
+	copy(sphp[:], b)
+	return
+}
+
+// sph prefix -> rest of name
+func (s *server) catalogFindName(tx *bbolt.Tx, reqHashPrefix SphPrefix) (Sph, string) {
+	cur := tx.Bucket(catalogRBucket).Cursor()
+	// Note that Seek on this prefix will find the first key that matches it.
+	// It may be the "wrong" one due to a collision.
+	k, v := cur.Seek(reqHashPrefix[:])
+	return SphFromBytes(k), string(v)
 }
 
 // given a hash, find another hash that we think is the most similar candidate
-func (s *server) catalogFindBase(tx *bbolt.Tx, reqHash Sph) (catalogResult, error) {
-	reqName := s.catalogFindName(tx, reqHash)
+func (s *server) catalogFindBase(tx *bbolt.Tx, reqHashPrefix SphPrefix) (catalogResult, error) {
+	reqHash, reqName := s.catalogFindName(tx, reqHashPrefix)
 	if len(reqName) == 0 {
 		return catalogResult{}, errors.New("store path hash not found")
 	} else if len(reqName) < 3 {

@@ -67,7 +67,7 @@ const (
 	opTypeSingle
 )
 
-func (s *server) requestChunk(ctx context.Context, loc erofs.SlabLoc, digest []byte, sphs []Sph) error {
+func (s *server) requestChunk(ctx context.Context, loc erofs.SlabLoc, digest []byte, sphs []SphPrefix) error {
 	if _, ok := s.readKnownMap.Get(loc); ok {
 		// We think we have this chunk and are trying to use it as a base, but we got asked for
 		// it again. This shouldn't happen, but at least try to recover by doing a single read
@@ -118,7 +118,7 @@ func (s *server) readChunks(
 	totalSize int64,
 	locs []erofs.SlabLoc,
 	digests []byte, // used if allowMissing is true
-	sphs []Sph, // used if allowMissing is true
+	sphs []SphPrefix, // used if allowMissing is true
 	allowMissing bool,
 ) ([]byte, error) {
 	firstMissing := -1
@@ -192,7 +192,7 @@ func (s *server) readSingle(ctx context.Context, loc erofs.SlabLoc, digest []byt
 func (s *server) buildDiffOp(
 	ctx context.Context,
 	targetDigest []byte,
-	sphs []Sph,
+	sphs []SphPrefix,
 ) (*diffOp, error) {
 	tx, err := s.db.Begin(false)
 	if err != nil {
@@ -233,14 +233,14 @@ func (s *server) buildDiffOp(
 
 	// can't find any base, diff latest against nothing
 	sph := sphs[len(sphs)-1]
-	name := s.catalogFindName(tx, sph)
+	foundSph, name := s.catalogFindName(tx, sph)
 	if len(name) == 0 {
 		return nil, errors.New("store path hash not found")
 	}
 	res := catalogResult{
 		reqName:  name,
 		baseName: noBaseName,
-		reqHash:  sph,
+		reqHash:  foundSph,
 	}
 	return s.tryBuildDiffOp(ctx, tx, targetDigest, res, usingDigests)
 }

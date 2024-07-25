@@ -21,7 +21,6 @@ import (
 
 	"github.com/lunixbochs/struc"
 	"github.com/nix-community/go-nix/pkg/narinfo/signature"
-	"github.com/nix-community/go-nix/pkg/storepath"
 	"go.etcd.io/bbolt"
 	"golang.org/x/sys/unix"
 	"google.golang.org/protobuf/proto"
@@ -42,8 +41,9 @@ const (
 
 const (
 	schemaV0 uint32 = iota
+	schemaV1        // add catalog, shrunk sph in loc bytes
 
-	schemaLatest = schemaV0
+	schemaLatest = schemaV1
 )
 
 const (
@@ -1173,10 +1173,10 @@ func addrFromKey(b []byte) uint32 {
 }
 
 func locValue(id uint16, addr uint32, sph Sph) []byte {
-	loc := make([]byte, 6+len(sph))
+	loc := make([]byte, 6+sphPrefixBytes)
 	binary.LittleEndian.PutUint16(loc, id)
 	binary.LittleEndian.PutUint32(loc[2:], addr)
-	copy(loc[6:], sph[:])
+	copy(loc[6:], sph[:sphPrefixBytes])
 	return loc
 }
 
@@ -1185,16 +1185,17 @@ func loadLoc(b []byte) erofs.SlabLoc {
 }
 
 func appendSph(loc []byte, sph Sph) []byte {
+	sphPrefix := sph[:sphPrefixBytes]
 	sphs := loc[6:]
-	for len(sphs) >= storepath.PathHashSize {
-		if bytes.Equal(sphs[:storepath.PathHashSize], sph[:]) {
+	for len(sphs) >= sphPrefixBytes {
+		if bytes.Equal(sphs[:sphPrefixBytes], sphPrefix) {
 			return nil
 		}
-		sphs = sphs[storepath.PathHashSize:]
+		sphs = sphs[sphPrefixBytes:]
 	}
-	newLoc := make([]byte, len(loc)+len(sph))
+	newLoc := make([]byte, len(loc)+sphPrefixBytes)
 	copy(newLoc, loc)
-	copy(newLoc[len(loc):], sph[:])
+	copy(newLoc[len(loc):], sphPrefix)
 	return newLoc
 }
 

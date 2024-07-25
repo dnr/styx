@@ -5,8 +5,6 @@ import (
 	"encoding/binary"
 	"log"
 
-	"github.com/nix-community/go-nix/pkg/nixbase32"
-	"github.com/nix-community/go-nix/pkg/storepath"
 	"go.etcd.io/bbolt"
 	"google.golang.org/protobuf/proto"
 
@@ -121,10 +119,9 @@ func (s *server) handleDebugReq(ctx context.Context, r *DebugReq) (*DebugResp, e
 				var ci DebugChunkInfo
 				loc := loadLoc(v)
 				ci.Slab, ci.Addr = loc.SlabId, loc.Addr
-				sphs := v[6:]
-				for len(sphs) > 0 {
-					ci.StorePaths = append(ci.StorePaths, nixbase32.EncodeToString(sphs[:storepath.PathHashSize]))
-					sphs = sphs[storepath.PathHashSize:]
+				for _, sphp := range splitSphs(v[6:]) {
+					sph, name := s.catalogFindName(tx, sphp)
+					ci.StorePaths = append(ci.StorePaths, sph.String()+"-"+name)
 				}
 				ci.Present = slabroot.Bucket(slabKey(ci.Slab)).Get(addrKey(ci.Addr|presentMask)) != nil
 				res.Chunks[common.DigestStr(k)] = &ci

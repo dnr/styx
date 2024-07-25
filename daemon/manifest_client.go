@@ -33,6 +33,7 @@ func (s *server) getManifestAndBuildImage(ctx context.Context, req *MountReq) ([
 	}
 	// use a separate "sph" for the manifest itself (a single entry). only used if manifest is chunked.
 	manifestSph := makeManifestSph(sph)
+	manifestSphPrefix := SphPrefixFromBytes(manifestSph[:sphPrefixBytes])
 
 	ctx = context.WithValue(ctx, "sph", sph)
 
@@ -112,7 +113,7 @@ func (s *server) getManifestAndBuildImage(ctx context.Context, req *MountReq) ([
 		}
 
 		// read them out
-		data, err = s.readChunks(ctx, nil, entry.Size, locs, entry.Digests, []Sph{manifestSph}, true)
+		data, err = s.readChunks(ctx, nil, entry.Size, locs, entry.Digests, []SphPrefix{manifestSphPrefix}, true)
 		if err != nil {
 			return nil, err
 		}

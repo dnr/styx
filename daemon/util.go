@@ -14,7 +14,6 @@ import (
 
 	"github.com/avast/retry-go/v4"
 	"github.com/nix-community/go-nix/pkg/nixbase32"
-	"github.com/nix-community/go-nix/pkg/storepath"
 
 	"github.com/dnr/styx/common"
 )
@@ -32,10 +31,10 @@ func checkChunkDigest(got, digest []byte) error {
 	return nil
 }
 
-func splitSphs(sphs []byte) []Sph {
-	out := make([]Sph, len(sphs)/storepath.PathHashSize)
+func splitSphs(sphs []byte) []SphPrefix {
+	out := make([]SphPrefix, len(sphs)/sphPrefixBytes)
 	for i := range out {
-		out[i] = SphFromBytes(sphs[i*storepath.PathHashSize : (i+1)*storepath.PathHashSize])
+		out[i] = SphPrefixFromBytes(sphs[i*sphPrefixBytes : (i+1)*sphPrefixBytes])
 	}
 	return out
 }
