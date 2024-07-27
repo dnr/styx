@@ -55,6 +55,10 @@ func (s *server) catalogFindName(tx *bbolt.Tx, reqHashPrefix SphPrefix) (Sph, st
 // given a hash, find another hash that we think is the most similar candidate
 func (s *server) catalogFindBase(tx *bbolt.Tx, reqHashPrefix SphPrefix) (catalogResult, error) {
 	reqHash, reqName := s.catalogFindName(tx, reqHashPrefix)
+	return s.catalogFindBaseFromHashAndName(tx, reqHash, reqName)
+}
+
+func (s *server) catalogFindBaseFromHashAndName(tx *bbolt.Tx, reqHash Sph, reqName string) (catalogResult, error) {
 	if len(reqName) == 0 {
 		return catalogResult{}, errors.New("store path hash not found")
 	} else if len(reqName) < 3 {

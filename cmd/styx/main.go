@@ -3,6 +3,7 @@ package main
 import (
 	"log"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/nix-community/go-nix/pkg/narinfo/signature"
@@ -238,6 +239,25 @@ func main() {
 					return get[*client.StyxClient](c).CallAndPrint(
 						daemon.UmountPath, &daemon.UmountReq{
 							StorePath: args[0],
+						},
+					)
+				},
+			),
+			cmd(
+				&cobra.Command{
+					Use:   "prefetch <path>",
+					Short: "prefetch the given file or directory",
+					Args:  cobra.ExactArgs(1),
+				},
+				withStyxClient,
+				func(c *cobra.Command, args []string) error {
+					arg, err := filepath.Abs(args[0])
+					if err != nil {
+						return err
+					}
+					return get[*client.StyxClient](c).CallAndPrint(
+						daemon.PrefetchPath, &daemon.PrefetchReq{
+							Path: arg,
 						},
 					)
 				},

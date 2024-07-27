@@ -363,20 +363,6 @@ func (s *server) preCreateSlabs() error {
 
 // socket server + mount management
 
-// Reads a record in imageBucket.
-func (s *server) readImageRecord(sph string) (*pb.DbImage, error) {
-	var img pb.DbImage
-	err := s.db.View(func(tx *bbolt.Tx) error {
-		if buf := tx.Bucket(imageBucket).Get([]byte(sph)); buf != nil {
-			if err := proto.Unmarshal(buf, &img); err != nil {
-				return err
-			}
-		}
-		return nil
-	})
-	return common.ValOrErr(&img, err)
-}
-
 // Does a transaction on a record in imageBucket. f should mutate its argument and return nil.
 // If f returns an error, the record will not be written.
 func (s *server) imageTx(sph string, f func(*pb.DbImage) error) error {
@@ -408,6 +394,7 @@ func (s *server) startSocketServer() (err error) {
 	mux := http.NewServeMux()
 	mux.HandleFunc(MountPath, jsonmw(s.handleMountReq))
 	mux.HandleFunc(UmountPath, jsonmw(s.handleUmountReq))
+	mux.HandleFunc(PrefetchPath, jsonmw(s.handlePrefetchReq))
 	mux.HandleFunc(GcPath, jsonmw(s.handleGcReq))
 	mux.HandleFunc(DebugPath, jsonmw(s.handleDebugReq))
 	s.shutdownWait.Add(1)

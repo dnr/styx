@@ -30,6 +30,9 @@ func (s *server) handleDebugReq(ctx context.Context, r *DebugReq) (*DebugResp, e
 			res.Images = make(map[string]DebugImage)
 
 			doImage := func(k, v []byte) {
+				if v == nil {
+					return
+				}
 				var img pb.DbImage
 				if err := proto.Unmarshal(v, &img); err != nil {
 					log.Print("unmarshal error iterating images", err)
