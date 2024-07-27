@@ -111,6 +111,29 @@ func (s *server) requestChunk(ctx context.Context, loc erofs.SlabLoc, digest []b
 	return op.err
 }
 
+func (s *server) requestPrefetch(ctx context.Context, reqDigests [][]byte, reqSizes []int64, cres catalogResult) error {
+	// ignore diffLock for prefetches. TODO: is that the best approach?
+	ops, err := s.buildPrefetchOps(ctx, reqDigests, reqSizes, cres)
+	if err != nil || ops == nil {
+		return err
+	}
+	for _, op := range ops {
+		go s.startOp(ctx, op)
+	}
+	for _, op := range ops {
+		<-op.done
+		if op.err != nil {
+			log.Printf("prefetch diff failed (%v)", op.err)
+		}
+	}
+	for _, op := range ops {
+		if op.err != nil {
+			return op.err
+		}
+	}
+	return nil
+}
+
 // currently this is only used to read manifest chunks
 func (s *server) readChunks(
 	ctx context.Context,
@@ -245,6 +268,7 @@ func (s *server) buildDiffOp(
 	return s.tryBuildDiffOp(ctx, tx, targetDigest, res, usingDigests)
 }
 
+// call with diffLock held
 func (s *server) tryBuildDiffOp(
 	ctx context.Context,
 	tx *bbolt.Tx,
@@ -485,6 +509,116 @@ func (s *server) tryExtendDiffOp(
 		op.reqTotalSize,
 		len(op.reqInfo),
 	)
+}
+
+func (s *server) buildPrefetchOps(
+	ctx context.Context,
+	reqDigests [][]byte,
+	reqSizes []int64,
+	res catalogResult,
+) ([]*diffOp, error) {
+	tx, err := s.db.Begin(false)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+
+	usingBase := res.baseName != noBaseName
+
+	var baseIter digestIterator
+	if usingBase {
+		baseEntries, err := s.getDigestsFromImage(ctx, tx, res.baseHash, false)
+		if err != nil {
+			log.Println("failed to get digests for", res.baseHash, res.baseName)
+			return nil, err
+		}
+		baseIter = s.newDigestIterator(baseEntries)
+	}
+
+	op := newDiffOp(opTypeDiff)
+	ops := []*diffOp{op}
+	newOp := func() {
+		op = newDiffOp(opTypeDiff)
+		ops = append(ops, op)
+	}
+
+	// req: fill ops up to ChunkDiffMaxDigests (much bigger than normal readahead), with
+	// not-present chunks
+	for i, reqDigest := range reqDigests {
+		if reqLoc, reqPresent := s.digestPresent(tx, reqDigest); !reqPresent && reqLoc.Addr > 0 {
+			if len(op.reqInfo) >= manifester.ChunkDiffMaxDigests {
+				newOp()
+			}
+			op.addReq(reqDigest, reqSizes[i], reqLoc)
+		}
+	}
+
+	if len(op.reqInfo) == 0 {
+		return nil, nil
+	}
+
+	// base: fill present chunks across ops made from req in order.
+	// this probably only works well if prefetching the whole image.
+	// TODO: ideally, we would look at corresponding files only, e.g. pass in a filter
+	// function.
+	opIdx := 0
+	op = ops[opIdx]
+	nextOp := func() {
+		if opIdx++; opIdx >= len(ops) {
+			op = nil
+		} else {
+			op = ops[opIdx]
+		}
+	}
+
+	for {
+		baseDigest := baseIter.digest()
+		if baseDigest == nil {
+			break
+		}
+		if baseLoc, basePresent := s.digestPresent(tx, baseDigest); basePresent {
+			if len(op.baseInfo) >= manifester.ChunkDiffMaxDigests {
+				if nextOp(); op == nil {
+					break
+				}
+			}
+			op.addBase(baseDigest, baseIter.size(), baseLoc)
+		}
+		baseIter.next(1)
+	}
+
+	var baseTotalSize, reqTotalSize int64
+	var baseTotalLen, reqTotalLen int
+	for _, op := range ops {
+		baseTotalSize += op.baseTotalSize
+		baseTotalLen += len(op.baseInfo)
+		reqTotalSize += op.reqTotalSize
+		reqTotalLen += len(op.reqInfo)
+	}
+
+	if usingBase {
+		log.Printf("prefetching %s…-%s -> %s…-%s [%d/%d -> %d/%d in %d ops]",
+			res.baseHash.String()[:5],
+			res.baseName,
+			res.reqHash.String()[:5],
+			res.reqName,
+			baseTotalSize,
+			baseTotalLen,
+			reqTotalSize,
+			reqTotalLen,
+			len(ops),
+		)
+	} else {
+		log.Printf("prefetching %s…-%s [%d/%d in %d ops]",
+			res.reqHash.String()[:5],
+			res.reqName,
+			reqTotalSize,
+			reqTotalLen,
+			len(ops),
+		)
+	}
+
+	return ops, nil
 }
 
 func (s *server) opFullBase(op *diffOp) bool {
@@ -729,7 +863,7 @@ func (s *server) getChunkDiff(ctx context.Context, bases, reqs []byte, recompres
 	return res.Body, nil
 }
 
-// note: called with diffLock and read-only tx
+// note: called with read-only tx
 func (s *server) getDigestsFromImage(ctx context.Context, tx *bbolt.Tx, sph Sph, isManifest bool) ([]*pb.Entry, error) {
 	if isManifest {
 		// get the image sph back. makeManifestSph is its own inverse.

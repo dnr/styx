@@ -10,11 +10,12 @@ var (
 	// protocol is json over http over unix socket
 	// socket is path.Join(CachePath, Socket)
 	// accessible to root only!
-	Socket     = "styx.sock"
-	MountPath  = "/mount"
-	UmountPath = "/umount"
-	GcPath     = "/gc"
-	DebugPath  = "/debug"
+	Socket       = "styx.sock"
+	MountPath    = "/mount"
+	UmountPath   = "/umount"
+	PrefetchPath = "/prefetch"
+	GcPath       = "/gc"
+	DebugPath    = "/debug"
 )
 
 type (
@@ -28,6 +29,11 @@ type (
 
 	UmountReq struct {
 		StorePath string
+	}
+	// returns Status
+
+	PrefetchReq struct {
+		Path string
 	}
 	// returns Status
 

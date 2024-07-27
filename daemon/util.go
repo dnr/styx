@@ -39,6 +39,14 @@ func splitSphs(sphs []byte) []SphPrefix {
 	return out
 }
 
+func splitDigests(digests []byte, digestLen int) [][]byte {
+	out := make([][]byte, len(digests)/digestLen)
+	for i := range out {
+		out[i] = digests[i*digestLen : (i+1)*digestLen]
+	}
+	return out
+}
+
 func writeToTempFile(b []byte) (string, error) {
 	f, err := os.CreateTemp("", "styx-diff")
 	if err != nil {
@@ -104,4 +112,8 @@ func (cr *countReader) Read(p []byte) (int, error) {
 	n, err := cr.r.Read(p)
 	cr.c += int64(n)
 	return n, err
+}
+
+func underDir(p, dir string) bool {
+	return len(p) >= len(dir) && p[:len(dir)] == dir && (len(p) == len(dir) || dir == "/" || p[len(dir)] == '/')
 }
