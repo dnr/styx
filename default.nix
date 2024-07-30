@@ -41,15 +41,46 @@ rec {
   styx-test = pkgs.buildGoModule (base // {
     pname = "styxtest";
     buildPhase = ''
-      go test -c -o styxtest ./tests
+      go test -ldflags="$ldflags" -c -o styxtest ./tests
     '';
     installPhase = ''
       mkdir -p $out/bin $out/keys
       install styxtest $out/bin/
       cp keys/testsuite* $out/keys/
     '';
-    ldflags = daemonLdFlags;
+    ldflags = daemonLdFlags ++ [
+      "-X github.com/dnr/styx/tests.TestdataDir=${testdata}"
+    ];
   });
+
+  testdata = let
+    paths = [
+      "cd1nbildgzzfryjg82njnn36i4ynyf8h-bash-interactive-5.1-p16-man"
+      "8vyj9c6g424mz0v3kvzkskhvzhwj6288-bash-interactive-5.2-p15-man"
+      "3a7xq2qhxw2r7naqmc53akmx7yvz0mkf-less-is-more.patch"
+      "v35ysx9k1ln4c6r7lj74204ss4bw7l5l-openssl-3.0.12-man"
+      "xd96wmj058ky40aywv72z63vdw9yzzzb-openssl-3.0.12-man"
+      "1fka6ngkrlmqkhix0gnnb19z58sr0yma-openssl-3.0.13-man"
+      "z2waz77lsh4pxs0jxgmpf16s7a3g7b7v-openssl-3.0.13-man"
+      "53qwclnym7a6vzs937jjmsfqxlxlsf2y-opusfile-0.12"
+      "kcyrz2y8si9ry5p8qkmj0gp41n01sa1y-opusfile-0.12"
+      "qa22bifihaxyvn6q2a6w9m0nklqrk9wh-opusfile-0.12"
+    ];
+    hash = "sha256-NcLWG05a8YLXM62cSQR6D/Ne9/YbS/NkPspzdF7u648=";
+  in pkgs.stdenv.mkDerivation {
+    name = "styx-test-data";
+    builder = pkgs.writeShellScript "build-testdata" ''
+      PATH=${pkgs.coreutils}/bin:${pkgs.gnused}/bin:${pkgs.wget}/bin:$PATH
+      mkdir $out && cd $out
+      ${pkgs.lib.concatMapStringsSep "\n" (p: ''
+        p=${p}; ni=''${p%%-*}.narinfo
+        wget -nv -x -nH https://cache.nixos.org/$ni
+        wget -nv -x -nH https://cache.nixos.org/$(sed -ne '/URL/s/.* //p' $ni)
+      '') paths}
+    '';
+    outputHashMode = "recursive";
+    outputHash = hash;
+  };
 
   # built by deploy-ci, for heavy CI worker on EC2
   charon = pkgs.buildGoModule (base // {

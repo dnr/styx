@@ -24,9 +24,7 @@ import (
 )
 
 const (
-	upstreamHost = "cache.nixos.org"
-	upstreamUrl  = "https://cache.nixos.org/"
-	upstreamKeys = "cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY="
+	nixosKeys = "cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY="
 
 	devnode = "/dev/cachefiles"
 
@@ -45,10 +43,17 @@ type (
 		chunkdir       string
 		cachedir       string
 		manifesterAddr string
+		upstreamHost   string
+		upstreamUrl    string
 
+		tdserver   *http.Server
 		manifester service
 		daemon     service
 	}
+)
+
+var (
+	TestdataDir = "/must-set-with-ldflags"
 )
 
 func newTestBase(t *testing.T) *testBase {
@@ -62,11 +67,6 @@ func newTestBase(t *testing.T) *testBase {
 	require.ErrorAs(t, exec.Command("fuser", "-s", devnode).Run(), &exitErr,
 		"tests require exclusive access to "+devnode)
 
-	// check network
-	res, err := http.Get("http://cache.nixos.org/nix-cache-info")
-	require.NoError(t, err, "tests require network access")
-	res.Body.Close()
-
 	tag := fmt.Sprintf("styxtest%x", rand.Uint64())
 	t.Log("cache tag/domain", tag)
 
@@ -77,12 +77,17 @@ func newTestBase(t *testing.T) *testBase {
 	cachedir := filepath.Join(basetmpdir, "cache")
 	require.NoError(t, os.Mkdir(cachedir, 0755))
 
+	tdport, err := freeport.GetFreePort()
+	require.NoError(t, err)
+
 	tb := &testBase{
-		t:          t,
-		tag:        tag,
-		basetmpdir: basetmpdir,
-		chunkdir:   chunkdir,
-		cachedir:   cachedir,
+		t:            t,
+		tag:          tag,
+		basetmpdir:   basetmpdir,
+		chunkdir:     chunkdir,
+		cachedir:     cachedir,
+		upstreamHost: fmt.Sprintf("localhost:%d", tdport),
+		upstreamUrl:  fmt.Sprintf("http://localhost:%d/", tdport),
 	}
 	t.Cleanup(tb.cleanup)
 	return tb
@@ -93,13 +98,28 @@ func (tb *testBase) cleanup() {
 		tb.t.Log("stopping manifester")
 		tb.manifester.Stop()
 	}
+	if tb.tdserver != nil {
+		tb.t.Log("stopping test data server")
+		tb.tdserver.Close()
+	}
 	if tb.daemon != nil {
 		tb.t.Log("stopping daemon")
 		tb.daemon.Stop()
 	}
 }
 
+func (tb *testBase) startTestDataServer() {
+	// http server acting as binary cache
+	tb.tdserver = &http.Server{
+		Addr:    tb.upstreamHost,
+		Handler: http.FileServer(http.Dir(TestdataDir)),
+	}
+	go tb.tdserver.ListenAndServe()
+}
+
 func (tb *testBase) startManifester() {
+	tb.startTestDataServer()
+
 	port, err := freeport.GetFreePort()
 	require.NoError(tb.t, err)
 
@@ -112,7 +132,7 @@ func (tb *testBase) startManifester() {
 	mbcfg := manifester.ManifestBuilderConfig{
 		ConcurrentChunkOps: 10,
 	}
-	mbcfg.PublicKeys, err = common.LoadPubKeys([]string{upstreamKeys})
+	mbcfg.PublicKeys, err = common.LoadPubKeys([]string{nixosKeys})
 	require.NoError(tb.t, err)
 	mbcfg.SigningKeys, err = common.LoadSecretKeys([]string{"../keys/testsuite.secret"})
 	require.NoError(tb.t, err)
@@ -122,7 +142,7 @@ func (tb *testBase) startManifester() {
 	tb.manifesterAddr = fmt.Sprintf("http://%s/", hostport)
 	cfg := manifester.Config{
 		Bind:               hostport,
-		AllowedUpstreams:   []string{upstreamHost},
+		AllowedUpstreams:   []string{tb.upstreamHost},
 		ChunkDiffZstdLevel: 3,
 		ChunkDiffParallel:  60,
 	}
@@ -183,7 +203,7 @@ func (tb *testBase) mount(storePath string) string {
 	c := client.NewClient(sock)
 	var res daemon.Status
 	code, err := c.Call(daemon.MountPath, daemon.MountReq{
-		Upstream:   upstreamUrl,
+		Upstream:   tb.upstreamUrl,
 		StorePath:  storePath,
 		MountPoint: mp,
 	}, &res)
