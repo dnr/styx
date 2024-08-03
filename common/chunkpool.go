@@ -6,11 +6,11 @@ type ChunkPool struct {
 	p12, p14, pch sync.Pool
 }
 
-func NewChunkPool(chunkShift int) *ChunkPool {
+func NewChunkPool(shift BlkShift) *ChunkPool {
 	return &ChunkPool{
 		p12: sync.Pool{New: func() any { return make([]byte, 1<<12) }},
 		p14: sync.Pool{New: func() any { return make([]byte, 1<<14) }},
-		pch: sync.Pool{New: func() any { return make([]byte, 1<<chunkShift) }},
+		pch: sync.Pool{New: func() any { return make([]byte, 1<<shift) }},
 	}
 }
 

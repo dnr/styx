@@ -5,14 +5,16 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/dnr/styx/common"
+	"github.com/dnr/styx/common/cdig"
 	"github.com/nix-community/go-nix/pkg/nixbase32"
 	"github.com/nix-community/go-nix/pkg/storepath"
 	"go.etcd.io/bbolt"
 )
 
 func (s *server) handlePrefetchReq(ctx context.Context, r *PrefetchReq) (*Status, error) {
-	haveReq := make(map[string]struct{})
-	var reqs [][]byte
+	haveReq := make(map[cdig.CDig]struct{})
+	var reqs []cdig.CDig
 	var reqSizes []int64
 	var cres catalogResult
 
@@ -41,15 +43,15 @@ func (s *server) handlePrefetchReq(ctx context.Context, r *PrefetchReq) (*Status
 		}
 		for _, e := range ents {
 			if len(e.Digests) > 0 && underDir(e.Path, p) {
-				digests := splitDigests(e.Digests, s.digestBytes)
+				digests := cdig.FromSliceAlias(e.Digests)
 				for digestIdx, d := range digests {
 					// just do a simple de-dup here, don't check presence
-					if _, ok := haveReq[string(d)]; !ok {
-						haveReq[string(d)] = struct{}{}
+					if _, ok := haveReq[d]; !ok {
+						haveReq[d] = struct{}{}
 						reqs = append(reqs, d)
-						size := s.chunkShift.Size()
+						size := common.ChunkShift.Size()
 						if digestIdx == len(digests)-1 { // last chunk
-							size = s.chunkShift.Leftover(e.Size)
+							size = common.ChunkShift.Leftover(e.Size)
 						}
 						reqSizes = append(reqSizes, size)
 					}

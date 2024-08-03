@@ -18,6 +18,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"github.com/dnr/styx/common"
+	"github.com/dnr/styx/common/cdig"
 	"github.com/dnr/styx/common/errgroup"
 	"github.com/dnr/styx/manifester"
 	"github.com/dnr/styx/pb"
@@ -49,10 +50,9 @@ func (s *server) getManifestAndBuildImage(ctx context.Context, req *MountReq) ([
 		return nil, err
 	}
 	if smParams != nil {
-		gParams := s.cfg.Params.Params
-		match := smParams.ChunkShift == gParams.ChunkShift &&
-			smParams.DigestBits == gParams.DigestBits &&
-			smParams.DigestAlgo == gParams.DigestAlgo
+		match := smParams.ChunkShift == int32(common.ChunkShift) &&
+			smParams.DigestBits == cdig.Bits &&
+			smParams.DigestAlgo == common.DigestAlgo
 		if !match {
 			return nil, fmt.Errorf("chunked manifest global params mismatch")
 		}
@@ -103,17 +103,18 @@ func (s *server) getManifestAndBuildImage(ctx context.Context, req *MountReq) ([
 		log.Printf("loading chunked manifest for %s", storePath)
 
 		// allocate space for manifest chunks in slab
-		blocks := make([]uint16, 0, len(entry.Digests)/s.digestBytes)
-		blocks = common.AppendBlocksList(blocks, entry.Size, s.chunkShift, s.blockShift)
+		digests := cdig.FromSliceAlias(entry.Digests)
+		blocks := make([]uint16, 0, len(digests))
+		blocks = common.AppendBlocksList(blocks, entry.Size, s.blockShift)
 
 		ctxForManifestChunks := context.WithValue(ctx, "sph", manifestSph)
-		locs, err := s.AllocateBatch(ctxForManifestChunks, blocks, entry.Digests, true)
+		locs, err := s.AllocateBatch(ctxForManifestChunks, blocks, digests, true)
 		if err != nil {
 			return nil, err
 		}
 
 		// read them out
-		data, err = s.readChunks(ctx, nil, entry.Size, locs, entry.Digests, []SphPrefix{manifestSphPrefix}, true)
+		data, err = s.readChunks(ctx, nil, entry.Size, locs, digests, []SphPrefix{manifestSphPrefix}, true)
 		if err != nil {
 			return nil, err
 		}
@@ -144,13 +145,12 @@ func (s *server) getManifestAndBuildImage(ctx context.Context, req *MountReq) ([
 
 func (s *server) getManifestFromManifester(ctx context.Context, upstream, sph string, narSize int64) ([]byte, error) {
 	// check cached first
-	gParams := s.cfg.Params.Params
 	mReq := manifester.ManifestReq{
 		Upstream:      upstream,
 		StorePathHash: sph,
-		ChunkShift:    int(gParams.ChunkShift),
-		DigestAlgo:    gParams.DigestAlgo,
-		DigestBits:    int(gParams.DigestBits),
+		ChunkShift:    int(common.ChunkShift),
+		DigestAlgo:    common.DigestAlgo,
+		DigestBits:    int(cdig.Bits),
 		// SmallFileCutoff: s.cfg.SmallFileCutoff,
 	}
 

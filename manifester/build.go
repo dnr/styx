@@ -24,6 +24,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"github.com/dnr/styx/common"
+	"github.com/dnr/styx/common/cdig"
 	"github.com/dnr/styx/common/errgroup"
 	"github.com/dnr/styx/pb"
 )
@@ -39,23 +40,16 @@ type (
 	}
 
 	ManifestBuilder struct {
-		cs          ChunkStoreWrite
-		chunksem    *semaphore.Weighted
-		params      *pb.GlobalParams
-		chunk       common.BlkShift
-		digestBytes int
-		chunkPool   *common.ChunkPool
-		pubKeys     []signature.PublicKey
-		signKeys    []signature.SecretKey
+		cs        ChunkStoreWrite
+		chunksem  *semaphore.Weighted
+		params    *pb.GlobalParams
+		chunkPool *common.ChunkPool
+		pubKeys   []signature.PublicKey
+		signKeys  []signature.SecretKey
 	}
 
 	ManifestBuilderConfig struct {
 		ConcurrentChunkOps int
-
-		// global params
-		ChunkShift int
-		DigestAlgo string
-		DigestBits int
 
 		// Verify loaded narinfo against these keys. Nil means don't verify.
 		PublicKeys []signature.PublicKey
@@ -75,15 +69,13 @@ func NewManifestBuilder(cfg ManifestBuilderConfig, cs ChunkStoreWrite) (*Manifes
 		cs:       cs,
 		chunksem: semaphore.NewWeighted(int64(cmp.Or(cfg.ConcurrentChunkOps, 200))),
 		params: &pb.GlobalParams{
-			ChunkShift: int32(cfg.ChunkShift),
-			DigestAlgo: cfg.DigestAlgo,
-			DigestBits: int32(cfg.DigestBits),
+			ChunkShift: int32(common.ChunkShift),
+			DigestAlgo: common.DigestAlgo,
+			DigestBits: int32(cdig.Bits),
 		},
-		chunk:       common.BlkShift(cfg.ChunkShift),
-		digestBytes: cfg.DigestBits >> 3,
-		chunkPool:   common.NewChunkPool(cfg.ChunkShift),
-		pubKeys:     cfg.PublicKeys,
-		signKeys:    cfg.SigningKeys,
+		chunkPool: common.NewChunkPool(common.ChunkShift),
+		pubKeys:   cfg.PublicKeys,
+		signKeys:  cfg.SigningKeys,
 	}, nil
 }
 
@@ -285,9 +277,9 @@ func (b *ManifestBuilder) Build(
 	cacheKey := (&ManifestReq{
 		Upstream:      upstream,
 		StorePathHash: storePathHash,
-		ChunkShift:    int(b.params.ChunkShift),
-		DigestAlgo:    b.params.DigestAlgo,
-		DigestBits:    int(b.params.DigestBits),
+		ChunkShift:    int(common.ChunkShift),
+		DigestAlgo:    common.DigestAlgo,
+		DigestBits:    int(cdig.Bits),
 	}).CacheKey()
 	cmpSb, err := b.cs.PutIfNotExists(ctx, ManifestCachePath, cacheKey, sb)
 	if err != nil {
@@ -402,9 +394,11 @@ func (b *ManifestBuilder) entry(egCtx *errgroup.Group, args *BuildArgs, m *pb.Ma
 	return nil
 }
 
+// Note that goroutines will continue writing into the returned slice after this returns!
+// Caller should not look at it until after Wait() on the errgroup.
 func (b *ManifestBuilder) chunkData(egCtx *errgroup.Group, args *BuildArgs, dataSize int64, r io.Reader) ([]byte, error) {
-	nChunks := int((dataSize + b.chunk.Size() - 1) >> b.chunk)
-	fullDigests := make([]byte, nChunks*b.digestBytes)
+	nChunks := int((dataSize + common.ChunkShift.Size() - 1) >> common.ChunkShift)
+	fullDigests := make([]byte, nChunks*cdig.Bytes)
 	digests := fullDigests
 	remaining := dataSize
 	for remaining > 0 {
@@ -412,7 +406,7 @@ func (b *ManifestBuilder) chunkData(egCtx *errgroup.Group, args *BuildArgs, data
 			return nil, err
 		}
 
-		size := min(remaining, b.chunk.Size())
+		size := min(remaining, common.ChunkShift.Size())
 		remaining -= size
 		_data := b.chunkPool.Get(int(size))
 		data := _data[:size]
@@ -422,8 +416,8 @@ func (b *ManifestBuilder) chunkData(egCtx *errgroup.Group, args *BuildArgs, data
 			b.chunksem.Release(1)
 			return nil, err
 		}
-		digest := digests[:b.digestBytes]
-		digests = digests[b.digestBytes:]
+		digest := digests[:cdig.Bytes]
+		digests = digests[cdig.Bytes:]
 
 		// check shard
 		putChunk := true
@@ -442,7 +436,7 @@ func (b *ManifestBuilder) chunkData(egCtx *errgroup.Group, args *BuildArgs, data
 			if !putChunk {
 				return nil
 			}
-			_, err := b.cs.PutIfNotExists(egCtx, ChunkReadPath, common.DigestStr(digest), data)
+			_, err := b.cs.PutIfNotExists(egCtx, ChunkReadPath, cdig.FromBytes(digest).String(), data)
 			return err
 		})
 	}

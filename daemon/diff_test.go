@@ -3,10 +3,15 @@ package daemon
 import (
 	"testing"
 
+	"github.com/dnr/styx/common"
+	"github.com/dnr/styx/common/cdig"
 	"github.com/dnr/styx/pb"
 	"github.com/stretchr/testify/require"
 )
 
+var d1 = "0123456789ytrewq6789poiu"
+var d2 = "hjkl30104mnop410019jjkka"
+var d3 = "zxcv95345asdfiijb632ooia"
 var testEntries = []*pb.Entry{
 	&pb.Entry{
 		Path: "/",
@@ -18,8 +23,8 @@ var testEntries = []*pb.Entry{
 	},
 	&pb.Entry{
 		Path:    "/file",
-		Size:    1500,
-		Digests: []byte("abcdefghIJKLMNOP"),
+		Size:    common.ChunkShift.Size() + 100,
+		Digests: []byte(d1 + d2),
 	},
 	&pb.Entry{
 		Path: "/dir",
@@ -27,7 +32,7 @@ var testEntries = []*pb.Entry{
 	&pb.Entry{
 		Path:    "/dir/nextfile",
 		Size:    500,
-		Digests: []byte("11223344"),
+		Digests: []byte(d3),
 	},
 	&pb.Entry{
 		Path:       "/symlink",
@@ -36,51 +41,53 @@ var testEntries = []*pb.Entry{
 	},
 	&pb.Entry{
 		Path:    "/lastfile",
-		Size:    3000,
-		Digests: []byte("888877776666555544443333"),
+		Size:    common.ChunkShift.Size()*2 + 300,
+		Digests: []byte(d3 + d2 + d1),
 	},
+}
+
+func fb(s string) cdig.CDig {
+	return cdig.FromBytes([]byte(s))
 }
 
 func TestDigestIterator(t *testing.T) {
 	r := require.New(t)
-	s := &server{digestBytes: 8, chunkShift: 10}
-	i := s.newDigestIterator(testEntries)
+	i := newDigestIterator(testEntries)
 
 	r.Equal(testEntries[2], i.ent())
-	r.Equal("abcdefgh", string(i.digest()))
-	r.EqualValues(1024, i.size())
+	r.Equal(fb(d1), i.digest())
+	r.EqualValues(common.ChunkShift.Size(), i.size())
 
 	r.True(i.next(1))
 	r.Equal(testEntries[2], i.ent())
-	r.Equal("IJKLMNOP", string(i.digest()))
-	r.EqualValues(1500-1024, i.size())
+	r.Equal(fb(d2), i.digest())
+	r.EqualValues(100, i.size())
 
 	r.True(i.next(1))
 	r.Equal(testEntries[4], i.ent())
-	r.Equal("11223344", string(i.digest()))
+	r.Equal(fb(d3), i.digest())
 	r.EqualValues(500, i.size())
 
 	r.True(i.next(1))
 	r.Equal(testEntries[6], i.ent())
-	r.Equal("88887777", string(i.digest()))
-	r.EqualValues(1024, i.size())
+	r.Equal(fb(d3), i.digest())
+	r.EqualValues(common.ChunkShift.Size(), i.size())
 
 	r.True(i.next(2))
 	r.Equal(testEntries[6], i.ent())
-	r.Equal("44443333", string(i.digest()))
-	r.EqualValues(3000-1024-1024, i.size())
+	r.Equal(fb(d1), i.digest())
+	r.EqualValues(300, i.size())
 
 	r.False(i.next(1))
 }
 
 func TestDigestIterator_FindFile(t *testing.T) {
 	r := require.New(t)
-	s := &server{digestBytes: 8, chunkShift: 10}
-	i := s.newDigestIterator(testEntries)
+	i := newDigestIterator(testEntries)
 
 	r.True(i.findFile("/dir/nextfile"))
 	r.Equal(testEntries[4], i.ent())
-	r.Equal("11223344", string(i.digest()))
+	r.Equal(fb(d3), i.digest())
 	r.EqualValues(500, i.size())
 
 	r.False(i.findFile("/symlink"), "false even though file is present")
@@ -90,16 +97,15 @@ func TestDigestIterator_FindFile(t *testing.T) {
 
 func TestDigestIterator_ToFileStart(t *testing.T) {
 	r := require.New(t)
-	s := &server{digestBytes: 8, chunkShift: 10}
-	i := s.newDigestIterator(testEntries)
+	i := newDigestIterator(testEntries)
 
 	r.True(i.next(4))
 	r.Equal(testEntries[6], i.ent())
-	r.Equal("66665555", string(i.digest()))
-	r.EqualValues(1024, i.size())
+	r.Equal(fb(d2), i.digest())
+	r.EqualValues(common.ChunkShift.Size(), i.size())
 
 	r.True(i.toFileStart())
 	r.Equal(testEntries[6], i.ent())
-	r.Equal("88887777", string(i.digest()))
-	r.EqualValues(1024, i.size())
+	r.Equal(fb(d3), i.digest())
+	r.EqualValues(common.ChunkShift.Size(), i.size())
 }

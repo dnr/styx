@@ -12,4 +12,6 @@ var (
 	// Context for signatures
 	ManifestContext     = "styx-manifest-1"
 	DaemonParamsContext = "styx-daemon-params-1"
+
+	DigestAlgo = "sha256"
 )
