@@ -198,6 +198,7 @@ func ci(ctx workflow.Context, args *CiArgs) error {
 			continue
 		}
 
+		buildStart := workflow.Now(ctx)
 		l.Info("building", "relid", args.LastRelID, "styx", args.LastStyxCommit)
 		_, err = ciBuild(ctx, &buildReq{
 			Args:       args,
@@ -217,9 +218,10 @@ func ci(ctx workflow.Context, args *CiArgs) error {
 
 		// notify
 		ciNotify(ctx, &notifyReq{
-			Args:       args,
-			RelID:      args.LastRelID,
-			StyxCommit: args.LastStyxCommit,
+			Args:         args,
+			RelID:        args.LastRelID,
+			StyxCommit:   args.LastStyxCommit,
+			BuildElapsed: workflow.Now(ctx).Sub(buildStart),
 		})
 	}
 	return workflow.NewContinueAsNewError(ctx, ci, args)
