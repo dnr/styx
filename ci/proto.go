@@ -1,6 +1,10 @@
 package ci
 
-import "time"
+import (
+	"time"
+
+	"github.com/dnr/styx/manifester"
+)
 
 const (
 	workflowType = "ci" // matches function name
@@ -25,6 +29,7 @@ type (
 		// state
 		LastRelID      string // "nixos-23.11.7609.5c2ec3a5c2ee"
 		LastStyxCommit string
+		PrevNames      []string
 	}
 
 	RepoConfig struct {
@@ -57,16 +62,17 @@ type (
 		StyxCommit string
 	}
 	buildRes struct {
-		// TODO:
-		// - stats: total size, new chunks vs existing chunks, etc.
-		// - add output of nix store diff-closures against the previous
+		Names         []string
+		ManifestStats manifester.Stats
 	}
 
 	notifyReq struct {
-		Args         *CiArgs
-		RelID        string
-		StyxCommit   string
-		Error        string
-		BuildElapsed time.Duration
+		Args                *CiArgs
+		RelID               string
+		StyxCommit          string
+		Error               string
+		BuildElapsed        time.Duration
+		PrevNames, NewNames []string
+		ManifestStats       manifester.Stats
 	}
 )

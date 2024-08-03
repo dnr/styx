@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"path"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -160,7 +161,12 @@ func ci(ctx workflow.Context, args *CiArgs) error {
 		})
 
 		// poll github repo
-		actx = withPollActivity(ctx, repoPollInterval, time.Minute)
+		// TODO: clean up GetVersion when we restart this workflow
+		if workflow.GetVersion(ctx, "oops1", workflow.DefaultVersion, 1) >= 1 {
+			actx = withPollActivity(cctx, repoPollInterval, time.Minute)
+		} else {
+			actx = withPollActivity(ctx, repoPollInterval, time.Minute)
+		}
 		styxRepoF := workflow.ExecuteActivity(actx, a.PollRepo, &pollRepoReq{
 			Config:     args.StyxRepo,
 			LastCommit: args.LastStyxCommit,
@@ -200,7 +206,7 @@ func ci(ctx workflow.Context, args *CiArgs) error {
 
 		buildStart := workflow.Now(ctx)
 		l.Info("building", "relid", args.LastRelID, "styx", args.LastStyxCommit)
-		_, err = ciBuild(ctx, &buildReq{
+		bres, err := ciBuild(ctx, &buildReq{
 			Args:       args,
 			RelID:      args.LastRelID,
 			StyxCommit: args.LastStyxCommit,
@@ -215,13 +221,18 @@ func ci(ctx workflow.Context, args *CiArgs) error {
 			continue
 		}
 		l.Info("build succeeded", "relid", args.LastRelID, "styx", args.LastStyxCommit)
+		prevNames := args.PrevNames
+		args.PrevNames = bres.Names
 
 		// notify
 		ciNotify(ctx, &notifyReq{
-			Args:         args,
-			RelID:        args.LastRelID,
-			StyxCommit:   args.LastStyxCommit,
-			BuildElapsed: workflow.Now(ctx).Sub(buildStart),
+			Args:          args,
+			RelID:         args.LastRelID,
+			StyxCommit:    args.LastStyxCommit,
+			BuildElapsed:  workflow.Now(ctx).Sub(buildStart),
+			PrevNames:     prevNames,
+			NewNames:      bres.Names,
+			ManifestStats: bres.ManifestStats,
 		})
 	}
 	return workflow.NewContinueAsNewError(ctx, ci, args)
@@ -502,6 +513,7 @@ func (a *heavyActivities) HeavyBuild(ctx context.Context, req *buildReq) (*build
 	var toSign bytes.Buffer
 	var toCopy bytes.Buffer
 	var toManifest []manifestReq
+	var names []string
 	if err := json.Unmarshal(j, &pathInfo); err != nil {
 		l.Error("get closure json unmarshal error", "error", err)
 		return nil, err
@@ -515,6 +527,7 @@ func (a *heavyActivities) HeavyBuild(ctx context.Context, req *buildReq) (*build
 			strings.Contains(pi.Path, "-etc-") {
 			continue
 		}
+		names = append(names, pi.Path[44:])
 		public := pi.fromPublicCache()
 		upstream := req.Args.PublicCacheUpstream
 		// only sign if not from public cache
@@ -585,6 +598,7 @@ func (a *heavyActivities) HeavyBuild(ctx context.Context, req *buildReq) (*build
 	stage.Store("manifest")
 	egCtx := errgroup.WithContext(ctx)
 	egCtx.SetLimit(runtime.NumCPU())
+	a.b.ClearStats()
 	for _, m := range toManifest {
 		m := m
 		egCtx.Go(func() error {
@@ -598,8 +612,14 @@ func (a *heavyActivities) HeavyBuild(ctx context.Context, req *buildReq) (*build
 		return nil, err
 	}
 
+	slices.Sort(names)
+	names = slices.Compact(names)
+
 	l.Info("build done")
-	return &buildRes{}, nil
+	return &buildRes{
+		Names:         names,
+		ManifestStats: a.b.Stats(),
+	}, nil
 }
 
 func makeNixexprsUrl(channel, relid string) string {
