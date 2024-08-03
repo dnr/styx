@@ -1,5 +1,7 @@
 package ci
 
+import "time"
+
 const (
 	workflowType = "ci" // matches function name
 
@@ -61,9 +63,10 @@ type (
 	}
 
 	notifyReq struct {
-		Args       *CiArgs
-		RelID      string
-		StyxCommit string
-		Error      string
+		Args         *CiArgs
+		RelID        string
+		StyxCommit   string
+		Error        string
+		BuildElapsed time.Duration
 	}
 )

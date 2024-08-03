@@ -51,6 +51,8 @@ Charon build complete!
 
 Nix channel: {{.req.RelID}}
 Styx commit: {{.req.StyxCommit}}
+
+Elapsed time: {{.req.BuildElapsed}}
 {{end}}
 `)),
 		map[string]any{"req": req},
