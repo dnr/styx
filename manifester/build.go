@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path"
+	"sync/atomic"
 	"time"
 
 	"github.com/nix-community/go-nix/pkg/hash"
@@ -46,6 +47,28 @@ type (
 		chunkPool *common.ChunkPool
 		pubKeys   []signature.PublicKey
 		signKeys  []signature.SecretKey
+
+		stats atomicStats
+	}
+
+	atomicStats struct {
+		Manifests       atomic.Int64
+		Shards          atomic.Int64
+		TotalChunks     atomic.Int64
+		TotalUncmpBytes atomic.Int64
+		NewChunks       atomic.Int64
+		NewUncmpBytes   atomic.Int64
+		NewCmpBytes     atomic.Int64
+	}
+
+	Stats struct {
+		Manifests       int64
+		Shards          int64
+		TotalChunks     int64
+		TotalUncmpBytes int64
+		NewChunks       int64
+		NewUncmpBytes   int64
+		NewCmpBytes     int64
 	}
 
 	ManifestBuilderConfig struct {
@@ -77,6 +100,29 @@ func NewManifestBuilder(cfg ManifestBuilderConfig, cs ChunkStoreWrite) (*Manifes
 		pubKeys:   cfg.PublicKeys,
 		signKeys:  cfg.SigningKeys,
 	}, nil
+}
+
+// If errors occur during building, stats might not be exactly right.
+func (b *ManifestBuilder) Stats() Stats {
+	return Stats{
+		Manifests:       b.stats.Manifests.Load(),
+		Shards:          b.stats.Shards.Load(),
+		TotalChunks:     b.stats.TotalChunks.Load(),
+		TotalUncmpBytes: b.stats.TotalUncmpBytes.Load(),
+		NewChunks:       b.stats.NewChunks.Load(),
+		NewUncmpBytes:   b.stats.NewUncmpBytes.Load(),
+		NewCmpBytes:     b.stats.NewCmpBytes.Load(),
+	}
+}
+
+func (b *ManifestBuilder) ClearStats() {
+	b.stats.Manifests.Store(0)
+	b.stats.Shards.Store(0)
+	b.stats.TotalChunks.Store(0)
+	b.stats.TotalUncmpBytes.Store(0)
+	b.stats.NewChunks.Store(0)
+	b.stats.NewUncmpBytes.Store(0)
+	b.stats.NewCmpBytes.Store(0)
 }
 
 func (b *ManifestBuilder) Build(
@@ -225,6 +271,8 @@ func (b *ManifestBuilder) Build(
 	}
 	log.Println("manifest", storePathHash, "built manifest")
 
+	b.stats.Shards.Add(1)
+
 	// if we're not shard 0, we're done
 	if shardIndex != 0 {
 		return nil, nil
@@ -296,6 +344,7 @@ func (b *ManifestBuilder) Build(
 		}
 	}
 	log.Println("manifest", storePathHash, "added to cache")
+	b.stats.Manifests.Add(1)
 	return cmpSb, nil
 }
 
@@ -397,10 +446,12 @@ func (b *ManifestBuilder) entry(egCtx *errgroup.Group, args *BuildArgs, m *pb.Ma
 // Note that goroutines will continue writing into the returned slice after this returns!
 // Caller should not look at it until after Wait() on the errgroup.
 func (b *ManifestBuilder) chunkData(egCtx *errgroup.Group, args *BuildArgs, dataSize int64, r io.Reader) ([]byte, error) {
-	nChunks := int((dataSize + common.ChunkShift.Size() - 1) >> common.ChunkShift)
+	nChunks := common.ChunkShift.Blocks(dataSize)
 	fullDigests := make([]byte, nChunks*cdig.Bytes)
 	digests := fullDigests
 	remaining := dataSize
+	b.stats.TotalUncmpBytes.Add(dataSize)
+	b.stats.TotalChunks.Add(nChunks)
 	for remaining > 0 {
 		if err := b.chunksem.Acquire(egCtx, 1); err != nil {
 			return nil, err
@@ -436,8 +487,16 @@ func (b *ManifestBuilder) chunkData(egCtx *errgroup.Group, args *BuildArgs, data
 			if !putChunk {
 				return nil
 			}
-			_, err := b.cs.PutIfNotExists(egCtx, ChunkReadPath, cdig.FromBytes(digest).String(), data)
-			return err
+			compressed, err := b.cs.PutIfNotExists(egCtx, ChunkReadPath, cdig.FromBytes(digest).String(), data)
+			if err != nil {
+				return err
+			}
+			if compressed != nil {
+				b.stats.NewChunks.Add(1)
+				b.stats.NewUncmpBytes.Add(int64(len(data)))
+				b.stats.NewCmpBytes.Add(int64(len(compressed)))
+			}
+			return nil
 		})
 	}
 
