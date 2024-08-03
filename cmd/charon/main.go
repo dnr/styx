@@ -26,9 +26,6 @@ func withWorkerConfig(c *cobra.Command) runE {
 	c.Flags().StringVar(&cfg.CacheSignKeySSM, "cache_signkey_ssm", "", "sign nix cache with key from SSM")
 
 	// manifest builder cfg
-	c.Flags().IntVar(&cfg.MBCfg.ChunkShift, "chunk_shift", 16, "chunk shift for building manifests")
-	c.Flags().StringVar(&cfg.MBCfg.DigestAlgo, "digest_algo", "sha256", "digest algo for building manifests")
-	c.Flags().IntVar(&cfg.MBCfg.DigestBits, "digest_bits", 192, "digest bits for building manifests")
 	c.Flags().StringArrayVar(&cfg.ManifestPubKeys, "nix_pubkey", nil, "verify narinfo with this public key")
 	c.Flags().StringArrayVar(&cfg.ManifestSignKeySSM, "styx_signkey_ssm", nil, "sign manifest with key from SSM")
 

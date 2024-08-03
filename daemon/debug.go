@@ -9,6 +9,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"github.com/dnr/styx/common"
+	"github.com/dnr/styx/common/cdig"
 	"github.com/dnr/styx/pb"
 )
 
@@ -46,13 +47,14 @@ func (s *server) handleDebugReq(ctx context.Context, r *DebugReq) (*DebugResp, e
 				}
 				for _, ent := range m.Entries {
 					ent.StatsInlineData = int32(len(ent.InlineData))
-					for digests := ent.Digests; len(digests) >= s.digestBytes; digests = digests[s.digestBytes:] {
-						if _, present := s.digestPresent(tx, digests[:s.digestBytes]); present {
+					digests := cdig.FromSliceAlias(ent.Digests)
+					for i := range digests {
+						if _, present := s.digestPresent(tx, digests[i]); present {
 							ent.StatsPresentChunks++
-							if len(digests) == s.digestBytes { // last
-								ent.StatsPresentBlocks += int32(s.blockShift.Roundup(s.chunkShift.Leftover(ent.Size)) >> s.blockShift)
+							if i == len(digests)-1 { // last
+								ent.StatsPresentBlocks += int32(s.blockShift.Roundup(common.ChunkShift.Leftover(ent.Size)) >> s.blockShift)
 							} else {
-								ent.StatsPresentBlocks += int32(1 << (s.chunkShift - s.blockShift))
+								ent.StatsPresentBlocks += int32(1 << (common.ChunkShift - s.blockShift))
 							}
 						}
 					}
@@ -119,6 +121,9 @@ func (s *server) handleDebugReq(ctx context.Context, r *DebugReq) (*DebugResp, e
 			res.Chunks = make(map[string]*DebugChunkInfo)
 			cur := tx.Bucket(chunkBucket).Cursor()
 			for k, v := cur.First(); k != nil; k, v = cur.Next() {
+				if len(k) < cdig.Bytes {
+					continue
+				}
 				var ci DebugChunkInfo
 				loc := loadLoc(v)
 				ci.Slab, ci.Addr = loc.SlabId, loc.Addr
@@ -127,7 +132,7 @@ func (s *server) handleDebugReq(ctx context.Context, r *DebugReq) (*DebugResp, e
 					ci.StorePaths = append(ci.StorePaths, sph.String()+"-"+name)
 				}
 				ci.Present = slabroot.Bucket(slabKey(ci.Slab)).Get(addrKey(ci.Addr|presentMask)) != nil
-				res.Chunks[common.DigestStr(k)] = &ci
+				res.Chunks[cdig.FromBytes(k).String()] = &ci
 			}
 		}
 		return nil

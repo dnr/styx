@@ -1,5 +1,7 @@
 package common
 
+const ChunkShift BlkShift = 16
+
 type BlkShift int
 
 func (b BlkShift) Size() int64 {

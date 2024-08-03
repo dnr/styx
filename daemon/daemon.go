@@ -26,6 +26,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"github.com/dnr/styx/common"
+	"github.com/dnr/styx/common/cdig"
 	"github.com/dnr/styx/common/systemd"
 	"github.com/dnr/styx/erofs"
 	"github.com/dnr/styx/manifester"
@@ -56,18 +57,16 @@ const (
 
 type (
 	server struct {
-		cfg         *Config
-		digestBytes int
-		blockShift  common.BlkShift
-		chunkShift  common.BlkShift
-		csread      manifester.ChunkStoreRead
-		mcread      manifester.ChunkStoreRead
-		db          *bbolt.DB
-		msgPool     *sync.Pool
-		chunkPool   *common.ChunkPool
-		builder     *erofs.Builder
-		devnode     atomic.Int32
-		stats       daemonStats
+		cfg        *Config
+		blockShift common.BlkShift
+		csread     manifester.ChunkStoreRead
+		mcread     manifester.ChunkStoreRead
+		db         *bbolt.DB
+		msgPool    *sync.Pool
+		chunkPool  *common.ChunkPool
+		builder    *erofs.Builder
+		devnode    atomic.Int32
+		stats      daemonStats
 
 		stateLock   sync.Mutex
 		cacheState  map[uint32]*openFileState // object id -> state
@@ -138,13 +137,11 @@ var errAlreadyMounted = errors.New("already mounted")
 func CachefilesServer(cfg Config) *server {
 	return &server{
 		cfg:          &cfg,
-		digestBytes:  int(cfg.Params.Params.DigestBits >> 3),
 		blockShift:   common.BlkShift(cfg.ErofsBlockShift),
-		chunkShift:   common.BlkShift(cfg.Params.Params.ChunkShift),
 		csread:       manifester.NewChunkStoreReadUrl(cfg.Params.ChunkReadUrl, manifester.ChunkReadPath),
 		mcread:       manifester.NewChunkStoreReadUrl(cfg.Params.ManifestCacheUrl, manifester.ManifestCachePath),
 		msgPool:      &sync.Pool{New: func() any { return make([]byte, CACHEFILES_MSG_MAX_SIZE) }},
-		chunkPool:    common.NewChunkPool(int(cfg.Params.Params.ChunkShift)),
+		chunkPool:    common.NewChunkPool(common.ChunkShift),
 		builder:      erofs.NewBuilder(erofs.BuilderConfig{BlockShift: cfg.ErofsBlockShift}),
 		cacheState:   make(map[uint32]*openFileState),
 		stateBySlab:  make(map[uint16]*openFileState),
@@ -1058,8 +1055,8 @@ func (s *server) handleReadSlab(state *openFileState, ln, off uint64) (retErr er
 
 	slabId := state.slabId
 	var addr uint32
-	digest := make([]byte, s.digestBytes)
-	var sphs []byte
+	var digest cdig.CDig
+	var sphps []SphPrefix
 
 	err := s.db.View(func(tx *bbolt.Tx) error {
 		sb := tx.Bucket(slabBucket).Bucket(slabKey(slabId))
@@ -1076,16 +1073,18 @@ func (s *server) handleReadSlab(state *openFileState, ln, off uint64) (retErr er
 		}
 		if k == nil {
 			return errors.New("ran off start of bucket")
+		} else if len(v) < cdig.Bytes {
+			return errors.New("bad value in loc entry")
 		}
 		// take addr from key so we write at the right place even if read was in the middle of a chunk
 		addr = addrFromKey(k)
-		copy(digest, v)
+		digest = cdig.FromBytes(v)
 		// look up digest to get store paths
-		loc := tx.Bucket(chunkBucket).Get(digest)
+		loc := tx.Bucket(chunkBucket).Get(v)
 		if loc == nil {
 			return errors.New("missing digest->loc reference")
 		}
-		sphs = bytes.Clone(loc[6:])
+		sphps = splitSphs(loc[6:])
 		return nil
 	})
 	if err != nil {
@@ -1093,7 +1092,7 @@ func (s *server) handleReadSlab(state *openFileState, ln, off uint64) (retErr er
 	}
 
 	ctx := context.Background()
-	return s.requestChunk(ctx, erofs.SlabLoc{slabId, addr}, digest, splitSphs(sphs))
+	return s.requestChunk(ctx, erofs.SlabLoc{slabId, addr}, digest, sphps)
 }
 
 func (s *server) mountSlabImage(slabId int) {
@@ -1187,17 +1186,20 @@ func appendSph(loc []byte, sph Sph) []byte {
 }
 
 func (s *server) VerifyParams(hashBytes int, blockShift, chunkShift common.BlkShift) error {
-	if hashBytes != s.digestBytes || blockShift != s.blockShift || chunkShift != common.BlkShift(s.cfg.Params.Params.ChunkShift) {
+	if hashBytes != cdig.Bytes || blockShift != s.blockShift || chunkShift != common.ChunkShift {
 		return errors.New("mismatched params")
 	}
 	return nil
 }
 
-func (s *server) AllocateBatch(ctx context.Context, blocks []uint16, digests []byte, forManifest bool) ([]erofs.SlabLoc, error) {
+func (s *server) AllocateBatch(ctx context.Context, blocks []uint16, digests []cdig.CDig, forManifest bool) ([]erofs.SlabLoc, error) {
 	// TODO: pass this through regular arg?
 	sph := ctx.Value("sph").(Sph)
 
 	n := len(blocks)
+	if n != len(digests) {
+		return nil, errors.New("mismatched lengths")
+	}
 	out := make([]erofs.SlabLoc, n)
 	err := s.db.Update(func(tx *bbolt.Tx) error {
 		cb, slabroot := tx.Bucket(chunkBucket), tx.Bucket(slabBucket)
@@ -1213,7 +1215,7 @@ func (s *server) AllocateBatch(ctx context.Context, blocks []uint16, digests []b
 		seq := max(sb.Sequence(), reservedBlocks)
 
 		for i := range out {
-			digest := digests[i*s.digestBytes : (i+1)*s.digestBytes]
+			digest := digests[i][:]
 			if loc := cb.Get(digest); loc == nil {
 				// allocate
 				if seq >= slabBytes>>s.blockShift {
@@ -1251,12 +1253,11 @@ func (s *server) SlabInfo(slabId uint16) (tag string, totalBlocks uint32) {
 }
 
 // like AllocateBatch but only lookup
-func (s *server) lookupLocs(tx *bbolt.Tx, digests []byte) ([]erofs.SlabLoc, error) {
-	out := make([]erofs.SlabLoc, len(digests)/s.digestBytes)
+func (s *server) lookupLocs(tx *bbolt.Tx, digests []cdig.CDig) ([]erofs.SlabLoc, error) {
+	out := make([]erofs.SlabLoc, len(digests))
 	cb := tx.Bucket(chunkBucket)
 	for i := range out {
-		digest := digests[i*s.digestBytes : (i+1)*s.digestBytes]
-		loc := cb.Get(digest)
+		loc := cb.Get(digests[i][:])
 		if loc == nil {
 			return nil, errors.New("missing chunk")
 		}

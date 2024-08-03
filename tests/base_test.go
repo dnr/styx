@@ -16,6 +16,7 @@ import (
 	"golang.org/x/sys/unix"
 
 	"github.com/dnr/styx/common"
+	"github.com/dnr/styx/common/cdig"
 	"github.com/dnr/styx/common/client"
 	"github.com/dnr/styx/daemon"
 	"github.com/dnr/styx/manifester"
@@ -28,10 +29,6 @@ const (
 	upstreamKeys = "cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY="
 
 	devnode = "/dev/cachefiles"
-
-	chunkShift = 16
-	digestAlgo = "sha256"
-	digestBits = 192
 
 	blockShift = 12
 )
@@ -114,9 +111,6 @@ func (tb *testBase) startManifester() {
 
 	mbcfg := manifester.ManifestBuilderConfig{
 		ConcurrentChunkOps: 10,
-		ChunkShift:         chunkShift,
-		DigestAlgo:         digestAlgo,
-		DigestBits:         digestBits,
 	}
 	mbcfg.PublicKeys, err = common.LoadPubKeys([]string{upstreamKeys})
 	require.NoError(tb.t, err)
@@ -153,9 +147,9 @@ func (tb *testBase) startDaemon() {
 		CacheDomain: tb.tag,
 		Params: pb.DaemonParams{
 			Params: &pb.GlobalParams{
-				ChunkShift: chunkShift,
-				DigestAlgo: digestAlgo,
-				DigestBits: digestBits,
+				ChunkShift: int32(common.ChunkShift),
+				DigestAlgo: common.DigestAlgo,
+				DigestBits: cdig.Bits,
 			},
 			ManifesterUrl:    tb.manifesterAddr,
 			ManifestCacheUrl: tb.manifesterAddr,

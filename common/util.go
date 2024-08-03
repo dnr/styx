@@ -2,13 +2,8 @@ package common
 
 import (
 	"context"
-	"encoding/base64"
 	"errors"
 )
-
-func DigestStr(digest []byte) string {
-	return base64.RawURLEncoding.EncodeToString(digest)
-}
 
 func ValOrErr[T any](v T, err error) (T, error) {
 	if err != nil {

@@ -21,6 +21,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"github.com/dnr/styx/common"
+	"github.com/dnr/styx/common/cdig"
 	"github.com/dnr/styx/pb"
 )
 
@@ -92,10 +93,7 @@ func (b *Builder) BuildFromManifestWithSlab(
 	out io.Writer,
 	sm SlabManager,
 ) error {
-	digestBytes := int(m.Params.DigestBits >> 3)
-	chunkShift := common.BlkShift(m.Params.ChunkShift)
-
-	if err := sm.VerifyParams(digestBytes, b.blk, chunkShift); err != nil {
+	if err := sm.VerifyParams(cdig.Bytes, b.blk, common.ChunkShift); err != nil {
 		return err
 	}
 
@@ -128,7 +126,7 @@ func (b *Builder) BuildFromManifestWithSlab(
 	const formatInline = (layoutCompact | (EROFS_INODE_FLAT_INLINE << EROFS_I_DATALAYOUT_BIT))
 	const formatChunked = (layoutCompact | (EROFS_INODE_CHUNK_BASED << EROFS_I_DATALAYOUT_BIT))
 
-	chunkedIU, err := inodeChunkInfo(b.blk, chunkShift)
+	chunkedIU, err := inodeChunkInfo(b.blk)
 	if err != nil {
 		return err
 	}
@@ -165,7 +163,7 @@ func (b *Builder) BuildFromManifestWithSlab(
 
 	const batchSize = 1000
 	batchBlocks := make([]uint16, 0, batchSize)
-	batchDigests := make([]byte, 0, batchSize*digestBytes)
+	batchDigests := make([]cdig.CDig, 0, batchSize)
 	batchInodes := make([]*inodebuilder, 0, batchSize/10)
 
 	flushBlocks := func() error {
@@ -255,8 +253,8 @@ func (b *Builder) BuildFromManifestWithSlab(
 				i.i.IFormat = formatChunked
 				i.i.IU = chunkedIU
 
-				nChunks := int(chunkShift.Blocks(e.Size))
-				if len(e.Digests) != nChunks*digestBytes {
+				nChunks := int(common.ChunkShift.Blocks(e.Size))
+				if len(e.Digests) != nChunks*cdig.Bytes {
 					return fmt.Errorf("digest list wrong size")
 				}
 				if len(batchBlocks)+nChunks > batchSize {
@@ -265,9 +263,9 @@ func (b *Builder) BuildFromManifestWithSlab(
 					}
 				}
 				i.batchStart = len(batchBlocks)
-				batchBlocks = common.AppendBlocksList(batchBlocks, e.Size, chunkShift, b.blk)
+				batchBlocks = common.AppendBlocksList(batchBlocks, e.Size, b.blk)
 				i.batchEnd = len(batchBlocks)
-				batchDigests = append(batchDigests, e.Digests...)
+				batchDigests = append(batchDigests, cdig.FromSliceAlias(e.Digests)...)
 				batchInodes = append(batchInodes, i)
 			} else if e.Size > 0 {
 				return fmt.Errorf("non-zero size but no taildata or digests")
@@ -603,12 +601,12 @@ func writeAndPad(out io.Writer, data []byte, shift common.BlkShift) error {
 	return err
 }
 
-func inodeChunkInfo(blkbits, chunkbits common.BlkShift) (uint32, error) {
-	if chunkbits-blkbits > EROFS_CHUNK_FORMAT_BLKBITS_MASK {
+func inodeChunkInfo(blkbits common.BlkShift) (uint32, error) {
+	if common.ChunkShift-blkbits > EROFS_CHUNK_FORMAT_BLKBITS_MASK {
 		return 0, fmt.Errorf("chunk size too big")
 	}
 	b, err := packToBytes(erofs_inode_chunk_info{
-		Format: EROFS_CHUNK_FORMAT_INDEXES | uint16(chunkbits-blkbits),
+		Format: EROFS_CHUNK_FORMAT_INDEXES | uint16(common.ChunkShift-blkbits),
 	})
 	if err != nil {
 		return 0, err

@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/dnr/styx/common"
+	"github.com/dnr/styx/common/cdig"
 )
 
 type (
@@ -15,7 +16,7 @@ type (
 
 	SlabManager interface {
 		VerifyParams(hashBytes int, blockShift, chunkShift common.BlkShift) error
-		AllocateBatch(ctx context.Context, blocks []uint16, digests []byte, forManifest bool) ([]SlabLoc, error)
+		AllocateBatch(ctx context.Context, blocks []uint16, digests []cdig.CDig, forManifest bool) ([]SlabLoc, error)
 		SlabInfo(slabId uint16) (tag string, totalBlocks uint32)
 	}
 

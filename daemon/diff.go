@@ -22,6 +22,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"github.com/dnr/styx/common"
+	"github.com/dnr/styx/common/cdig"
 	"github.com/dnr/styx/erofs"
 	"github.com/dnr/styx/manifester"
 	"github.com/dnr/styx/pb"
@@ -29,11 +30,9 @@ import (
 
 type (
 	digestIterator struct {
-		ents       []*pb.Entry
-		digestLen  int
-		chunkShift common.BlkShift
-		e          int // current index in ents
-		d          int // current digest offset (bytes)
+		ents []*pb.Entry
+		e    int // current index in ents
+		d    int // current digest offset (bytes)
 	}
 
 	opType int
@@ -44,14 +43,14 @@ type (
 		done chan struct{} // closed by startOp after writing err
 
 		// info for diff op
-		baseDigests, reqDigests     []byte
+		baseDigests, reqDigests     []cdig.CDig
 		baseInfo, reqInfo           []info
 		baseTotalSize, reqTotalSize int64
 		diffRecompress              []string
 
 		// info for single op
 		singleLoc    erofs.SlabLoc
-		singleDigest []byte
+		singleDigest cdig.CDig
 	}
 
 	info struct {
@@ -67,13 +66,13 @@ const (
 	opTypeSingle
 )
 
-func (s *server) requestChunk(ctx context.Context, loc erofs.SlabLoc, digest []byte, sphs []SphPrefix) error {
+func (s *server) requestChunk(ctx context.Context, loc erofs.SlabLoc, digest cdig.CDig, sphps []SphPrefix) error {
 	if _, ok := s.readKnownMap.Get(loc); ok {
 		// We think we have this chunk and are trying to use it as a base, but we got asked for
 		// it again. This shouldn't happen, but at least try to recover by doing a single read
 		// instead of diffing more.
-		log.Printf("bug: got request for supposedly-known chunk %s at %v", common.DigestStr(digest), loc)
-		sphs = nil
+		log.Printf("bug: got request for supposedly-known chunk %s at %v", digest.String(), loc)
+		sphps = nil
 	}
 
 	var op *diffOp
@@ -81,12 +80,12 @@ func (s *server) requestChunk(ctx context.Context, loc erofs.SlabLoc, digest []b
 	s.diffLock.Lock()
 	if haveOp, ok := s.diffMap[loc]; ok {
 		op = haveOp
-	} else if len(sphs) == 0 {
+	} else if len(sphps) == 0 {
 		op, _ = s.buildSingleOp(ctx, loc, digest)
 		go s.startOp(ctx, op)
 	} else {
 		var err error
-		op, err = s.buildDiffOp(ctx, digest, sphs)
+		op, err = s.buildDiffOp(ctx, digest, sphps)
 		if err != nil {
 			op, err = s.buildSingleOp(ctx, loc, digest)
 		} else if s.diffMap[loc] == nil {
@@ -111,7 +110,7 @@ func (s *server) requestChunk(ctx context.Context, loc erofs.SlabLoc, digest []b
 	return op.err
 }
 
-func (s *server) requestPrefetch(ctx context.Context, reqDigests [][]byte, reqSizes []int64, cres catalogResult) error {
+func (s *server) requestPrefetch(ctx context.Context, reqDigests []cdig.CDig, reqSizes []int64, cres catalogResult) error {
 	// ignore diffLock for prefetches. TODO: is that the best approach?
 	ops, err := s.buildPrefetchOps(ctx, reqDigests, reqSizes, cres)
 	if err != nil || ops == nil {
@@ -140,8 +139,8 @@ func (s *server) readChunks(
 	useTx *bbolt.Tx, // optional
 	totalSize int64,
 	locs []erofs.SlabLoc,
-	digests []byte, // used if allowMissing is true
-	sphs []SphPrefix, // used if allowMissing is true
+	digests []cdig.CDig, // used if allowMissing is true
+	sphps []SphPrefix, // used if allowMissing is true
 	allowMissing bool,
 ) ([]byte, error) {
 	firstMissing := -1
@@ -170,8 +169,7 @@ func (s *server) readChunks(
 		}
 
 		// request first missing one. the differ will do some readahead.
-		digest := digests[firstMissing*s.digestBytes : (firstMissing+1)*s.digestBytes]
-		err := s.requestChunk(ctx, locs[firstMissing], digest, sphs)
+		err := s.requestChunk(ctx, locs[firstMissing], digests[firstMissing], sphps)
 		if err != nil {
 			return nil, err
 		}
@@ -191,13 +189,12 @@ func (s *server) readChunks(
 	return out, nil
 }
 
-func (s *server) readSingle(ctx context.Context, loc erofs.SlabLoc, digest []byte) error {
+func (s *server) readSingle(ctx context.Context, loc erofs.SlabLoc, digest cdig.CDig) error {
 	// we have no size info here
 	buf := s.chunkPool.Get(1 << s.cfg.Params.Params.ChunkShift)
 	defer s.chunkPool.Put(buf)
 
-	digestStr := common.DigestStr(digest)
-	chunk, err := s.csread.Get(ctx, digestStr, buf[:0])
+	chunk, err := s.csread.Get(ctx, digest.String(), buf[:0])
 	if err != nil {
 		return fmt.Errorf("chunk read error: %w", err)
 	} else if len(chunk) > len(buf) || &buf[0] != &chunk[0] {
@@ -214,8 +211,8 @@ func (s *server) readSingle(ctx context.Context, loc erofs.SlabLoc, digest []byt
 // call with diffLock held
 func (s *server) buildDiffOp(
 	ctx context.Context,
-	targetDigest []byte,
-	sphs []SphPrefix,
+	targetDigest cdig.CDig,
+	sphps []SphPrefix,
 ) (*diffOp, error) {
 	tx, err := s.db.Begin(false)
 	if err != nil {
@@ -225,14 +222,14 @@ func (s *server) buildDiffOp(
 
 	// local map to make sure we only ask for any chunk once when extending (both base and req)
 	// s.diffMap applies across requests
-	usingDigests := make(map[string]bool)
+	usingDigests := make(map[cdig.CDig]bool)
 
 	// find an image with a base with similar data. go backwards on the assumption that recent
 	// images with this chunk will be more similar.
 	var goodOp *diffOp
 	extendLimit := 3
-	for i := len(sphs) - 1; i >= 0 && extendLimit > 0; i-- {
-		if res, err := s.catalogFindBase(tx, sphs[i]); err == nil {
+	for i := len(sphps) - 1; i >= 0 && extendLimit > 0; i-- {
+		if res, err := s.catalogFindBase(tx, sphps[i]); err == nil {
 			if goodOp == nil {
 				if op, err := s.tryBuildDiffOp(ctx, tx, targetDigest, res, usingDigests); err == nil {
 					goodOp = op
@@ -255,7 +252,7 @@ func (s *server) buildDiffOp(
 	}
 
 	// can't find any base, diff latest against nothing
-	sph := sphs[len(sphs)-1]
+	sph := sphps[len(sphps)-1]
 	foundSph, name := s.catalogFindName(tx, sph)
 	if len(name) == 0 {
 		return nil, errors.New("store path hash not found")
@@ -272,9 +269,9 @@ func (s *server) buildDiffOp(
 func (s *server) tryBuildDiffOp(
 	ctx context.Context,
 	tx *bbolt.Tx,
-	targetDigest []byte,
+	targetDigest cdig.CDig,
 	res catalogResult,
-	usingDigests map[string]bool,
+	usingDigests map[cdig.CDig]bool,
 ) (*diffOp, error) {
 	usingBase := res.baseName != noBaseName
 
@@ -292,14 +289,14 @@ func (s *server) tryBuildDiffOp(
 			log.Println("failed to get digests for", res.baseHash, res.baseName)
 			return nil, err
 		}
-		baseIter = s.newDigestIterator(baseEntries)
+		baseIter = newDigestIterator(baseEntries)
 	}
 	reqEntries, err := s.getDigestsFromImage(ctx, tx, res.reqHash, isManifest)
 	if err != nil {
 		log.Println("failed to get digests for", res.reqHash, res.reqName)
 		return nil, err
 	}
-	reqIter := s.newDigestIterator(reqEntries)
+	reqIter := newDigestIterator(reqEntries)
 
 	op := newDiffOp(opTypeDiff)
 
@@ -307,16 +304,14 @@ func (s *server) tryBuildDiffOp(
 
 	// find entry
 	reqIdx := 0
-	for !bytes.Equal(reqIter.digest(), targetDigest) {
-		reqIter.next(1)
+	for reqIter.digest() != targetDigest {
+		if !reqIter.next(1) {
+			return nil, fmt.Errorf("req digest not found in manifest") // shouldn't happen
+		}
 		reqIdx++
 	}
 
 	reqEnt := reqIter.ent()
-	if reqEnt == nil {
-		// shouldn't happen
-		return nil, fmt.Errorf("req digest not found in manifest")
-	}
 	switch {
 	case isManPageGz(reqEnt):
 		op.diffRecompress = []string{manifester.ExpandGz}
@@ -383,14 +378,14 @@ func (s *server) tryBuildDiffOp(
 		for !s.opFullBase(op) || !s.opFullReq(op) {
 			baseDigest := baseIter.digest()
 			reqDigest := reqIter.digest()
-			if baseDigest != nil && !s.opFullBase(op) && !usingDigests[string(baseDigest)] {
-				usingDigests[string(baseDigest)] = true
+			if baseDigest != cdig.Zero && !s.opFullBase(op) && !usingDigests[baseDigest] {
+				usingDigests[baseDigest] = true
 				if baseLoc, basePresent := s.digestPresent(tx, baseDigest); basePresent {
 					op.addBase(baseDigest, baseIter.size(), baseLoc)
 				}
 			}
-			if reqDigest != nil && !s.opFullReq(op) && !usingDigests[string(reqDigest)] {
-				usingDigests[string(reqDigest)] = true
+			if reqDigest != cdig.Zero && !s.opFullReq(op) && !usingDigests[reqDigest] {
+				usingDigests[reqDigest] = true
 				if reqLoc, reqPresent := s.digestPresent(tx, reqDigest); !reqPresent && reqLoc.Addr > 0 && s.diffMap[reqLoc] == nil {
 					op.addReq(reqDigest, reqIter.size(), reqLoc)
 					// record we're diffing this one in the map
@@ -437,10 +432,10 @@ func (s *server) tryBuildDiffOp(
 func (s *server) tryExtendDiffOp(
 	ctx context.Context,
 	tx *bbolt.Tx,
-	targetDigest []byte,
+	targetDigest cdig.CDig,
 	res catalogResult,
 	op *diffOp,
-	usingDigests map[string]bool,
+	usingDigests map[cdig.CDig]bool,
 ) {
 	// TODO: this is mostly a copy of code in tryBuildDiffOp. consolidate these.
 
@@ -453,24 +448,21 @@ func (s *server) tryExtendDiffOp(
 		log.Println("failed to get digests for", res.baseHash, res.baseName)
 		return
 	}
-	baseIter := s.newDigestIterator(baseEntries)
+	baseIter := newDigestIterator(baseEntries)
 	reqEntries, err := s.getDigestsFromImage(ctx, tx, res.reqHash, false)
 	if err != nil {
 		log.Println("failed to get digests for", res.reqHash, res.reqName)
 		return
 	}
-	reqIter := s.newDigestIterator(reqEntries)
+	reqIter := newDigestIterator(reqEntries)
 
 	// find entry
 	reqIdx := 0
-	for !bytes.Equal(reqIter.digest(), targetDigest) {
-		reqIter.next(1)
+	for reqIter.digest() != targetDigest {
+		if !reqIter.next(1) {
+			return // shouldn't happen
+		}
 		reqIdx++
-	}
-
-	reqEnt := reqIter.ent()
-	if reqEnt == nil {
-		return // shouldn't happen
 	}
 
 	// position baseIter at approximately the same place
@@ -479,14 +471,14 @@ func (s *server) tryExtendDiffOp(
 	for !s.opFullBase(op) || !s.opFullReq(op) {
 		baseDigest := baseIter.digest()
 		reqDigest := reqIter.digest()
-		if baseDigest != nil && !s.opFullBase(op) && !usingDigests[string(baseDigest)] {
-			usingDigests[string(baseDigest)] = true
+		if baseDigest != cdig.Zero && !s.opFullBase(op) && !usingDigests[baseDigest] {
+			usingDigests[baseDigest] = true
 			if baseLoc, basePresent := s.digestPresent(tx, baseDigest); basePresent {
 				op.addBase(baseDigest, baseIter.size(), baseLoc)
 			}
 		}
-		if reqDigest != nil && !s.opFullReq(op) && !usingDigests[string(reqDigest)] {
-			usingDigests[string(reqDigest)] = true
+		if reqDigest != cdig.Zero && !s.opFullReq(op) && !usingDigests[reqDigest] {
+			usingDigests[reqDigest] = true
 			if reqLoc, reqPresent := s.digestPresent(tx, reqDigest); !reqPresent && reqLoc.Addr > 0 && s.diffMap[reqLoc] == nil {
 				op.addReq(reqDigest, reqIter.size(), reqLoc)
 				// record we're diffing this one in the map
@@ -513,7 +505,7 @@ func (s *server) tryExtendDiffOp(
 
 func (s *server) buildPrefetchOps(
 	ctx context.Context,
-	reqDigests [][]byte,
+	reqDigests []cdig.CDig,
 	reqSizes []int64,
 	res catalogResult,
 ) ([]*diffOp, error) {
@@ -532,7 +524,7 @@ func (s *server) buildPrefetchOps(
 			log.Println("failed to get digests for", res.baseHash, res.baseName)
 			return nil, err
 		}
-		baseIter = s.newDigestIterator(baseEntries)
+		baseIter = newDigestIterator(baseEntries)
 	}
 
 	op := newDiffOp(opTypeDiff)
@@ -573,7 +565,7 @@ func (s *server) buildPrefetchOps(
 
 	for {
 		baseDigest := baseIter.digest()
-		if baseDigest == nil {
+		if baseDigest == cdig.Zero {
 			break
 		}
 		if baseLoc, basePresent := s.digestPresent(tx, baseDigest); basePresent {
@@ -632,7 +624,7 @@ func (s *server) opFullReq(op *diffOp) bool {
 func (s *server) buildSingleOp(
 	ctx context.Context,
 	loc erofs.SlabLoc,
-	targetDigest []byte,
+	targetDigest cdig.CDig,
 ) (*diffOp, error) {
 	op := newDiffOp(opTypeSingle)
 	op.singleLoc = loc
@@ -756,8 +748,7 @@ func (s *server) doDiffOp(ctx context.Context, op *diffOp) error {
 	for idx, i := range op.reqInfo {
 		// slice with cap to force copy if less than block size
 		b := reqData[p : p+i.size : p+i.size]
-		digest := op.reqDigests[idx*s.digestBytes : (idx+1)*s.digestBytes]
-		if err := s.gotNewChunk(i.loc, digest, b); err != nil {
+		if err := s.gotNewChunk(i.loc, op.reqDigests[idx], b); err != nil {
 			if len(op.diffRecompress) > 0 && strings.Contains(err.Error(), "digest mismatch") {
 				// we didn't recompress correctly, fall back to single
 				// TODO: be able to try with different parameter variants
@@ -786,7 +777,7 @@ func (s *server) doDiffOp(ctx context.Context, op *diffOp) error {
 }
 
 // gotNewChunk may reslice b up to block size and zero up to the new size!
-func (s *server) gotNewChunk(loc erofs.SlabLoc, digest []byte, b []byte) error {
+func (s *server) gotNewChunk(loc erofs.SlabLoc, digest cdig.CDig, b []byte) error {
 	if err := checkChunkDigest(b, digest); err != nil {
 		return err
 	}
@@ -846,8 +837,8 @@ func (s *server) gotNewChunk(loc erofs.SlabLoc, digest []byte, b []byte) error {
 	return nil
 }
 
-func (s *server) getChunkDiff(ctx context.Context, bases, reqs []byte, recompress []string) (io.ReadCloser, error) {
-	r := manifester.ChunkDiffReq{Bases: bases, Reqs: reqs}
+func (s *server) getChunkDiff(ctx context.Context, bases, reqs []cdig.CDig, recompress []string) (io.ReadCloser, error) {
+	r := manifester.ChunkDiffReq{Bases: cdig.ToSliceAlias(bases), Reqs: cdig.ToSliceAlias(reqs)}
 	if len(recompress) > 0 {
 		r.ExpandBeforeDiff = recompress[0]
 	}
@@ -888,7 +879,7 @@ func (s *server) getDigestsFromImage(ctx context.Context, tx *bbolt.Tx, sph Sph,
 	// read chunks if needed
 	data := entry.InlineData
 	if len(data) == 0 {
-		locs, err := s.lookupLocs(tx, entry.Digests)
+		locs, err := s.lookupLocs(tx, cdig.FromSliceAlias(entry.Digests))
 		if err != nil {
 			return nil, err
 		}
@@ -920,7 +911,7 @@ func (s *server) getManifestLocal(ctx context.Context, tx *bbolt.Tx, key []byte)
 	entry := sm.Msg
 	data := entry.InlineData
 	if len(data) == 0 {
-		locs, err := s.lookupLocs(tx, entry.Digests)
+		locs, err := s.lookupLocs(tx, cdig.FromSliceAlias(entry.Digests))
 		if err != nil {
 			return nil, err
 		}
@@ -1008,22 +999,23 @@ func (s *server) locPresent(tx *bbolt.Tx, loc erofs.SlabLoc) bool {
 	return db.Get(addrKey(loc.Addr|presentMask)) != nil
 }
 
-func (s *server) digestLoc(tx *bbolt.Tx, digest []byte) erofs.SlabLoc {
-	v := tx.Bucket(chunkBucket).Get(digest)
+func (s *server) digestLoc(tx *bbolt.Tx, digest cdig.CDig) erofs.SlabLoc {
+	v := tx.Bucket(chunkBucket).Get(digest[:])
 	if v == nil {
+		log.Println("missing chunk entry in digestLoc", digest)
 		return erofs.SlabLoc{} // shouldn't happen
 	}
 	return loadLoc(v)
 }
 
-func (s *server) digestPresent(tx *bbolt.Tx, digest []byte) (erofs.SlabLoc, bool) {
+func (s *server) digestPresent(tx *bbolt.Tx, digest cdig.CDig) (erofs.SlabLoc, bool) {
 	loc := s.digestLoc(tx, digest)
 	return loc, s.locPresent(tx, loc)
 }
 
 // digestIterator is positioned at first chunk
-func (s *server) newDigestIterator(entries []*pb.Entry) digestIterator {
-	i := digestIterator{ents: entries, digestLen: s.digestBytes, chunkShift: s.chunkShift, d: -s.digestBytes}
+func newDigestIterator(entries []*pb.Entry) digestIterator {
+	i := digestIterator{ents: entries, d: -cdig.Bytes}
 	i.next(1) // move to first actual digest
 	return i
 }
@@ -1037,16 +1029,16 @@ func (i *digestIterator) ent() *pb.Entry {
 }
 
 // digest of the current chunk
-func (i *digestIterator) digest() []byte {
+func (i *digestIterator) digest() cdig.CDig {
 	ent := i.ent()
 	if ent == nil {
-		return nil
+		return cdig.Zero
 	}
-	if i.d+i.digestLen > len(ent.Digests) {
+	if i.d+cdig.Bytes > len(ent.Digests) {
 		// shouldn't happen, we shouldn't have stopped here
-		return nil
+		return cdig.Zero
 	}
-	return ent.Digests[i.d : i.d+i.digestLen]
+	return cdig.FromBytes(ent.Digests[i.d : i.d+cdig.Bytes])
 }
 
 // size of this chunk
@@ -1055,20 +1047,20 @@ func (i *digestIterator) size() int64 {
 	if ent == nil {
 		return -1
 	}
-	if i.d+i.digestLen >= len(ent.Digests) { // last chunk
-		return i.chunkShift.Leftover(ent.Size)
+	if i.d+cdig.Bytes >= len(ent.Digests) { // last chunk
+		return common.ChunkShift.Leftover(ent.Size)
 	}
-	return i.chunkShift.Size()
+	return common.ChunkShift.Size()
 }
 
 // moves forward n chunks. returns true if valid.
 func (i *digestIterator) next(n int) bool {
-	i.d += n * i.digestLen
+	i.d += n * cdig.Bytes
 	for {
 		ent := i.ent()
 		if ent == nil {
 			return false
-		} else if i.d+i.digestLen <= len(ent.Digests) {
+		} else if i.d+cdig.Bytes <= len(ent.Digests) {
 			return true
 		}
 		i.e++
@@ -1107,14 +1099,14 @@ func newDiffOp(tp opType) *diffOp {
 	}
 }
 
-func (op *diffOp) addBase(digest []byte, size int64, loc erofs.SlabLoc) {
-	op.baseDigests = append(op.baseDigests, digest...)
+func (op *diffOp) addBase(digest cdig.CDig, size int64, loc erofs.SlabLoc) {
+	op.baseDigests = append(op.baseDigests, digest)
 	op.baseInfo = append(op.baseInfo, info{size, loc})
 	op.baseTotalSize += size
 }
 
-func (op *diffOp) addReq(digest []byte, size int64, loc erofs.SlabLoc) {
-	op.reqDigests = append(op.reqDigests, digest...)
+func (op *diffOp) addReq(digest cdig.CDig, size int64, loc erofs.SlabLoc) {
+	op.reqDigests = append(op.reqDigests, digest)
 	op.reqInfo = append(op.reqInfo, info{size, loc})
 	op.reqTotalSize += size
 }

@@ -16,16 +16,17 @@ import (
 	"github.com/nix-community/go-nix/pkg/nixbase32"
 
 	"github.com/dnr/styx/common"
+	"github.com/dnr/styx/common/cdig"
 )
 
 // matches store path without the /nix/store
 var reStorePath = regexp.MustCompile(`^[` + nixbase32.Alphabet + `]{32}-.*$`)
 
-func checkChunkDigest(got, digest []byte) error {
+func checkChunkDigest(got []byte, digest cdig.CDig) error {
 	h := sha256.New() // TODO: support other hashes
 	h.Write(got)
 	var gotDigest [sha256.Size]byte
-	if !bytes.Equal(h.Sum(gotDigest[:0])[:len(digest)], digest) {
+	if cdig.FromBytes(h.Sum(gotDigest[:0])) != digest {
 		return fmt.Errorf("chunk digest mismatch %x != %x", gotDigest, digest)
 	}
 	return nil
@@ -35,14 +36,6 @@ func splitSphs(sphs []byte) []SphPrefix {
 	out := make([]SphPrefix, len(sphs)/sphPrefixBytes)
 	for i := range out {
 		out[i] = SphPrefixFromBytes(sphs[i*sphPrefixBytes : (i+1)*sphPrefixBytes])
-	}
-	return out
-}
-
-func splitDigests(digests []byte, digestLen int) [][]byte {
-	out := make([][]byte, len(digests)/digestLen)
-	for i := range out {
-		out[i] = digests[i*digestLen : (i+1)*digestLen]
 	}
 	return out
 }

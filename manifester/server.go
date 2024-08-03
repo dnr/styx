@@ -24,6 +24,7 @@ import (
 	"golang.org/x/exp/slices"
 
 	"github.com/dnr/styx/common"
+	"github.com/dnr/styx/common/cdig"
 	"github.com/dnr/styx/common/errgroup"
 )
 
@@ -43,8 +44,6 @@ type (
 		cfg *Config
 		mb  *ManifestBuilder
 
-		digestBytes int
-
 		httpServer *http.Server
 	}
 
@@ -61,8 +60,6 @@ func NewManifestServer(cfg Config, mb *ManifestBuilder) (*server, error) {
 	return &server{
 		cfg: &cfg,
 		mb:  mb,
-
-		digestBytes: int(mb.params.DigestBits) >> 3,
 	}, nil
 }
 
@@ -73,9 +70,9 @@ func (s *server) validateManifestReq(r *ManifestReq, upstreamHost string) error 
 	} else if r.DigestAlgo != s.mb.params.DigestAlgo {
 		return fmt.Errorf("mismatched chunk shift (this server uses %s, not %s)",
 			s.mb.params.DigestAlgo, r.DigestAlgo)
-	} else if r.DigestBits != int(s.mb.params.DigestBits) {
+	} else if r.DigestBits != cdig.Bits {
 		return fmt.Errorf("mismatched chunk shift (this server uses %d, not %d)",
-			s.mb.params.DigestBits, r.DigestBits)
+			cdig.Bits, r.DigestBits)
 	}
 
 	if !slices.Contains(s.cfg.AllowedUpstreams, upstreamHost) {
@@ -153,11 +150,11 @@ func (s *server) handleChunkDiff(w http.ResponseWriter, req *http.Request) {
 	egCtx.SetLimit(s.cfg.ChunkDiffParallel)
 	wg.Add(2)
 	go func() {
-		baseData, baseErr = s.expand(egCtx, r.Bases, r.ExpandBeforeDiff)
+		baseData, baseErr = s.expand(egCtx, cdig.FromSliceAlias(r.Bases), r.ExpandBeforeDiff)
 		wg.Done()
 	}()
 	go func() {
-		reqData, reqErr = s.expand(egCtx, r.Reqs, r.ExpandBeforeDiff)
+		reqData, reqErr = s.expand(egCtx, cdig.FromSliceAlias(r.Reqs), r.ExpandBeforeDiff)
 		wg.Done()
 	}()
 	// wait for both
@@ -195,9 +192,9 @@ func (s *server) handleChunkDiff(w http.ResponseWriter, req *http.Request) {
 	}
 
 	stats := ChunkDiffStats{
-		BaseChunks: len(r.Bases) / s.digestBytes,
+		BaseChunks: len(r.Bases) / cdig.Bytes,
 		BaseBytes:  len(baseData),
-		ReqChunks:  len(r.Reqs) / s.digestBytes,
+		ReqChunks:  len(r.Reqs) / cdig.Bytes,
 		ReqBytes:   len(reqData),
 		DiffBytes:  cw.c,
 		DlTotalMs:  dlDone.Sub(start).Milliseconds(),
@@ -224,7 +221,7 @@ func (s *server) handleChunkDiff(w http.ResponseWriter, req *http.Request) {
 	log.Printf("diff done %#v", stats)
 }
 
-func (s *server) expand(egCtx *errgroup.Group, digests []byte, expand string) ([]byte, error) {
+func (s *server) expand(egCtx *errgroup.Group, digests []cdig.CDig, expand string) ([]byte, error) {
 	if len(digests) == 0 {
 		return nil, nil
 	}
@@ -264,21 +261,22 @@ func (s *server) expand(egCtx *errgroup.Group, digests []byte, expand string) ([
 
 	default:
 		var out bytes.Buffer
-		out.Grow((len(digests) / s.digestBytes) << (s.mb.params.ChunkShift - 1))
+		// guess chunks will be about half-full
+		out.Grow(len(digests) << (s.mb.params.ChunkShift - 1))
 		err := s.fetchChunkSeries(egCtx, digests, &out)
 		return common.ValOrErr(out.Bytes(), err)
 	}
 }
 
-func (s *server) fetchChunkSeries(egCtx *errgroup.Group, digests []byte, out io.Writer) error {
+func (s *server) fetchChunkSeries(egCtx *errgroup.Group, digests []cdig.CDig, out io.Writer) error {
 	// TODO: ew, use separate setting?
 	cs := s.mb.cs
 
 	chs := make(chan chan []byte, egCtx.Limit())
 	go func() {
-		for len(digests) > 0 && egCtx.Err() == nil {
-			digestStr := common.DigestStr(digests[:s.digestBytes])
-			digests = digests[s.digestBytes:]
+		for i := 0; i < len(digests) && egCtx.Err() == nil; i++ {
+			digest := digests[i]
+			digestStr := digest.String()
 			ch := make(chan []byte)
 			chs <- ch
 			egCtx.Go(func() error {
