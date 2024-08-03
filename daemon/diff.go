@@ -1047,10 +1047,7 @@ func (i *digestIterator) size() int64 {
 	if ent == nil {
 		return -1
 	}
-	if i.d+cdig.Bytes >= len(ent.Digests) { // last chunk
-		return common.ChunkShift.Leftover(ent.Size)
-	}
-	return common.ChunkShift.Size()
+	return common.ChunkShift.FileChunkSize(ent.Size, i.d+cdig.Bytes >= len(ent.Digests))
 }
 
 // moves forward n chunks. returns true if valid.

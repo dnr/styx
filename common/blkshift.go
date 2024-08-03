@@ -21,3 +21,10 @@ func (b BlkShift) Blocks(i int64) int64 {
 	m1 := b.Size() - 1
 	return (i + m1) >> b
 }
+
+func (b BlkShift) FileChunkSize(totalSize int64, isLast bool) int64 {
+	if !isLast {
+		return b.Size()
+	}
+	return b.Leftover(totalSize)
+}

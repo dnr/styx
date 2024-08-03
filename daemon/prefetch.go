@@ -49,10 +49,7 @@ func (s *server) handlePrefetchReq(ctx context.Context, r *PrefetchReq) (*Status
 					if _, ok := haveReq[d]; !ok {
 						haveReq[d] = struct{}{}
 						reqs = append(reqs, d)
-						size := common.ChunkShift.Size()
-						if digestIdx == len(digests)-1 { // last chunk
-							size = common.ChunkShift.Leftover(e.Size)
-						}
+						size := common.ChunkShift.FileChunkSize(e.Size, digestIdx == len(digests)-1)
 						reqSizes = append(reqSizes, size)
 					}
 				}

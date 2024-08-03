@@ -51,11 +51,9 @@ func (s *server) handleDebugReq(ctx context.Context, r *DebugReq) (*DebugResp, e
 					for i := range digests {
 						if _, present := s.digestPresent(tx, digests[i]); present {
 							ent.StatsPresentChunks++
-							if i == len(digests)-1 { // last
-								ent.StatsPresentBlocks += int32(s.blockShift.Roundup(common.ChunkShift.Leftover(ent.Size)) >> s.blockShift)
-							} else {
-								ent.StatsPresentBlocks += int32(1 << (common.ChunkShift - s.blockShift))
-							}
+							chunkSize := common.ChunkShift.FileChunkSize(ent.Size, i == len(digests)-1)
+							blocks := s.blockShift.Blocks(chunkSize)
+							ent.StatsPresentBlocks += int32(blocks)
 						}
 					}
 					ent.InlineData = nil
