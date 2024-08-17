@@ -62,6 +62,7 @@ type (
 		StyxCommit string
 	}
 	buildRes struct {
+		FakeError     string
 		Names         []string
 		ManifestStats manifester.Stats
 	}

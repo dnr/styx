@@ -60,7 +60,7 @@ Charon build error:
 Charon build complete!
 
 Nix channel: {{.req.RelID}}
-Styx commit: {{.req.StyxCommit}}
+Styx commit: {{slice .req.StyxCommit 0 8}}
 
 Elapsed time: {{.req.BuildElapsed | fmt}}
 Manifests: {{.req.ManifestStats.Manifests | fmt}}

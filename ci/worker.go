@@ -217,7 +217,10 @@ func ci(ctx workflow.Context, args *CiArgs) error {
 				Args:  args,
 				Error: err.Error(),
 			})
-			workflow.Sleep(ctx, time.Hour)
+			workflow.Sleep(ctx, time.Minute)
+			continue
+		} else if bres.FakeError != "" {
+			l.Error("build fake error", "error", bres.FakeError)
 			continue
 		}
 		l.Info("build succeeded", "relid", args.LastRelID, "styx", args.LastStyxCommit)
@@ -229,7 +232,7 @@ func ci(ctx workflow.Context, args *CiArgs) error {
 			Args:          args,
 			RelID:         args.LastRelID,
 			StyxCommit:    args.LastStyxCommit,
-			BuildElapsed:  workflow.Now(ctx).Sub(buildStart),
+			BuildElapsed:  workflow.Now(ctx).Sub(buildStart).Round(time.Second),
 			PrevNames:     prevNames,
 			NewNames:      bres.Names,
 			ManifestStats: bres.ManifestStats,
@@ -255,6 +258,10 @@ func ciBuild(ctx workflow.Context, req *buildReq) (*buildRes, error) {
 		TaskQueue:           heavyTaskQueue,
 		HeartbeatTimeout:    buildHeartbeat,
 		StartToCloseTimeout: buildTimeout,
+		RetryPolicy: &temporal.RetryPolicy{
+			// this activity is expensive, don't let it fail forever
+			MaximumAttempts: 3,
+		},
 	})
 	var res buildRes
 	var a *heavyActivities
