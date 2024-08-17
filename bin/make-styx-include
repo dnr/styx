@@ -1,0 +1,139 @@
+#!/usr/bin/env python
+#
+# The current Styx settings support either an include list or an exclude list.
+# To use Styx for "everything except core system packages", you might prefer an
+# exclude list. However, it only looks at package names and not closures, so
+# it'd be easy to miss a key package. To be safer, we can remove whole closures
+# from the system closure and take the result as an include list. That also
+# defaults new and unknown packages to excluded.
+
+import sys, os, subprocess, re
+
+# Packages that we shouldn't use Styx for until it's more stable. This should be
+# enough to repair a broken system. These are regex matches (anchored at start)
+# against package names.
+if True:
+    EXCLUDE = [
+            'bash-',
+            'coreutils-',
+            'initrd-linux-',
+            'linux-[0-9]',
+            'nix-',
+            'notion-',
+            'procps-',
+            'psmisc-',
+            'sudo-',
+            'systemd-',
+            'util-linux-',
+            'xorg-',
+            'vim-',
+            ]
+
+if True:
+    # Exclude some more filesystem-oriented packages.
+    EXCLUDE += [
+            'brotli-',
+            'btrfs-progs-',
+            'hdparm-',
+            'lvm2-',
+            'nfs-utils-',
+            'unzip-',
+            'xz-',
+            'zip-',
+            'zstd-',
+            ]
+
+if True:
+    # Exclude anything included in most systemd units, but ignore some units
+    # that include combined system paths. This should ensure a system can mostly boot.
+    EXCLUDE += ['unit-(?!accounts-daemon|dbus|polkit|systemd-udevd|udevd|suid-sgid-wrappers).*']
+
+if True:
+    # Exclude anything included any systemd units. This makes things pretty safe
+    # but excludes many more packages.
+    EXCLUDE += ['unit-.*']
+
+
+CURRENT_SYSTEM = '/run/current-system'
+
+def closure(base):
+    out = subprocess.check_output(['nix-store', '-qR', base])
+    return set(out.decode().splitlines())
+
+def disk_size(pkgs):
+    inp = '\x00'.join(pkgs) + '\x00'
+    out = subprocess.check_output(['du', '-scm', '--files0-from=-'], input=inp.encode())
+    return int(out.decode().splitlines()[-1].split()[0])
+
+def make_includes(pkgs, excluded):
+    # This automatically filters out stuff without a version number.
+    # Packages without a version number are mostly locally-built anyway.
+    ver = re.compile(r'(.+?)-([\d.-]+)$')
+    verout = re.compile(r'(.+?)-([\d.-]+)(-bin|-data|-doc|-info|-man|-dev|-lib)?$')
+    # Match firmware patterns:
+    fw = re.compile(r'(.+?-[Ff]irmware)-([\d.-]+)-(xz|zstd)$')
+    fwnover = re.compile(r'(.+?-firmware)-(xz|zstd)$')
+    # Other hacks:
+    spotify = re.compile(r'(spotify)-.*$') # has letters in "version"
+    wk = re.compile(r'(webkitgtk)-([\d.+abi=-]+)') # +abi=...
+
+    incs = set()
+    for p in pkgs:
+        p = p[44:]
+        if m := ver.match(p):
+            incs.add(f'{m.group(1)}-.*')
+        elif m := verout.match(p):
+            incs.add(f'{m.group(1)}-.*{m.group(3)}')
+        elif m := fw.match(p):
+            incs.add(f'{m.group(1)}-.*-{m.group(3)}')
+        elif m := fwnover.match(p):
+            incs.add(f'{m.group(1)}-{m.group(2)}')
+        elif m := spotify.match(p) or wk.match(p):
+            incs.add(f'{m.group(1)}-.*')
+        else:
+            print(f"# can't make pattern for {p}")
+
+    # if we have with named outputs and without, we can drop the named
+    for inc in list(incs):
+        r = re.compile(inc)
+        for sub in [j for j in incs if len(j) > len(inc) and r.match(j)]:
+            print(f"# {sub} subsumed by {inc}")
+            incs.discard(sub)
+
+    # if we accidentally included too much by stripping version numbers,
+    # just drop them. this isn't too many things.
+    for inc in list(incs):
+        r = re.compile(inc)
+        if ex := [e[44:] for e in excluded if r.match(e[44:])]:
+            print(f"# oops, {inc} would have matched excluded {', '.join(ex)}")
+            incs.discard(inc)
+
+    return incs
+
+def apply_includes(incs, pkgs):
+    cre = [re.compile(i) for i in incs]
+    return set(p for p in pkgs if any(r.match(p[44:]) for r in cre))
+
+def main():
+    system = closure(CURRENT_SYSTEM)
+    pkgs = set(system)
+    for e in EXCLUDE:
+        for r in set([p for p in pkgs if re.match(e, p[44:])]):
+            pkgs -= closure(r)
+            #for nr in prevpkgs - pkgs: print(f"# removed {nr} because of {r} <- {e}")
+
+    incs = make_includes(pkgs, system - pkgs)
+
+    for inc in sorted(incs): print(inc)
+
+    if True:
+        print("------")
+        print("full size:", disk_size(system))
+        included = apply_includes(incs, system)
+        print("included paths:", len(included))
+        print("included size:", disk_size(included))
+        # note sizes are not quite right if hard-linking
+
+
+if __name__ == '__main__':
+    main()

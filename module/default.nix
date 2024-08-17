@@ -5,23 +5,23 @@ let
 in with lib; {
   options = {
     services.styx = {
-      enable = mkEnableOption "Styx storage manager for nix";
-      enablePatchedNix = mkEnableOption "Patched nix for styx";
-      enableNixSettings = mkEnableOption "nix.conf settings for styx";
-      enableStyxNixCache = mkEnableOption "add binary cache for styx and related packages";
-      enableKernelOptions = mkEnableOption "Enable erofs+cachefiles on-demand kernel options for styx";
+      enable = mkEnableOption "Styx storage manager for Nix";
+      enablePatchedNix = mkEnableOption "Patched Nix for Styx";
+      enableNixSettings = mkEnableOption "nix.conf settings for Styx";
+      enableStyxNixCache = mkEnableOption "Add binary cache for Styx and related packages";
+      enableKernelOptions = mkEnableOption "Enable required kernel config for Styx (erofs+cachefiles)";
       params = mkOption {
         description = "url to remote params";
         type = types.str;
         default = "https://styx-1.s3.amazonaws.com/params/test-1";
       };
       keys = mkOption {
-        description = "signing keys";
+        description = "Styx public keys";
         type = types.listOf types.str;
         default = ["styx-test-1:bmMrKgN5yF3dGgOI67TZSfLts5IQHwdrOCZ7XHcaN+w="];
       };
       package = mkOption {
-        description = "styx package";
+        description = "Styx package";
         type = types.package;
         default = styx.styx-local;
       };
@@ -54,7 +54,7 @@ in with lib; {
     })
 
     (mkIf (cfg.enable || cfg.enableKernelOptions) {
-      # Need to turn on these kernel config options. This requires building the whole kernel :(
+      # Need to turn on these kernel config options:
       assertions = [ {
           assertion = lib.versionAtLeast config.boot.kernelPackages.kernel.version "6.8";
           message = "Styx requires at least a 6.8 kernel";
@@ -70,8 +70,9 @@ in with lib; {
     })
 
     (mkIf cfg.enable {
+      # Tag configuration so we can easily find a non-Styx config if we broke everything.
+      system.nixos.tags = [ "styx" ];
       environment.systemPackages = [ cfg.package ];
-
       systemd.services.styx = {
         description = "Nix storage manager";
         wantedBy = [ "multi-user.target" ];
