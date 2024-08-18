@@ -3,6 +3,8 @@ syntax = "proto3";
 package pb;
 option go_package = "github.com/dnr/styx/pb";
 
+import "params.proto";
+
 enum MountState {
   Unknown          = 0;  // initial value
   Requested        = 1;  // requested but not mounted yet
@@ -48,3 +50,9 @@ message DbImage {
 
 // key: "manifest" / <store path hash (nix base32)>
 // value: SignedMessage (manifest envelope)
+
+// key: "meta" / "params"
+message DbParams {
+  DaemonParams params = 1;
+  repeated string pubkey = 2;
+}

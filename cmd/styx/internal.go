@@ -36,9 +36,9 @@ func withOutFile(c *cobra.Command, args []string) error {
 	return nil
 }
 
-func debugCmd() *cobra.Command {
+func internalCmd() *cobra.Command {
 	return cmd(
-		&cobra.Command{Use: "debug", Aliases: []string{"d"}, Short: "debug commands"},
+		&cobra.Command{Use: "internal", Short: "internal commands"},
 		cmd(
 			&cobra.Command{
 				Use:  "signdaemonparams <daemon params json> <out file image>",

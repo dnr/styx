@@ -58,9 +58,8 @@ const (
 type (
 	server struct {
 		cfg        *Config
+		post       atomic.Pointer[postinit]
 		blockShift common.BlkShift
-		csread     manifester.ChunkStoreRead
-		mcread     manifester.ChunkStoreRead
 		db         *bbolt.DB
 		msgPool    *sync.Pool
 		chunkPool  *common.ChunkPool
@@ -91,6 +90,14 @@ type (
 		shutdownWait sync.WaitGroup
 	}
 
+	// fields that are only known after init
+	postinit struct {
+		keys   []signature.PublicKey
+		params pb.DaemonParams
+		csread manifester.ChunkStoreRead
+		mcread manifester.ChunkStoreRead
+	}
+
 	openFileState struct {
 		writeFd uint32 // for slabs, slab images, and store images
 		tp      uint16
@@ -116,9 +123,6 @@ type (
 		CacheTag    string
 		CacheDomain string
 
-		StyxPubKeys []signature.PublicKey
-		Params      pb.DaemonParams
-
 		ErofsBlockShift int
 		// SmallFileCutoff int
 
@@ -138,8 +142,6 @@ func CachefilesServer(cfg Config) *server {
 	return &server{
 		cfg:          &cfg,
 		blockShift:   common.BlkShift(cfg.ErofsBlockShift),
-		csread:       manifester.NewChunkStoreReadUrl(cfg.Params.ChunkReadUrl, manifester.ChunkReadPath),
-		mcread:       manifester.NewChunkStoreReadUrl(cfg.Params.ManifestCacheUrl, manifester.ManifestCachePath),
 		msgPool:      &sync.Pool{New: func() any { return make([]byte, CACHEFILES_MSG_MAX_SIZE) }},
 		chunkPool:    common.NewChunkPool(common.ChunkShift),
 		builder:      erofs.NewBuilder(erofs.BuilderConfig{BlockShift: cfg.ErofsBlockShift}),
@@ -153,7 +155,28 @@ func CachefilesServer(cfg Config) *server {
 	}
 }
 
+func (s *server) p() *postinit {
+	return s.post.Load()
+}
+
+func (s *server) postInit(params *pb.DaemonParams, keys []signature.PublicKey) error {
+	post := &postinit{
+		keys:   keys,
+		csread: manifester.NewChunkStoreReadUrl(params.ChunkReadUrl, manifester.ChunkReadPath),
+		mcread: manifester.NewChunkStoreReadUrl(params.ManifestCacheUrl, manifester.ManifestCachePath),
+	}
+	proto.Merge(&post.params, params)
+	if !s.post.CompareAndSwap(nil, post) {
+		return errors.New("postInit got conflict")
+	}
+	return nil
+}
+
 func (s *server) openDb() (err error) {
+	if err := os.MkdirAll(s.cfg.CachePath, 0700); err != nil {
+		return err
+	}
+
 	opts := bbolt.Options{
 		NoFreelistSync: true,
 		FreelistType:   bbolt.FreelistMapType,
@@ -177,24 +200,25 @@ func (s *server) openDb() (err error) {
 		return nil
 	}
 
-	checkParams := func(mb *bbolt.Bucket) error {
+	loadParams := func(mb *bbolt.Bucket) error {
 		b := mb.Get(metaParams)
 		if b == nil {
-			if b, err = proto.Marshal(s.cfg.Params.Params); err != nil {
-				return err
-			}
-			return mb.Put(metaParams, b)
+			// no params yet, leave uninitialized
+			log.Print("initializing with empty config, call 'styx client init --params=...'")
+			return nil
 		}
-		var gp pb.GlobalParams
-		if err = proto.Unmarshal(b, &gp); err != nil {
+		var dp pb.DbParams
+		if err := proto.Unmarshal(b, &dp); err != nil {
 			return err
-		} else if mp := s.cfg.Params.Params; false ||
-			gp.ChunkShift != mp.ChunkShift ||
-			gp.DigestAlgo != mp.DigestAlgo ||
-			gp.DigestBits != mp.DigestBits {
-			return fmt.Errorf("mismatched global params; wipe state and start over")
 		}
-		return nil
+		if err := verifyParams(dp.Params.Params); err != nil {
+			return err
+		}
+		keys, err := common.LoadPubKeys(dp.Pubkey)
+		if err != nil {
+			return err
+		}
+		return s.postInit(dp.Params, keys)
 	}
 
 	return s.db.Update(func(tx *bbolt.Tx) error {
@@ -214,7 +238,7 @@ func (s *server) openDb() (err error) {
 			return err
 		} else if err = checkSchemaVer(mb); err != nil {
 			return err
-		} else if err = checkParams(mb); err != nil {
+		} else if err = loadParams(mb); err != nil {
 			return err
 		}
 		return nil
@@ -222,11 +246,7 @@ func (s *server) openDb() (err error) {
 }
 
 func (s *server) setupEnv() error {
-	err := exec.Command(common.ModprobeBin, "cachefiles").Run()
-	if err != nil {
-		return err
-	}
-	return os.MkdirAll(s.cfg.CachePath, 0700)
+	return exec.Command(common.ModprobeBin, "cachefiles").Run()
 }
 
 func (s *server) setupManifestSlab() error {
@@ -389,6 +409,7 @@ func (s *server) startSocketServer() (err error) {
 		return err
 	}
 	mux := http.NewServeMux()
+	mux.HandleFunc(InitPath, jsonmw(s.handleInitReq))
 	mux.HandleFunc(MountPath, jsonmw(s.handleMountReq))
 	mux.HandleFunc(UmountPath, jsonmw(s.handleUmountReq))
 	mux.HandleFunc(PrefetchPath, jsonmw(s.handlePrefetchReq))
@@ -481,7 +502,49 @@ func jsonmw[reqT, resT any](f func(context.Context, *reqT) (*resT, error)) func(
 	}
 }
 
+func (s *server) handleInitReq(ctx context.Context, r *InitReq) (*Status, error) {
+	if s.p() != nil {
+		// TODO: add ability to modify some params
+		return nil, mwErr(http.StatusConflict, "already initialized")
+	} else if err := verifyParams(r.Params.GetParams()); err != nil {
+		return nil, mwErrE(http.StatusBadRequest, err)
+	} else if len(r.PubKeys) == 0 {
+		return nil, mwErr(http.StatusBadRequest, "missing public keys")
+	} else if r.Params.ManifesterUrl == "" {
+		return nil, mwErr(http.StatusBadRequest, "missing manifester url")
+	} else if r.Params.ManifestCacheUrl == "" {
+		return nil, mwErr(http.StatusBadRequest, "missing manifest cache url")
+	} else if r.Params.ChunkReadUrl == "" {
+		return nil, mwErr(http.StatusBadRequest, "missing chunk read url")
+	} else if r.Params.ChunkDiffUrl == "" {
+		return nil, mwErr(http.StatusBadRequest, "missing chunk diff url")
+	} else if keys, err := common.LoadPubKeys(r.PubKeys); err != nil {
+		return nil, mwErrE(http.StatusBadRequest, err)
+	} else if err = s.postInit(&r.Params, keys); err != nil {
+		return nil, err
+	}
+	return nil, s.db.Update(func(tx *bbolt.Tx) error {
+		mb := tx.Bucket(metaBucket)
+		if mb.Get(metaParams) != nil {
+			// shouldn't happen here since postInit does CAS
+			return errors.New("conflict on meta params update")
+		}
+		dp := pb.DbParams{
+			Params: &r.Params,
+			Pubkey: r.PubKeys,
+		}
+		if b, err := proto.Marshal(&dp); err != nil {
+			return err
+		} else {
+			return mb.Put(metaParams, b)
+		}
+	})
+}
+
 func (s *server) handleMountReq(ctx context.Context, r *MountReq) (*Status, error) {
+	if s.p() == nil {
+		return nil, mwErr(http.StatusPreconditionFailed, "styx is not initialized, call 'styx client init --params=...'")
+	}
 	if !reStorePath.MatchString(r.StorePath) {
 		return nil, mwErr(http.StatusBadRequest, "invalid store path or missing name")
 	} else if r.Upstream == "" {
@@ -591,6 +654,10 @@ func (s *server) tryMount(ctx context.Context, req *MountReq, haveImageSize int6
 }
 
 func (s *server) handleUmountReq(ctx context.Context, r *UmountReq) (*Status, error) {
+	if s.p() == nil {
+		return nil, mwErr(http.StatusPreconditionFailed, "styx is not initialized, call 'styx client init --params=...'")
+	}
+
 	// allowed to leave out the name part here
 	sph, _, _ := strings.Cut(r.StorePath, "-")
 
@@ -622,6 +689,10 @@ func (s *server) handleUmountReq(ctx context.Context, r *UmountReq) (*Status, er
 }
 
 func (s *server) handleGcReq(ctx context.Context, r *GcReq) (*Status, error) {
+	if s.p() == nil {
+		return nil, mwErr(http.StatusPreconditionFailed, "styx is not initialized, call 'styx client init --params=...'")
+	}
+
 	// TODO
 	return nil, errors.New("unimplemented")
 }
@@ -1049,7 +1120,7 @@ func (s *server) handleReadSlab(state *openFileState, ln, off uint64) (retErr er
 		}
 	}()
 
-	if ln > (1 << s.cfg.Params.Params.ChunkShift) {
+	if ln > uint64(common.ChunkShift.Size()) {
 		panic("got too big slab read")
 	}
 
@@ -1185,8 +1256,8 @@ func appendSph(loc []byte, sph Sph) []byte {
 	return newLoc
 }
 
-func (s *server) VerifyParams(hashBytes int, blockShift, chunkShift common.BlkShift) error {
-	if hashBytes != cdig.Bytes || blockShift != s.blockShift || chunkShift != common.ChunkShift {
+func (s *server) VerifyParams(blockShift common.BlkShift) error {
+	if blockShift != s.blockShift {
 		return errors.New("mismatched params")
 	}
 	return nil

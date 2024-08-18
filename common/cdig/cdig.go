@@ -1,13 +1,16 @@
 package cdig
 
 import (
+	"crypto/sha256"
 	"encoding/base64"
+	"fmt"
 	"unsafe"
 )
 
 const (
 	Bytes = 24
 	Bits  = Bytes << 3
+	Algo  = "sha256"
 )
 
 type (
@@ -18,6 +21,16 @@ var Zero CDig
 
 func (dig CDig) String() string {
 	return base64.RawURLEncoding.EncodeToString(dig[:])
+}
+
+func (dig CDig) Check(b []byte) error {
+	h := sha256.New()
+	h.Write(b)
+	var full [sha256.Size]byte
+	if FromBytes(h.Sum(full[:0])) != dig {
+		return fmt.Errorf("chunk digest mismatch %x != %x", full, dig)
+	}
+	return nil
 }
 
 // Note len(b) must be at least Bytes or this will panic.

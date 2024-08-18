@@ -5,7 +5,6 @@ pkgs.mkShell {
     erofs-utils
     jq
     go
-    nix
     protobuf
     protoc-gen-go
     skopeo

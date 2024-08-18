@@ -19,6 +19,6 @@ var (
 	catalogFBucket = []byte("catalogf") // name + hash -> [sysid]
 	catalogRBucket = []byte("catalogr") // hash -> name
 
-	metaParams = []byte("params")
 	metaSchema = []byte("schema")
+	metaParams = []byte("params")
 )

@@ -4,7 +4,7 @@ set -eux
 
 # in other terminals, run:
 # ./styx manifester --chunklocaldir=/tmp/chunks --styx_signkey=keys/styx-dev-1.secret
-# sudo ./styx daemon --params=file://$PWD/params/local-dev.signed
+# sudo ./styx daemon --params=file://$PWD/params/local-dev.signed --styx_pubkey=styx-dev-1:SCMYzQjLTMMuy/MlovgOX0rRVCYKOj+cYAfQrqzcLu0=
 
 for a; do
   tmp=$(mktemp -p /tmp -d roundtrip.XXXXXXXXX)

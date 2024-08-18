@@ -179,7 +179,7 @@ func (s *server) readChunks(
 	out := make([]byte, totalSize)
 	rest := out
 	for _, loc := range locs {
-		toRead := min(1<<s.cfg.Params.Params.ChunkShift, len(rest))
+		toRead := min(int(common.ChunkShift.Size()), len(rest))
 		err := s.getKnownChunk(loc, rest[:toRead])
 		if err != nil {
 			return nil, err
@@ -191,10 +191,10 @@ func (s *server) readChunks(
 
 func (s *server) readSingle(ctx context.Context, loc erofs.SlabLoc, digest cdig.CDig) error {
 	// we have no size info here
-	buf := s.chunkPool.Get(1 << s.cfg.Params.Params.ChunkShift)
+	buf := s.chunkPool.Get(int(common.ChunkShift.Size()))
 	defer s.chunkPool.Put(buf)
 
-	chunk, err := s.csread.Get(ctx, digest.String(), buf[:0])
+	chunk, err := s.p().csread.Get(ctx, digest.String(), buf[:0])
 	if err != nil {
 		return fmt.Errorf("chunk read error: %w", err)
 	} else if len(chunk) > len(buf) || &buf[0] != &chunk[0] {
@@ -778,7 +778,7 @@ func (s *server) doDiffOp(ctx context.Context, op *diffOp) error {
 
 // gotNewChunk may reslice b up to block size and zero up to the new size!
 func (s *server) gotNewChunk(loc erofs.SlabLoc, digest cdig.CDig, b []byte) error {
-	if err := checkChunkDigest(b, digest); err != nil {
+	if err := digest.Check(b); err != nil {
 		return err
 	}
 
@@ -846,7 +846,7 @@ func (s *server) getChunkDiff(ctx context.Context, bases, reqs []cdig.CDig, reco
 	if err != nil {
 		return nil, err
 	}
-	u := strings.TrimSuffix(s.cfg.Params.ChunkDiffUrl, "/") + manifester.ChunkDiffPath
+	u := strings.TrimSuffix(s.p().params.ChunkDiffUrl, "/") + manifester.ChunkDiffPath
 	res, err := retryHttpRequest(ctx, http.MethodPost, u, "application/json", reqBytes)
 	if err != nil {
 		return nil, err

@@ -93,7 +93,7 @@ func (b *Builder) BuildFromManifestWithSlab(
 	out io.Writer,
 	sm SlabManager,
 ) error {
-	if err := sm.VerifyParams(cdig.Bytes, b.blk, common.ChunkShift); err != nil {
+	if err := sm.VerifyParams(b.blk); err != nil {
 		return err
 	}
 

@@ -62,8 +62,6 @@ func withManifestBuilder(c *cobra.Command) runE {
 func withDaemonConfig(c *cobra.Command) runE {
 	var cfg daemon.Config
 
-	paramsUrl := c.Flags().String("params", "", "url to read global parameters from")
-	c.MarkFlagRequired("params")
 	c.Flags().StringVar(&cfg.DevPath, "devpath", "/dev/cachefiles", "path to cachefiles device node")
 	c.Flags().StringVar(&cfg.CachePath, "cache", "/var/cache/styx", "path to local cache (also socket and db)")
 	c.Flags().StringVar(&cfg.CacheTag, "cachetag", "styx0", "cachefiles tag")
@@ -73,16 +71,31 @@ func withDaemonConfig(c *cobra.Command) runE {
 	c.Flags().IntVar(&cfg.Workers, "workers", 16, "worker goroutines for cachefilesd serving")
 	c.Flags().IntVar(&cfg.ReadaheadChunks, "readahead_chunks", 30, "target chunks for readahead (max 256)")
 
+	return func(c *cobra.Command, args []string) error {
+		store(c, cfg)
+		return nil
+	}
+}
+
+func withInitReq(c *cobra.Command) runE {
+	var req daemon.InitReq
+
+	paramsUrl := c.Flags().String("params", "", "url to read global parameters from")
+	c.MarkFlagRequired("params")
+
 	return chainRunE(
 		withStyxPubKeys(c),
 		func(c *cobra.Command, args []string) error {
-			cfg.StyxPubKeys = get[[]signature.PublicKey](c)
+			keys := get[[]signature.PublicKey](c)
+			for _, k := range keys {
+				req.PubKeys = append(req.PubKeys, k.String())
+			}
 			if paramsBytes, err := common.LoadFromFileOrHttpUrl(*paramsUrl); err != nil {
 				return err
-			} else if err = common.VerifyInlineMessage(cfg.StyxPubKeys, common.DaemonParamsContext, paramsBytes, &cfg.Params); err != nil {
+			} else if err = common.VerifyInlineMessage(keys, common.DaemonParamsContext, paramsBytes, &req.Params); err != nil {
 				return err
 			}
-			store(c, cfg)
+			store(c, &req)
 			return nil
 		},
 	)
@@ -123,9 +136,7 @@ func withSignKeys(c *cobra.Command) runE {
 }
 
 func withStyxPubKeys(c *cobra.Command) runE {
-	pubkeys := c.Flags().StringArray("styx_pubkey",
-		[]string{"styx-dev-1:SCMYzQjLTMMuy/MlovgOX0rRVCYKOj+cYAfQrqzcLu0="},
-		"verify params and manifests with this key")
+	pubkeys := c.Flags().StringArray("styx_pubkey", nil, "verify params and manifests with this key")
 	return func(c *cobra.Command, args []string) error {
 		keys, err := common.LoadPubKeys(*pubkeys)
 		if err != nil {
@@ -210,6 +221,18 @@ func main() {
 			},
 			cmd(
 				&cobra.Command{
+					Use:   "init",
+					Short: "initializes daemon with required configuration",
+				},
+				withStyxClient,
+				withInitReq,
+				func(c *cobra.Command, args []string) error {
+					return get[*client.StyxClient](c).CallAndPrint(
+						daemon.InitPath, get[*daemon.InitReq](c))
+				},
+			),
+			cmd(
+				&cobra.Command{
 					Use:   "mount <upstream> <store path> <mount point>",
 					Short: "mounts a nix package",
 					Args:  cobra.ExactArgs(3),
@@ -272,7 +295,7 @@ func main() {
 				},
 			),
 		),
-		debugCmd(),
+		internalCmd(),
 	)
 	if err := root.Execute(); err != nil {
 		log.Fatal(err)

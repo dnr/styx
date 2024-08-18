@@ -45,7 +45,7 @@ func (s *server) getManifestAndBuildImage(ctx context.Context, req *MountReq) ([
 	}
 
 	// verify signature and params
-	entry, smParams, err := common.VerifyMessageAsEntry(s.cfg.StyxPubKeys, common.ManifestContext, envelopeBytes)
+	entry, smParams, err := common.VerifyMessageAsEntry(s.p().keys, common.ManifestContext, envelopeBytes)
 	if err != nil {
 		return nil, err
 	}
@@ -156,7 +156,7 @@ func (s *server) getManifestFromManifester(ctx context.Context, upstream, sph st
 
 	// check cache
 	s.stats.manifestCacheReqs.Add(1)
-	if b, err := s.mcread.Get(ctx, mReq.CacheKey(), nil); err == nil {
+	if b, err := s.p().mcread.Get(ctx, mReq.CacheKey(), nil); err == nil {
 		log.Printf("got manifest for %s from cache", sph)
 		s.stats.manifestCacheHits.Add(1)
 		return b, nil
@@ -165,7 +165,7 @@ func (s *server) getManifestFromManifester(ctx context.Context, upstream, sph st
 	}
 
 	// not found cached, request it
-	u := strings.TrimSuffix(s.cfg.Params.ManifesterUrl, "/") + manifester.ManifestPath
+	u := strings.TrimSuffix(s.p().params.ManifesterUrl, "/") + manifester.ManifestPath
 	s.stats.manifestReqs.Add(1)
 	b, err := s.getNewManifest(ctx, u, mReq, narSize)
 	if err != nil {
@@ -178,7 +178,7 @@ func (s *server) getManifestFromManifester(ctx context.Context, upstream, sph st
 func (s *server) getNewManifest(ctx context.Context, url string, req manifester.ManifestReq, narSize int64) ([]byte, error) {
 	start := time.Now()
 
-	shardBy := s.cfg.Params.ShardManifestBytes
+	shardBy := s.p().params.ShardManifestBytes
 	if shardBy == 0 {
 		// aim for max 10 seconds
 		shardBy = 20 << 20

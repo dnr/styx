@@ -10,16 +10,6 @@ in with lib; {
       enableNixSettings = mkEnableOption "nix.conf settings for Styx";
       enableStyxNixCache = mkEnableOption "Add binary cache for Styx and related packages";
       enableKernelOptions = mkEnableOption "Enable required kernel config for Styx (erofs+cachefiles)";
-      params = mkOption {
-        description = "url to remote params";
-        type = types.str;
-        default = "https://styx-1.s3.amazonaws.com/params/test-1";
-      };
-      keys = mkOption {
-        description = "Styx public keys";
-        type = types.listOf types.str;
-        default = ["styx-test-1:bmMrKgN5yF3dGgOI67TZSfLts5IQHwdrOCZ7XHcaN+w="];
-      };
       package = mkOption {
         description = "Styx package";
         type = types.package;
@@ -72,17 +62,27 @@ in with lib; {
     (mkIf cfg.enable {
       # Tag configuration so we can easily find a non-Styx config if we broke everything.
       system.nixos.tags = [ "styx" ];
-      environment.systemPackages = [ cfg.package ];
+
+      # expose cli
+      environment.systemPackages = [
+        cfg.package
+        styx.StyxInitTest1
+      ];
+
+      # main service
       systemd.services.styx = {
         description = "Nix storage manager";
-        wantedBy = [ "multi-user.target" ];
-        wants = [ "network-online.target" ];
-        after = [ "network-online.target" ];
+        wantedBy = [ "sysinit.target" ];
+        before = [ "sysinit.target" "shutdown.target" ];
+        conflicts = [ "shutdown.target" ];
+        after = [ "local-fs.target" ];
+        # TODO: restartTriggers
+        unitConfig = {
+          DefaultDependencies = false;
+          RequiresMountsFor = [ "/var/cache/styx" "/nix/store" ];
+        };
         serviceConfig = {
-          ExecStart = let
-            keys = strings.concatMapStringsSep " " (k: "--styx_pubkey ${k}") cfg.keys;
-            flags = "--params ${cfg.params} ${keys}";
-          in "${cfg.package}/bin/styx daemon ${flags}";
+          ExecStart = "${cfg.package}/bin/styx daemon";
           Type = "notify";
           NotifyAccess = "all";
           FileDescriptorStoreMax = "1";

@@ -3,7 +3,6 @@ package daemon
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
 	"fmt"
 	"io"
 	"log"
@@ -17,17 +16,22 @@ import (
 
 	"github.com/dnr/styx/common"
 	"github.com/dnr/styx/common/cdig"
+	"github.com/dnr/styx/pb"
 )
 
 // matches store path without the /nix/store
 var reStorePath = regexp.MustCompile(`^[` + nixbase32.Alphabet + `]{32}-.*$`)
 
-func checkChunkDigest(got []byte, digest cdig.CDig) error {
-	h := sha256.New() // TODO: support other hashes
-	h.Write(got)
-	var gotDigest [sha256.Size]byte
-	if cdig.FromBytes(h.Sum(gotDigest[:0])) != digest {
-		return fmt.Errorf("chunk digest mismatch %x != %x", gotDigest, digest)
+func verifyParams(p *pb.GlobalParams) error {
+	if p.ChunkShift != int32(common.ChunkShift) {
+		return fmt.Errorf("built-in chunk shift %d != %d; rebuild or use different params",
+			common.ChunkShift, p.ChunkShift)
+	} else if p.DigestAlgo != cdig.Algo {
+		return fmt.Errorf("built-in digest algo %s != %s; rebuild or use different params",
+			cdig.Algo, p.DigestAlgo)
+	} else if p.DigestBits != cdig.Bits {
+		return fmt.Errorf("built-in digest bits %d != %d; rebuild or use different params",
+			cdig.Bits, p.DigestBits)
 	}
 	return nil
 }

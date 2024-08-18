@@ -11,6 +11,7 @@ var (
 	// socket is path.Join(CachePath, Socket)
 	// accessible to root only!
 	Socket       = "styx.sock"
+	InitPath     = "/init"
 	MountPath    = "/mount"
 	UmountPath   = "/umount"
 	PrefetchPath = "/prefetch"
@@ -19,6 +20,12 @@ var (
 )
 
 type (
+	InitReq struct {
+		PubKeys []string
+		Params  pb.DaemonParams
+	}
+	// returns Status
+
 	MountReq struct {
 		Upstream   string
 		StorePath  string
@@ -49,7 +56,7 @@ type (
 		IncludeChunks bool
 	}
 	DebugResp struct {
-		Params  *pb.GlobalParams
+		Params  *pb.DbParams
 		Stats   Stats
 		DbStats bbolt.Stats
 		Images  map[string]DebugImage

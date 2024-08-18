@@ -14,14 +14,16 @@ import (
 )
 
 func (s *server) handleDebugReq(ctx context.Context, r *DebugReq) (*DebugResp, error) {
+	// allow this even before "initialized"
+
 	res := &DebugResp{
 		DbStats: s.db.Stats(),
 	}
 	return res, s.db.View(func(tx *bbolt.Tx) error {
 		// meta
-		var gp pb.GlobalParams
-		_ = proto.Unmarshal(tx.Bucket(metaBucket).Get(metaParams), &gp)
-		res.Params = &gp
+		var dp pb.DbParams
+		_ = proto.Unmarshal(tx.Bucket(metaBucket).Get(metaParams), &dp)
+		res.Params = &dp
 
 		// stats
 		res.Stats = s.stats.export()
