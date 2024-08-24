@@ -13,9 +13,11 @@ import (
 
 	"github.com/avast/retry-go/v4"
 	"github.com/nix-community/go-nix/pkg/nixbase32"
+	"golang.org/x/sys/unix"
 
 	"github.com/dnr/styx/common"
 	"github.com/dnr/styx/common/cdig"
+	"github.com/dnr/styx/erofs"
 	"github.com/dnr/styx/pb"
 )
 
@@ -113,4 +115,10 @@ func (cr *countReader) Read(p []byte) (int, error) {
 
 func underDir(p, dir string) bool {
 	return len(p) >= len(dir) && p[:len(dir)] == dir && (len(p) == len(dir) || dir == "/" || p[len(dir)] == '/')
+}
+
+func isErofsMount(p string) (bool, error) {
+	var st unix.Statfs_t
+	err := unix.Statfs(p, &st)
+	return st.Type == erofs.EROFS_MAGIC, err
 }

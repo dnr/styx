@@ -718,13 +718,11 @@ func (s *server) restoreMounts() {
 		return nil
 	})
 	for _, img := range toRestore {
-		var st unix.Statfs_t
-		err := unix.Statfs(img.MountPoint, &st)
-		if err == nil && st.Type == erofs.EROFS_MAGIC {
+		if mounted, err := isErofsMount(img.MountPoint); err == nil && mounted {
 			// log.Print("restoring: ", img.StorePath, " already mounted on ", img.MountPoint)
 			continue
 		}
-		err = s.tryMount(context.Background(), &MountReq{
+		err := s.tryMount(context.Background(), &MountReq{
 			StorePath:  img.StorePath,
 			MountPoint: img.MountPoint,
 			// the image has been written so we don't need upstream/narsize
@@ -843,7 +841,7 @@ func (s *server) cachefilesServer() {
 				// handle bug in linux < 6.8 where poll returns POLLIN if there are any
 				// outstanding requests, not just new ones
 				if !readAfterPoll {
-					log.Printf("empty read")
+					log.Printf("empty read from cachefiles device")
 					errors++
 				}
 				break
@@ -1169,16 +1167,18 @@ func (s *server) handleReadSlab(state *openFileState, ln, off uint64) (retErr er
 func (s *server) mountSlabImage(slabId int) {
 	fsid := slabImagePrefix + strconv.Itoa(slabId)
 	mountPoint := filepath.Join(s.cfg.CachePath, fsid)
-	if err := os.MkdirAll(mountPoint, 0755); err != nil {
-		log.Println("error mkdir on slab image mountpoint", mountPoint, err)
+	if mounted, err := isErofsMount(mountPoint); err != nil || !mounted {
+		if err := os.MkdirAll(mountPoint, 0755); err != nil {
+			log.Println("error mkdir on slab image mountpoint", mountPoint, err)
+		}
+		opts := fmt.Sprintf("domain_id=%s,fsid=%s", s.cfg.CacheDomain, fsid)
+		err := unix.Mount("none", mountPoint, "erofs", 0, opts)
+		if err != nil {
+			log.Println("error mounting slab image", fsid, "on", mountPoint, err)
+			return
+		}
+		log.Println("mounted slab image", fsid, "on", mountPoint)
 	}
-	opts := fmt.Sprintf("domain_id=%s,fsid=%s", s.cfg.CacheDomain, fsid)
-	err := unix.Mount("none", mountPoint, "erofs", 0, opts)
-	if err != nil {
-		log.Println("error mounting slab image", fsid, "on", mountPoint, err)
-		return
-	}
-	log.Println("mounted slab image", fsid, "on", mountPoint)
 	slabFile := filepath.Join(mountPoint, "slab")
 	slabFd, err := unix.Open(slabFile, unix.O_RDONLY, 0)
 	if err != nil {
