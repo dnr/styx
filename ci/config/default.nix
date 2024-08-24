@@ -92,6 +92,7 @@
     nodejs
     notion
     nvme-cli
+    obs-studio
     openssh
     openssl
     opusTools
@@ -121,6 +122,7 @@
     tree
     unzip
     usbutils
+    v4l-utils
     vim
     wget
     wireguard-tools
