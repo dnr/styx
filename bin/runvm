@@ -2,6 +2,7 @@
 set -eux
 vm=$(nix-build --no-out-link '<nixpkgs/nixos>' -A vm -I nixos-config=./vm-interactive.nix)
 export QEMU_KERNEL_PARAMS=console=ttyS0
+export QEMU_OPTS="-nographic ${QEMU_OPTS:-}"
 export NIX_DISK_IMAGE=/tmp/testvm-$UID.qcow2
 keep=''
 for arg; do
@@ -10,4 +11,17 @@ for arg; do
   esac
 done
 [[ $keep ]] || rm -f $NIX_DISK_IMAGE
-exec $vm/bin/run-testvm-vm -nographic
+
+# This is kind of gross: if you're actually using styx, then your "/nix/store"
+# is not a single filesystem anymore, there's stuff mounded inside it. The nixos
+# qemu module shares /nix/store by default, but qemu gets really confused with
+# the mulitple mount points and prints an error like
+#   qemu-kvm: warning: 9p: Multiple devices detected in same VirtFS export, …
+# There's a flag to handle this, multidevs=remap, but we have to sneak it into
+# the vm startup script.
+tmp=$(mktemp)
+sed -e '
+  2s|^|rm -f '"$tmp"';|
+  s|,mount_tag=nix-store|&,multidevs=remap|
+' < $vm/bin/run-testvm-vm > $tmp
+exec bash $tmp
