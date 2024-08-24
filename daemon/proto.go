@@ -59,16 +59,19 @@ type (
 		Params  *pb.DbParams
 		Stats   Stats
 		DbStats bbolt.Stats
-		Images  map[string]DebugImage
-		Slabs   []*DebugSlabInfo
-		Chunks  map[string]*DebugChunkInfo
+		Images  map[string]DebugImage      `json:",omitempty"`
+		Slabs   []*DebugSlabInfo           `json:",omitempty"`
+		Chunks  map[string]*DebugChunkInfo `json:",omitempty"`
 	}
-	DebugSlabInfo struct {
-		Index         uint16
+	DebugSizeStats struct {
 		TotalChunks   int
 		TotalBlocks   int
 		PresentChunks int
 		PresentBlocks int
+	}
+	DebugSlabInfo struct {
+		Index         uint16
+		Stats         DebugSizeStats
 		ChunkSizeDist map[uint32]int
 	}
 	DebugChunkInfo struct {
@@ -80,6 +83,7 @@ type (
 	DebugImage struct {
 		Image    *pb.DbImage
 		Manifest *pb.Manifest
+		Stats    DebugSizeStats
 	}
 
 	Status struct {

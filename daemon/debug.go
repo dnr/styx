@@ -47,22 +47,36 @@ func (s *server) handleDebugReq(ctx context.Context, r *DebugReq) (*DebugResp, e
 					log.Print("unmarshal getting manifest iterating images", err)
 					return
 				}
+				var tchunks, tblocks, pchunks, pblocks int
 				for _, ent := range m.Entries {
 					ent.StatsInlineData = int32(len(ent.InlineData))
 					digests := cdig.FromSliceAlias(ent.Digests)
+					tchunks += len(digests)
 					for i := range digests {
+						chunkSize := common.ChunkShift.FileChunkSize(ent.Size, i == len(digests)-1)
+						blocks := s.blockShift.Blocks(chunkSize)
+						tblocks += int(blocks)
 						if _, present := s.digestPresent(tx, digests[i]); present {
 							ent.StatsPresentChunks++
-							chunkSize := common.ChunkShift.FileChunkSize(ent.Size, i == len(digests)-1)
-							blocks := s.blockShift.Blocks(chunkSize)
 							ent.StatsPresentBlocks += int32(blocks)
+							pchunks += 1
+							pblocks += int(blocks)
 						}
 					}
 					ent.InlineData = nil
 					ent.Digests = nil
 				}
 
-				res.Images[img.StorePath] = DebugImage{Image: &img, Manifest: m}
+				res.Images[img.StorePath] = DebugImage{
+					Image:    &img,
+					Manifest: m,
+					Stats: DebugSizeStats{
+						TotalChunks:   tchunks,
+						TotalBlocks:   tblocks,
+						PresentChunks: pchunks,
+						PresentBlocks: pblocks,
+					},
+				}
 				img.StorePath = ""
 			}
 
@@ -102,12 +116,12 @@ func (s *server) handleDebugReq(ctx context.Context, r *DebugReq) (*DebugResp, e
 						}
 						blockSize := uint32(nextAddr - addr)
 						blockSizes[addr] = blockSize
-						si.TotalChunks++
-						si.TotalBlocks += int(blockSize)
+						si.Stats.TotalChunks++
+						si.Stats.TotalBlocks += int(blockSize)
 						si.ChunkSizeDist[blockSize]++
 					} else {
-						si.PresentChunks++
-						si.PresentBlocks += int(blockSizes[addr&^presentMask])
+						si.Stats.PresentChunks++
+						si.Stats.PresentBlocks += int(blockSizes[addr&^presentMask])
 					}
 					sk = nextSk
 				}

@@ -40,8 +40,8 @@ func TestChunkedManifest(t *testing.T) {
 	// Actually this one has identical contents, manifest chunks should be identical:
 	mp4 := tb.mount("v35ysx9k1ln4c6r7lj74204ss4bw7l5l-openssl-3.0.12-man")
 	d5 := tb.debug(daemon.DebugReq{IncludeSlabs: true})
-	require.Equal(t, d4.Slabs[0].TotalChunks, d5.Slabs[0].TotalChunks)
-	require.Equal(t, d4.Slabs[0].PresentChunks, d5.Slabs[0].PresentChunks)
+	require.Equal(t, d4.Slabs[0].Stats.TotalChunks, d5.Slabs[0].Stats.TotalChunks)
+	require.Equal(t, d4.Slabs[0].Stats.PresentChunks, d5.Slabs[0].Stats.PresentChunks)
 
 	require.Equal(t, "1m9w6v5z6w73ii42xyfsgyckvl3zkk1bx5wzvsydd95jbfhz8aga", tb.nixHash(mp2))
 	require.Equal(t, "0v60mg7qj7mfd27s1nnldb0041ln08xs1bw7zn1mmjiaq02myzlh", tb.nixHash(mp3))
