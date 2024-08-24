@@ -70,7 +70,9 @@ rec {
   in pkgs.stdenv.mkDerivation {
     name = "styx-test-data";
     builder = pkgs.writeShellScript "build-testdata" ''
+      set -e; . .attrs.sh
       PATH=${pkgs.coreutils}/bin:${pkgs.gnused}/bin:${pkgs.wget}/bin:$PATH
+      out=''${outputs[out]}
       mkdir $out && cd $out
       ${pkgs.lib.concatMapStringsSep "\n" (p: ''
         p=${p}; ni=''${p%%-*}.narinfo
@@ -78,6 +80,9 @@ rec {
         wget -nv -x -nH https://cache.nixos.org/$(sed -ne '/URL/s/.* //p' $ni)
       '') paths}
     '';
+    __structuredAttrs = true;  # needed for unsafeDiscardReferences
+    # this is pure data just for tests, even if references happen to match
+    unsafeDiscardReferences.out = true;
     outputHashMode = "recursive";
     outputHash = hash;
   };
