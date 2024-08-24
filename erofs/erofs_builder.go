@@ -342,7 +342,7 @@ func (b *Builder) BuildFromManifestWithSlab(
 	}
 	nextAddr := uint32(1)
 
-	for i, inode := range inodes {
+	for _, inode := range inodes {
 		need := EROFS_COMPACT_INODE_SIZE + EROFS_NID_SHIFT.Roundup(int64(len(inode.taildata)))
 		found := -1
 		for idx, space := range inodealloc {
@@ -352,8 +352,11 @@ func (b *Builder) BuildFromManifestWithSlab(
 			}
 		}
 		if found == -1 {
-			if inode.taildataIsChunkIndex && len(inodealloc) > 0 &&
-				inodealloc[len(inodealloc)-1].addr == nextAddr-1 {
+			if inode.taildataIsChunkIndex &&
+				len(inodealloc) > 0 &&
+				inodealloc[len(inodealloc)-1].addr == nextAddr-1 &&
+				// this check is that we don't "overflow" the pre-super space in the first block
+				(inodealloc[len(inodealloc)-1].addr > 0 || inodealloc[len(inodealloc)-1].off > EROFS_SUPER_OFFSET) {
 				// can use last block and overflow
 				found = len(inodealloc) - 1
 			} else {
@@ -365,7 +368,7 @@ func (b *Builder) BuildFromManifestWithSlab(
 		}
 
 		space := inodealloc[found]
-		inodes[i].nid = (uint64(space.addr)<<b.blk + uint64(space.off)) >> EROFS_NID_SHIFT
+		inode.nid = (uint64(space.addr)<<b.blk + uint64(space.off)) >> EROFS_NID_SHIFT
 		if inode.taildataIsChunkIndex && need > int64(space.ln) {
 			// overflow this one (must be last)
 			if found != len(inodealloc)-1 || space.addr != nextAddr-1 {
@@ -437,8 +440,7 @@ func (b *Builder) BuildFromManifestWithSlab(
 		pack(out, i.i)
 		p += EROFS_COMPACT_INODE_SIZE
 		if i.taildata != nil {
-			writeAndPad(out, i.taildata, EROFS_NID_SHIFT)
-			p += EROFS_NID_SHIFT.Roundup(int64(len(i.taildata)))
+			p += writeAndPad(out, i.taildata, EROFS_NID_SHIFT)
 		}
 	}
 	for _, i := range inodes {
@@ -594,11 +596,14 @@ func packToBytes(v any) ([]byte, error) {
 	return common.ValOrErr(b.Bytes(), err)
 }
 
-func writeAndPad(out io.Writer, data []byte, shift common.BlkShift) error {
+func writeAndPad(out io.Writer, data []byte, shift common.BlkShift) int64 {
 	n, err := out.Write(data)
-	r := shift.Roundup(int64(n)) - int64(n)
-	pad(out, r)
-	return err
+	if err != nil || n != len(data) {
+		panic("write err")
+	}
+	rounded := shift.Roundup(int64(n))
+	pad(out, rounded-int64(n))
+	return rounded
 }
 
 func inodeChunkInfo(blkbits common.BlkShift) (uint32, error) {
