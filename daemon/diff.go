@@ -766,9 +766,15 @@ func (s *server) doDiffOp(ctx context.Context, op *diffOp) error {
 		statsBytes = reqData[p:]
 	}
 	if err = json.Unmarshal(statsBytes, &st); err == nil {
-		log.Printf("diff %d/%d -> %d/%d = %d (%.1f%%)",
-			st.BaseBytes, st.BaseChunks, st.ReqBytes, st.ReqChunks,
-			st.DiffBytes, 100*float64(st.DiffBytes)/float64(st.ReqBytes))
+		if st.BaseChunks > 0 {
+			log.Printf("diff %d/%d -> %d/%d = %d (%.1f%%)",
+				st.BaseBytes, st.BaseChunks, st.ReqBytes, st.ReqChunks,
+				st.DiffBytes, 100*float64(st.DiffBytes)/float64(st.ReqBytes))
+		} else {
+			log.Printf("batch %d/%d = %d (%.1f%%)",
+				st.ReqBytes, st.ReqChunks,
+				st.DiffBytes, 100*float64(st.DiffBytes)/float64(st.ReqBytes))
+		}
 	} else {
 		log.Println("diff data has bad stats", err)
 	}
