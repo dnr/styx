@@ -160,37 +160,50 @@ func (tb *testBase) startDaemon() {
 		tb.t.Error("start manifester before daemon")
 	}
 
-	cfg := daemon.Config{
-		DevPath:     devnode,
-		CachePath:   tb.cachedir,
-		CacheTag:    tb.tag,
-		CacheDomain: tb.tag,
-		Params: pb.DaemonParams{
-			Params: &pb.GlobalParams{
-				ChunkShift: int32(common.ChunkShift),
-				DigestAlgo: common.DigestAlgo,
-				DigestBits: cdig.Bits,
-			},
-			ManifesterUrl:    tb.manifesterAddr,
-			ManifestCacheUrl: tb.manifesterAddr,
-			ChunkReadUrl:     tb.manifesterAddr,
-			ChunkDiffUrl:     tb.manifesterAddr,
-		},
+	d := daemon.CachefilesServer(daemon.Config{
+		DevPath:         devnode,
+		CachePath:       tb.cachedir,
+		CacheTag:        tb.tag,
+		CacheDomain:     tb.tag,
 		ErofsBlockShift: blockShift,
 		// SmallFileCutoff: 224,
 		Workers:         10,
 		ReadaheadChunks: 30,
 		IsTesting:       true,
-	}
-	pk, err := os.ReadFile("../keys/testsuite.public")
-	require.NoError(tb.t, err)
-	cfg.StyxPubKeys, err = common.LoadPubKeys([]string{string(pk)})
-	require.NoError(tb.t, err)
-	d := daemon.CachefilesServer(cfg)
-	err = d.Start()
+	})
+	err := d.Start()
 	require.NoError(tb.t, err)
 	tb.t.Log("daemon running in", tb.cachedir)
 	tb.daemon = d
+	tb.initDaemon()
+}
+
+func (tb *testBase) initDaemon() {
+	pk, err := os.ReadFile("../keys/testsuite.public")
+	require.NoError(tb.t, err)
+	params := pb.DaemonParams{
+		Params: &pb.GlobalParams{
+			ChunkShift: int32(common.ChunkShift),
+			DigestAlgo: common.DigestAlgo,
+			DigestBits: cdig.Bits,
+		},
+		ManifesterUrl:    tb.manifesterAddr,
+		ManifestCacheUrl: tb.manifesterAddr,
+		ChunkReadUrl:     tb.manifesterAddr,
+		ChunkDiffUrl:     tb.manifesterAddr,
+	}
+
+	sock := filepath.Join(tb.cachedir, "styx.sock")
+	c := client.NewClient(sock)
+	var res daemon.Status
+	code, err := c.Call(daemon.InitPath, &daemon.InitReq{
+		PubKeys: []string{string(pk)},
+		Params:  params,
+	}, &res)
+	require.NoError(tb.t, err)
+	require.Equal(tb.t, code, http.StatusOK)
+	require.True(tb.t, res.Success, "error:", res.Error)
+	tb.t.Log("daemon initialized")
 }
 
 func (tb *testBase) mount(storePath string) string {
