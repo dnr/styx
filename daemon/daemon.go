@@ -10,6 +10,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/http/pprof"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -415,6 +416,11 @@ func (s *server) startSocketServer() (err error) {
 	mux.HandleFunc(PrefetchPath, jsonmw(s.handlePrefetchReq))
 	mux.HandleFunc(GcPath, jsonmw(s.handleGcReq))
 	mux.HandleFunc(DebugPath, jsonmw(s.handleDebugReq))
+	mux.HandleFunc("/pprof/", pprof.Index)
+	mux.HandleFunc("/pprof/cmdline", pprof.Cmdline)
+	mux.HandleFunc("/pprof/profile", pprof.Profile)
+	mux.HandleFunc("/pprof/symbol", pprof.Symbol)
+	mux.HandleFunc("/pprof/trace", pprof.Trace)
 	s.shutdownWait.Add(1)
 	go func() {
 		defer s.shutdownWait.Done()
