@@ -312,6 +312,8 @@ func (s *server) tryBuildDiffOp(
 	}
 
 	reqEnt := reqIter.ent()
+	log.Printf("read /nix/store/%s-%s%s", res.reqHash, res.reqName, reqEnt.Path)
+
 	switch {
 	case isManPageGz(reqEnt):
 		op.diffRecompress = []string{manifester.ExpandGz}
