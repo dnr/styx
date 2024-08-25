@@ -377,21 +377,25 @@ func (s *server) tryBuildDiffOp(
 
 		for !s.opFullBase(op) || !s.opFullReq(op) {
 			baseDigest := baseIter.digest()
-			reqDigest := reqIter.digest()
 			if baseDigest != cdig.Zero && !s.opFullBase(op) && !usingDigests[baseDigest] {
-				usingDigests[baseDigest] = true
-				if baseLoc, basePresent := s.digestPresent(tx, baseDigest); basePresent {
+				baseLoc, basePresent := s.digestPresent(tx, baseDigest)
+				if basePresent {
+					usingDigests[baseDigest] = true
 					op.addBase(baseDigest, baseIter.size(), baseLoc)
 				}
 			}
+
+			reqDigest := reqIter.digest()
 			if reqDigest != cdig.Zero && !s.opFullReq(op) && !usingDigests[reqDigest] {
-				usingDigests[reqDigest] = true
-				if reqLoc, reqPresent := s.digestPresent(tx, reqDigest); !reqPresent && reqLoc.Addr > 0 && s.diffMap[reqLoc] == nil {
+				reqLoc, reqPresent := s.digestPresent(tx, reqDigest)
+				if !reqPresent && reqLoc.Addr > 0 && s.diffMap[reqLoc] == nil {
+					usingDigests[reqDigest] = true
 					op.addReq(reqDigest, reqIter.size(), reqLoc)
 					// record we're diffing this one in the map
 					s.diffMap[reqLoc] = op
 				}
 			}
+
 			baseOk, reqOk := baseIter.next(1), reqIter.next(1)
 			if !baseOk && !reqOk {
 				break
@@ -468,27 +472,36 @@ func (s *server) tryExtendDiffOp(
 	// position baseIter at approximately the same place
 	baseIter.next(reqIdx)
 
+	changed := false
 	for !s.opFullBase(op) || !s.opFullReq(op) {
 		baseDigest := baseIter.digest()
-		reqDigest := reqIter.digest()
 		if baseDigest != cdig.Zero && !s.opFullBase(op) && !usingDigests[baseDigest] {
-			usingDigests[baseDigest] = true
-			if baseLoc, basePresent := s.digestPresent(tx, baseDigest); basePresent {
+			baseLoc, basePresent := s.digestPresent(tx, baseDigest)
+			if basePresent {
+				usingDigests[baseDigest] = true
 				op.addBase(baseDigest, baseIter.size(), baseLoc)
+				changed = true
 			}
 		}
+
+		reqDigest := reqIter.digest()
 		if reqDigest != cdig.Zero && !s.opFullReq(op) && !usingDigests[reqDigest] {
-			usingDigests[reqDigest] = true
-			if reqLoc, reqPresent := s.digestPresent(tx, reqDigest); !reqPresent && reqLoc.Addr > 0 && s.diffMap[reqLoc] == nil {
+			reqLoc, reqPresent := s.digestPresent(tx, reqDigest)
+			if !reqPresent && reqLoc.Addr > 0 && s.diffMap[reqLoc] == nil {
+				usingDigests[reqDigest] = true
 				op.addReq(reqDigest, reqIter.size(), reqLoc)
 				// record we're diffing this one in the map
 				s.diffMap[reqLoc] = op
+				changed = true
 			}
 		}
 		baseOk, reqOk := baseIter.next(1), reqIter.next(1)
 		if !baseOk && !reqOk {
 			break
 		}
+	}
+	if !changed {
+		return
 	}
 
 	log.Printf("    +++ %s…-%s -> %s…-%s [%d/%d -> %d/%d]",

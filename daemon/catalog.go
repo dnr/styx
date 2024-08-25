@@ -47,7 +47,8 @@ func SphPrefixFromBytes(b []byte) (sphp SphPrefix) {
 func (s *server) catalogFindName(tx *bbolt.Tx, reqHashPrefix SphPrefix) (Sph, string) {
 	cur := tx.Bucket(catalogRBucket).Cursor()
 	// Note that Seek on this prefix will find the first key that matches it.
-	// It may be the "wrong" one due to a collision.
+	// It may be the "wrong" one due to a collision since we use only half the bytes.
+	// That means less than ideal diffing but it won't break anything.
 	k, v := cur.Seek(reqHashPrefix[:])
 	return SphFromBytes(k), string(v)
 }
