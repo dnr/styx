@@ -34,8 +34,8 @@ type (
 		DigestBits int
 
 		// sharded manifesting (not in cache key, only shard 0 writes to cache)
-		ShardTotal int
-		ShardIndex int
+		ShardTotal int `json:",omitempty"`
+		ShardIndex int `json:",omitempty"`
 	}
 	// response is SignedManifest
 

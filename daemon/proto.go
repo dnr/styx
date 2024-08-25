@@ -31,7 +31,7 @@ type (
 		Upstream   string
 		StorePath  string
 		MountPoint string
-		NarSize    int64 // optional
+		NarSize    int64 `json:",omitempty"` // optional
 	}
 	// returns Status
 
@@ -50,16 +50,16 @@ type (
 	// returns Status
 
 	RepairReq struct {
-		Presence bool
+		Presence bool `json:",omitempty"`
 	}
 	// returns Status
 
 	DebugReq struct {
-		IncludeAllImages bool
-		IncludeImages    []string // list of base32 sph
+		IncludeAllImages bool     `json:",omitempty"`
+		IncludeImages    []string `json:",omitempty"` // list of base32 sph
 
-		IncludeSlabs  bool
-		IncludeChunks bool
+		IncludeSlabs  bool `json:",omitempty"`
+		IncludeChunks bool `json:",omitempty"`
 	}
 	DebugResp struct {
 		Params  *pb.DbParams
@@ -93,7 +93,7 @@ type (
 	}
 
 	Status struct {
-		Success bool
-		Error   string
+		Success bool   `json:",omitempty"`
+		Error   string `json:",omitempty"`
 	}
 )
