@@ -410,7 +410,7 @@ func (s *server) tryBuildDiffOp(
 		recompress = " <" + op.diffRecompress[0] + ">"
 	}
 
-	if usingBase {
+	if usingBase && op.baseTotalSize > 0 {
 		log.Printf("diffing %s…-%s -> %s…-%s [%d/%d -> %d/%d]%s",
 			res.baseHash.String()[:5],
 			res.baseName,
@@ -423,7 +423,7 @@ func (s *server) tryBuildDiffOp(
 			recompress,
 		)
 	} else {
-		log.Printf("requesting %s…-%s [%d/%d]%s",
+		log.Printf("batching %s…-%s [%d/%d]%s",
 			res.reqHash.String()[:5],
 			res.reqName,
 			op.reqTotalSize,
