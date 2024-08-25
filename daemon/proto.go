@@ -17,6 +17,7 @@ var (
 	PrefetchPath = "/prefetch"
 	GcPath       = "/gc"
 	DebugPath    = "/debug"
+	RepairPath   = "/repair"
 )
 
 type (
@@ -45,6 +46,11 @@ type (
 	// returns Status
 
 	GcReq struct {
+	}
+	// returns Status
+
+	RepairReq struct {
+		Presence bool
 	}
 	// returns Status
 

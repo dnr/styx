@@ -416,6 +416,7 @@ func (s *server) startSocketServer() (err error) {
 	mux.HandleFunc(PrefetchPath, jsonmw(s.handlePrefetchReq))
 	mux.HandleFunc(GcPath, jsonmw(s.handleGcReq))
 	mux.HandleFunc(DebugPath, jsonmw(s.handleDebugReq))
+	mux.HandleFunc(RepairPath, jsonmw(s.handleRepairReq))
 	mux.HandleFunc("/pprof/", pprof.Index)
 	mux.HandleFunc("/pprof/cmdline", pprof.Cmdline)
 	mux.HandleFunc("/pprof/profile", pprof.Profile)
@@ -727,6 +728,14 @@ func (s *server) restoreMounts() {
 				log.Print("unmarshal error iterating images", string(k), err)
 				continue
 			}
+			// TODO: do this better
+			// if img.MountState == pb.MountState_MountError {
+			// 	log.Println("fixing", img.MountPoint)
+			// 	img.MountState = pb.MountState_Mounted
+			// 	img.ImageSize = 0
+			// 	toRestore = append(toRestore, &img)
+			// 	continue
+			// }
 			if img.MountState == pb.MountState_Mounted {
 				if img.ImageSize == 0 {
 					log.Print("found mounted image without size", img.StorePath)

@@ -6,6 +6,7 @@ var (
 	GzipBin     = "gzip"
 	XzBin       = "xz"
 	ModprobeBin = "modprobe"
+	FilefragBin = "filefrag"
 
 	Version = "dev"
 

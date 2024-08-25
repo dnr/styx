@@ -172,6 +172,15 @@ func withDebugReq(c *cobra.Command) runE {
 	}
 }
 
+func withRepairReq(c *cobra.Command) runE {
+	var req daemon.RepairReq
+	c.Flags().BoolVar(&req.Presence, "presence", false, "repair presence info")
+	return func(c *cobra.Command, args []string) error {
+		store(c, &req)
+		return nil
+	}
+}
+
 func main() {
 	if os.Getenv("NOTIFY_SOCKET") != "" || os.Getenv("AWS_LAMBDA_RUNTIME_API") != "" {
 		// running in systemd or on lambda
@@ -292,6 +301,18 @@ func main() {
 				func(c *cobra.Command, args []string) error {
 					return get[*client.StyxClient](c).CallAndPrint(
 						daemon.DebugPath, get[*daemon.DebugReq](c))
+				},
+			),
+			cmd(
+				&cobra.Command{
+					Use:   "repair",
+					Short: "tries to repair bad states",
+				},
+				withStyxClient,
+				withRepairReq,
+				func(c *cobra.Command, args []string) error {
+					return get[*client.StyxClient](c).CallAndPrint(
+						daemon.RepairPath, get[*daemon.RepairReq](c))
 				},
 			),
 		),
