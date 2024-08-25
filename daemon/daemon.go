@@ -615,29 +615,43 @@ func (s *server) tryMount(ctx context.Context, req *MountReq, haveImageSize int6
 
 	var mountErr error
 	opts := fmt.Sprintf("domain_id=%s,fsid=%s", s.cfg.CacheDomain, cookie)
-	if mountCtx.isBare {
-		// set up empty file on target mount point
-		if st, err := os.Lstat(req.MountPoint); err != nil || !st.Mode().IsRegular() {
-			if err = os.RemoveAll(req.MountPoint); err != nil {
-				return fmt.Errorf("error clearing mount point for bare file: %w", err)
-			} else if err = os.WriteFile(req.MountPoint, nil, 0o644); err != nil {
-				return fmt.Errorf("error creating mount point for bare file: %w", err)
+
+	if mountCtx.imageData != nil {
+		// first mount somewhere private, then unmount to force cachefiles to flush the image to disk.
+		// this is gross, there should be a better way to control cachefiles flushing.
+		firstMp := filepath.Join(s.cfg.CachePath, "initial", cookie)
+		_ = os.MkdirAll(firstMp, 0o755)
+		mountErr = unix.Mount("none", firstMp, "erofs", 0, opts)
+		_ = unix.Unmount(firstMp, 0)
+		_ = os.Remove(firstMp)
+	}
+
+	if mountErr == nil {
+		// now do real mount
+		if mountCtx.isBare {
+			// set up empty file on target mount point
+			if st, err := os.Lstat(req.MountPoint); err != nil || !st.Mode().IsRegular() {
+				if err = os.RemoveAll(req.MountPoint); err != nil {
+					return fmt.Errorf("error clearing mount point for bare file: %w", err)
+				} else if err = os.WriteFile(req.MountPoint, nil, 0o644); err != nil {
+					return fmt.Errorf("error creating mount point for bare file: %w", err)
+				}
 			}
+			// mount to private dir
+			privateMp := filepath.Join(s.cfg.CachePath, "bare", cookie)
+			_ = os.MkdirAll(privateMp, 0o755)
+			mountErr = unix.Mount("none", privateMp, "erofs", 0, opts)
+			if mountErr == nil {
+				// now bind the bare file where it should go
+				mountErr = unix.Mount(privateMp+erofs.BarePath, req.MountPoint, "none", unix.MS_BIND, "")
+			}
+			// whether we succeeded or failed, unmount the original and clean up
+			_ = unix.Unmount(privateMp, 0)
+			_ = os.Remove(privateMp)
+		} else {
+			_ = os.MkdirAll(req.MountPoint, 0o755)
+			mountErr = unix.Mount("none", req.MountPoint, "erofs", 0, opts)
 		}
-		// mount to private dir
-		privateMp := filepath.Join(s.cfg.CachePath, "bare", cookie)
-		_ = os.MkdirAll(privateMp, 0o755)
-		mountErr = unix.Mount("none", privateMp, "erofs", 0, opts)
-		if mountErr == nil {
-			// now bind the bare file where it should go
-			mountErr = unix.Mount(privateMp+erofs.BarePath, req.MountPoint, "none", unix.MS_BIND, "")
-		}
-		// whether we succeeded or failed, unmount the original and clean up
-		_ = unix.Unmount(privateMp, 0)
-		_ = os.Remove(privateMp)
-	} else {
-		_ = os.MkdirAll(req.MountPoint, 0o755)
-		mountErr = unix.Mount("none", req.MountPoint, "erofs", 0, opts)
 	}
 
 	_ = s.imageTx(cookie, func(img *pb.DbImage) error {
