@@ -205,7 +205,7 @@ func (s *server) openDb() (err error) {
 		b := mb.Get(metaParams)
 		if b == nil {
 			// no params yet, leave uninitialized
-			log.Print("initializing with empty config, call 'styx client init --params=...'")
+			log.Print("initializing with empty config, call 'styx init --params=...'")
 			return nil
 		}
 		var dp pb.DbParams
@@ -550,7 +550,7 @@ func (s *server) handleInitReq(ctx context.Context, r *InitReq) (*Status, error)
 
 func (s *server) handleMountReq(ctx context.Context, r *MountReq) (*Status, error) {
 	if s.p() == nil {
-		return nil, mwErr(http.StatusPreconditionFailed, "styx is not initialized, call 'styx client init --params=...'")
+		return nil, mwErr(http.StatusPreconditionFailed, "styx is not initialized, call 'styx init --params=...'")
 	}
 	if !reStorePath.MatchString(r.StorePath) {
 		return nil, mwErr(http.StatusBadRequest, "invalid store path or missing name")
@@ -676,7 +676,7 @@ func (s *server) tryMount(ctx context.Context, req *MountReq, haveImageSize int6
 
 func (s *server) handleUmountReq(ctx context.Context, r *UmountReq) (*Status, error) {
 	if s.p() == nil {
-		return nil, mwErr(http.StatusPreconditionFailed, "styx is not initialized, call 'styx client init --params=...'")
+		return nil, mwErr(http.StatusPreconditionFailed, "styx is not initialized, call 'styx init --params=...'")
 	}
 
 	// allowed to leave out the name part here
@@ -711,7 +711,7 @@ func (s *server) handleUmountReq(ctx context.Context, r *UmountReq) (*Status, er
 
 func (s *server) handleGcReq(ctx context.Context, r *GcReq) (*Status, error) {
 	if s.p() == nil {
-		return nil, mwErr(http.StatusPreconditionFailed, "styx is not initialized, call 'styx client init --params=...'")
+		return nil, mwErr(http.StatusPreconditionFailed, "styx is not initialized, call 'styx init --params=...'")
 	}
 
 	// TODO

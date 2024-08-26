@@ -224,97 +224,90 @@ func main() {
 		),
 		cmd(
 			&cobra.Command{
-				Use:     "client",
-				Aliases: []string{"c"},
-				Short:   "client to local daemon",
+				Use:   "init",
+				Short: "initializes daemon with required configuration (client)",
 			},
-			cmd(
-				&cobra.Command{
-					Use:   "init",
-					Short: "initializes daemon with required configuration",
-				},
-				withStyxClient,
-				withInitReq,
-				func(c *cobra.Command, args []string) error {
-					return get[*client.StyxClient](c).CallAndPrint(
-						daemon.InitPath, get[*daemon.InitReq](c))
-				},
-			),
-			cmd(
-				&cobra.Command{
-					Use:   "mount <upstream> <store path> <mount point>",
-					Short: "mounts a nix package",
-					Args:  cobra.ExactArgs(3),
-				},
-				withStyxClient,
-				func(c *cobra.Command, args []string) error {
-					return get[*client.StyxClient](c).CallAndPrint(
-						daemon.MountPath, &daemon.MountReq{
-							Upstream:   args[0],
-							StorePath:  args[1],
-							MountPoint: args[2],
-						},
-					)
-				},
-			),
-			cmd(
-				&cobra.Command{
-					Use:   "umount <store path>",
-					Short: "unmounts a nix package that was previous mounted",
-					Args:  cobra.ExactArgs(1),
-				},
-				withStyxClient,
-				func(c *cobra.Command, args []string) error {
-					return get[*client.StyxClient](c).CallAndPrint(
-						daemon.UmountPath, &daemon.UmountReq{
-							StorePath: args[0],
-						},
-					)
-				},
-			),
-			cmd(
-				&cobra.Command{
-					Use:   "prefetch <path>",
-					Short: "prefetch the given file or directory",
-					Args:  cobra.ExactArgs(1),
-				},
-				withStyxClient,
-				func(c *cobra.Command, args []string) error {
-					arg, err := filepath.Abs(args[0])
-					if err != nil {
-						return err
-					}
-					return get[*client.StyxClient](c).CallAndPrint(
-						daemon.PrefetchPath, &daemon.PrefetchReq{
-							Path: arg,
-						},
-					)
-				},
-			),
-			cmd(
-				&cobra.Command{
-					Use:   "debug",
-					Short: "dumps info from daemon",
-				},
-				withStyxClient,
-				withDebugReq,
-				func(c *cobra.Command, args []string) error {
-					return get[*client.StyxClient](c).CallAndPrint(
-						daemon.DebugPath, get[*daemon.DebugReq](c))
-				},
-			),
-			cmd(
-				&cobra.Command{
-					Use:   "repair",
-					Short: "tries to repair bad states",
-				},
-				withStyxClient,
-				withRepairReq,
-				func(c *cobra.Command, args []string) error {
-					return get[*client.StyxClient](c).CallAndPrint(
-						daemon.RepairPath, get[*daemon.RepairReq](c))
-				},
-			),
+			withStyxClient,
+			withInitReq,
+			func(c *cobra.Command, args []string) error {
+				return get[*client.StyxClient](c).CallAndPrint(
+					daemon.InitPath, get[*daemon.InitReq](c))
+			},
+		),
+		cmd(
+			&cobra.Command{
+				Use:   "mount <upstream> <store path> <mount point>",
+				Short: "mounts a nix package (client)",
+				Args:  cobra.ExactArgs(3),
+			},
+			withStyxClient,
+			func(c *cobra.Command, args []string) error {
+				return get[*client.StyxClient](c).CallAndPrint(
+					daemon.MountPath, &daemon.MountReq{
+						Upstream:   args[0],
+						StorePath:  args[1],
+						MountPoint: args[2],
+					},
+				)
+			},
+		),
+		cmd(
+			&cobra.Command{
+				Use:   "umount <store path>",
+				Short: "unmounts a nix package that was previously mounted (client)",
+				Args:  cobra.ExactArgs(1),
+			},
+			withStyxClient,
+			func(c *cobra.Command, args []string) error {
+				return get[*client.StyxClient](c).CallAndPrint(
+					daemon.UmountPath, &daemon.UmountReq{
+						StorePath: args[0],
+					},
+				)
+			},
+		),
+		cmd(
+			&cobra.Command{
+				Use:   "prefetch <path>",
+				Short: "prefetch the given file or directory (client)",
+				Args:  cobra.ExactArgs(1),
+			},
+			withStyxClient,
+			func(c *cobra.Command, args []string) error {
+				arg, err := filepath.Abs(args[0])
+				if err != nil {
+					return err
+				}
+				return get[*client.StyxClient](c).CallAndPrint(
+					daemon.PrefetchPath, &daemon.PrefetchReq{
+						Path: arg,
+					},
+				)
+			},
+		),
+		cmd(
+			&cobra.Command{
+				Use:   "debug",
+				Short: "dumps info from daemon (client)",
+			},
+			withStyxClient,
+			withDebugReq,
+			func(c *cobra.Command, args []string) error {
+				return get[*client.StyxClient](c).CallAndPrint(
+					daemon.DebugPath, get[*daemon.DebugReq](c))
+			},
+		),
+		cmd(
+			&cobra.Command{
+				Use:   "repair",
+				Short: "tries to repair bad states (client)",
+			},
+			withStyxClient,
+			withRepairReq,
+			func(c *cobra.Command, args []string) error {
+				return get[*client.StyxClient](c).CallAndPrint(
+					daemon.RepairPath, get[*daemon.RepairReq](c))
+			},
 		),
 		internalCmd(),
 	)

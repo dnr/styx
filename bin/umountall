@@ -1,2 +1,2 @@
 #!/bin/sh
-for d in $(mount -t erofs | cut -d' ' -f3); do sudo ./styx client umount $(basename $d); done
+for d in $(mount -t erofs | cut -d' ' -f3); do sudo ./styx umount $(basename $d); done

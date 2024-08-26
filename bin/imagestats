@@ -4,7 +4,7 @@
 args=()
 for i; do args+=(-i "$i"); done
 exec 7>&1
-sudo styx client debug "${args[@]}" |
+sudo styx debug "${args[@]}" |
   tee >(jq '.Images.[].Stats' >&7) |
   jq -r '
   .Images.[].Manifest.entries.[] |

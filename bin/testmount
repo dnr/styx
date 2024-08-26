@@ -8,5 +8,5 @@ for sph; do
   sph=${sph%%/*}
   dir=$base/$sph
   sudo mkdir -p $dir
-  sudo ./styx client mount $upstream $sph $dir
+  sudo ./styx mount $upstream $sph $dir
 done

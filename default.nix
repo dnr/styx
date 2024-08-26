@@ -137,6 +137,6 @@ rec {
 
   # helper to initialize styx with "test-1" params
   StyxInitTest1 = pkgs.writeShellScriptBin "StyxInitTest1" ''
-    styx client init --params=https://styx-1.s3.amazonaws.com/params/test-1 --styx_pubkey=styx-test-1:bmMrKgN5yF3dGgOI67TZSfLts5IQHwdrOCZ7XHcaN+w=
+    styx init --params=https://styx-1.s3.amazonaws.com/params/test-1 --styx_pubkey=styx-test-1:bmMrKgN5yF3dGgOI67TZSfLts5IQHwdrOCZ7XHcaN+w=
   '';
 }

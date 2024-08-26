@@ -14,7 +14,7 @@ import (
 
 func (s *server) handlePrefetchReq(ctx context.Context, r *PrefetchReq) (*Status, error) {
 	if s.p() == nil {
-		return nil, mwErr(http.StatusPreconditionFailed, "styx is not initialized, call 'styx client init --params=...'")
+		return nil, mwErr(http.StatusPreconditionFailed, "styx is not initialized, call 'styx init --params=...'")
 	}
 
 	haveReq := make(map[cdig.CDig]struct{})
