@@ -9,11 +9,13 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"maps"
 	"net/http"
 	"os/exec"
 	"path"
 	"regexp"
 	"strings"
+	"time"
 	"unsafe"
 
 	"github.com/DataDog/zstd"
@@ -26,6 +28,10 @@ import (
 	"github.com/dnr/styx/erofs"
 	"github.com/dnr/styx/manifester"
 	"github.com/dnr/styx/pb"
+)
+
+const (
+	recentReadExpiry = 30 * time.Second
 )
 
 type (
@@ -48,6 +54,9 @@ type (
 		baseTotalSize, reqTotalSize int64
 		diffRecompress              []string
 
+		// the contents of recentRead is under diffLock
+		recentRead *recentRead
+
 		// info for single op
 		singleLoc    erofs.SlabLoc
 		singleDigest cdig.CDig
@@ -56,6 +65,11 @@ type (
 	info struct {
 		size int64
 		loc  erofs.SlabLoc
+	}
+
+	recentRead struct {
+		when       time.Time
+		limitShift int
 	}
 )
 
@@ -313,6 +327,7 @@ func (s *server) tryBuildDiffOp(
 
 	reqEnt := reqIter.ent()
 	log.Printf("read /nix/store/%s-%s%s", res.reqHash, res.reqName, reqEnt.Path)
+	op.recentRead = s.findRecentRead(res.reqHash, reqEnt.Path)
 
 	switch {
 	case isManPageGz(reqEnt):
@@ -469,6 +484,11 @@ func (s *server) tryExtendDiffOp(
 			return // shouldn't happen
 		}
 		reqIdx++
+	}
+
+	newRR := s.findRecentRead(res.reqHash, reqIter.ent().Path)
+	if op.recentRead == nil || newRR.limitShift > op.recentRead.limitShift {
+		op.recentRead = newRR
 	}
 
 	// position baseIter at approximately the same place
@@ -629,10 +649,10 @@ func (s *server) buildPrefetchOps(
 }
 
 func (s *server) opFullBase(op *diffOp) bool {
-	return len(op.baseInfo) >= s.cfg.ReadaheadChunks
+	return len(op.baseInfo) >= min(manifester.ChunkDiffMaxDigests, s.cfg.ReadaheadChunks<<op.recentRead.limitShift)
 }
 func (s *server) opFullReq(op *diffOp) bool {
-	return len(op.reqInfo) >= s.cfg.ReadaheadChunks
+	return len(op.reqInfo) >= min(manifester.ChunkDiffMaxDigests, s.cfg.ReadaheadChunks<<op.recentRead.limitShift)
 }
 
 // call with diffLock held
@@ -668,6 +688,10 @@ func (s *server) startOp(ctx context.Context, op *diffOp) {
 			if s.diffMap[op.singleLoc] == op {
 				delete(s.diffMap, op.singleLoc)
 			}
+		}
+		// update recentRead timer
+		if op.recentRead != nil {
+			op.recentRead.when = time.Now()
 		}
 		s.diffLock.Unlock()
 
@@ -1032,6 +1056,32 @@ func (s *server) digestLoc(tx *bbolt.Tx, digest cdig.CDig) erofs.SlabLoc {
 func (s *server) digestPresent(tx *bbolt.Tx, digest cdig.CDig) (erofs.SlabLoc, bool) {
 	loc := s.digestLoc(tx, digest)
 	return loc, s.locPresent(tx, loc)
+}
+
+func (s *server) findRecentRead(reqHash Sph, path string) *recentRead {
+	key := string(reqHash[:]) + path
+	if rr := s.recentReads[key]; rr != nil {
+		rr.limitShift = min(6, rr.limitShift+1)
+		log.Printf("another read for %s, increasing request size", path)
+		rr.when = time.Now()
+		return rr
+	}
+	rr := &recentRead{when: time.Now()}
+	s.recentReads[key] = rr
+	return rr
+}
+
+func (s *server) pruneRecentReads() {
+	t := time.NewTicker(recentReadExpiry / 2)
+	defer t.Stop()
+	for range t.C {
+		s.diffLock.Lock()
+		now := time.Now()
+		maps.DeleteFunc(s.recentReads, func(key string, rr *recentRead) bool {
+			return now.Sub(rr.when) > recentReadExpiry
+		})
+		s.diffLock.Unlock()
+	}
 }
 
 // digestIterator is positioned at first chunk

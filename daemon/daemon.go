@@ -84,8 +84,9 @@ type (
 		// keeps track of pending diff/fetch state
 		// note: we open a read-only transaction inside of diffLock.
 		// therefore we must not try to lock diffLock while in a read or write tx.
-		diffLock sync.Mutex
-		diffMap  map[erofs.SlabLoc]*diffOp
+		diffLock    sync.Mutex
+		diffMap     map[erofs.SlabLoc]*diffOp
+		recentReads map[string]*recentRead
 
 		shutdownChan chan struct{}
 		shutdownWait sync.WaitGroup
@@ -152,6 +153,7 @@ func CachefilesServer(cfg Config) *server {
 		readKnownMap: *common.NewSimpleSyncMap[erofs.SlabLoc, struct{}](),
 		mountCtxMap:  *common.NewSimpleSyncMap[string, context.Context](),
 		diffMap:      make(map[erofs.SlabLoc]*diffOp),
+		recentReads:  make(map[string]*recentRead),
 		shutdownChan: make(chan struct{}),
 	}
 }
@@ -782,6 +784,7 @@ func (s *server) Start() error {
 	if err := s.startSocketServer(); err != nil {
 		return err
 	}
+	go s.pruneRecentReads()
 	go s.cachefilesServer()
 	log.Println("cachefiles server ready, using", s.cfg.CachePath)
 	systemd.Ready()

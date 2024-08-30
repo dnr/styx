@@ -168,7 +168,7 @@ func (tb *testBase) startDaemon() {
 		ErofsBlockShift: blockShift,
 		// SmallFileCutoff: 224,
 		Workers:         10,
-		ReadaheadChunks: 30,
+		ReadaheadChunks: 8,
 		IsTesting:       true,
 	})
 	err := d.Start()
