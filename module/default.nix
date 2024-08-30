@@ -38,7 +38,7 @@ in with lib; {
     (mkIf (cfg.enable || cfg.enableStyxNixCache) {
       nix.settings = {
         # Use binary cache to avoid rebuilds:
-        extra-substituters = [ "https://styx-1.s3.amazonaws.com/nixcache/" ];
+        extra-substituters = [ "https://styx-1.s3.amazonaws.com/nixcache/?styx=1" ];
         extra-trusted-public-keys = [ "styx-nixcache-test-1:IbJB9NG5antB2WpE+aE5QzmXapT2yLQb8As/FRkbm3Q=" ];
       };
     })
