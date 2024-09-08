@@ -2,7 +2,6 @@ package daemon
 
 import (
 	"bytes"
-	"compress/gzip"
 	"context"
 	"encoding/json"
 	"errors"
@@ -11,9 +10,6 @@ import (
 	"log"
 	"maps"
 	"net/http"
-	"os/exec"
-	"path"
-	"regexp"
 	"strings"
 	"time"
 	"unsafe"
@@ -32,6 +28,11 @@ import (
 
 const (
 	recentReadExpiry = 30 * time.Second
+
+	initOpSize = 16
+	maxOpSize  = 128 // must be ≤ manifester.ChunkDiffMaxDigests
+	maxDiffOps = 8   // prefetch can be more
+	maxSources = 3
 )
 
 type (
@@ -62,14 +63,27 @@ type (
 		singleDigest cdig.CDig
 	}
 
+	// context for building set of diff ops
+	opSet struct {
+		s           *server
+		tx          *bbolt.Tx
+		op          *diffOp // always last value in ops
+		ops         []*diffOp
+		using       map[cdig.CDig]struct{}
+		limitShift  int
+		maxOpSize   int
+		maxOps      int
+		sourcesLeft int
+	}
+
 	info struct {
 		size int64
 		loc  erofs.SlabLoc
 	}
 
 	recentRead struct {
-		when       time.Time
-		limitShift int
+		when  time.Time
+		reads int
 	}
 )
 
@@ -98,8 +112,8 @@ func (s *server) requestChunk(ctx context.Context, loc erofs.SlabLoc, digest cdi
 		op, _ = s.buildSingleOp(ctx, loc, digest)
 		go s.startOp(ctx, op)
 	} else {
-		var err error
-		op, err = s.buildDiffOp(ctx, digest, sphps)
+		set := newOpSet(s)
+		err := set.buildDiff(digest, sphps)
 		if err != nil {
 			op, err = s.buildSingleOp(ctx, loc, digest)
 		} else if s.diffMap[loc] == nil {
@@ -125,26 +139,27 @@ func (s *server) requestChunk(ctx context.Context, loc erofs.SlabLoc, digest cdi
 }
 
 func (s *server) requestPrefetch(ctx context.Context, reqDigests []cdig.CDig, reqSizes []int64, cres catalogResult) error {
-	// ignore diffLock for prefetches. TODO: is that the best approach?
-	ops, err := s.buildPrefetchOps(ctx, reqDigests, reqSizes, cres)
-	if err != nil || ops == nil {
-		return err
-	}
-	for _, op := range ops {
-		go s.startOp(ctx, op)
-	}
-	for _, op := range ops {
-		<-op.done
-		if op.err != nil {
-			log.Printf("prefetch diff failed (%v)", op.err)
-		}
-	}
-	for _, op := range ops {
-		if op.err != nil {
-			return op.err
-		}
-	}
-	return nil
+	panic("FIXME")
+	// // ignore diffLock for prefetches. TODO: is that the best approach?
+	// ops, err := s.buildPrefetchOps(ctx, reqDigests, reqSizes, cres)
+	// if err != nil || ops == nil {
+	// 	return err
+	// }
+	// for _, op := range ops {
+	// 	go s.startOp(ctx, op)
+	// }
+	// for _, op := range ops {
+	// 	<-op.done
+	// 	if op.err != nil {
+	// 		log.Printf("prefetch diff failed (%v)", op.err)
+	// 	}
+	// }
+	// for _, op := range ops {
+	// 	if op.err != nil {
+	// 		return op.err
+	// 	}
+	// }
+	// return nil
 }
 
 // currently this is only used to read manifest chunks
@@ -220,439 +235,6 @@ func (s *server) readSingle(ctx context.Context, loc erofs.SlabLoc, digest cdig.
 		return fmt.Errorf("gotNewChunk error (single): %w", err)
 	}
 	return nil
-}
-
-// call with diffLock held
-func (s *server) buildDiffOp(
-	ctx context.Context,
-	targetDigest cdig.CDig,
-	sphps []SphPrefix,
-) (*diffOp, error) {
-	tx, err := s.db.Begin(false)
-	if err != nil {
-		return nil, err
-	}
-	defer tx.Rollback()
-
-	// local map to make sure we only ask for any chunk once when extending (both base and req)
-	// s.diffMap applies across requests
-	usingDigests := make(map[cdig.CDig]bool)
-
-	// find an image with a base with similar data. go backwards on the assumption that recent
-	// images with this chunk will be more similar.
-	var goodOp *diffOp
-	extendLimit := 3
-	for i := len(sphps) - 1; i >= 0 && extendLimit > 0; i-- {
-		if res, err := s.catalogFindBase(tx, sphps[i]); err == nil {
-			if goodOp == nil {
-				if op, err := s.tryBuildDiffOp(ctx, tx, targetDigest, res, usingDigests); err == nil {
-					goodOp = op
-				}
-			} else {
-				s.tryExtendDiffOp(ctx, tx, targetDigest, res, goodOp, usingDigests)
-				extendLimit--
-			}
-
-			if goodOp != nil {
-				// can't extend recompress op or full op
-				if len(goodOp.diffRecompress) > 0 || s.opFullBase(goodOp) && s.opFullReq(goodOp) {
-					break
-				}
-			}
-		}
-	}
-	if goodOp != nil {
-		return goodOp, nil
-	}
-
-	// can't find any base, diff latest against nothing
-	sph := sphps[len(sphps)-1]
-	foundSph, name := s.catalogFindName(tx, sph)
-	if len(name) == 0 {
-		return nil, errors.New("store path hash not found")
-	}
-	res := catalogResult{
-		reqName:  name,
-		baseName: noBaseName,
-		reqHash:  foundSph,
-	}
-	return s.tryBuildDiffOp(ctx, tx, targetDigest, res, usingDigests)
-}
-
-// call with diffLock held
-func (s *server) tryBuildDiffOp(
-	ctx context.Context,
-	tx *bbolt.Tx,
-	targetDigest cdig.CDig,
-	res catalogResult,
-	usingDigests map[cdig.CDig]bool,
-) (*diffOp, error) {
-	usingBase := res.baseName != noBaseName
-
-	isManifest := strings.HasPrefix(res.reqName, isManifestPrefix)
-	if usingBase {
-		if isManifest != strings.HasPrefix(res.baseName, isManifestPrefix) {
-			panic("catalog should not match manifest with data")
-		}
-	}
-
-	var baseIter digestIterator
-	if usingBase {
-		baseEntries, err := s.getDigestsFromImage(ctx, tx, res.baseHash, isManifest)
-		if err != nil {
-			log.Println("failed to get digests for", res.baseHash, res.baseName)
-			return nil, err
-		}
-		baseIter = newDigestIterator(baseEntries)
-	}
-	reqEntries, err := s.getDigestsFromImage(ctx, tx, res.reqHash, isManifest)
-	if err != nil {
-		log.Println("failed to get digests for", res.reqHash, res.reqName)
-		return nil, err
-	}
-	reqIter := newDigestIterator(reqEntries)
-
-	op := newDiffOp(opTypeDiff)
-
-	// build diff
-
-	// find entry
-	reqIdx := 0
-	for reqIter.digest() != targetDigest {
-		if !reqIter.next(1) {
-			return nil, fmt.Errorf("req digest not found in manifest") // shouldn't happen
-		}
-		reqIdx++
-	}
-
-	reqEnt := reqIter.ent()
-	log.Printf("read /nix/store/%s-%s%s", res.reqHash, res.reqName, reqEnt.Path)
-	op.recentRead = s.findRecentRead(res.reqHash, reqEnt.Path)
-
-	switch {
-	case isManPageGz(reqEnt):
-		op.diffRecompress = []string{manifester.ExpandGz}
-	case isLinuxKoXz(reqEnt):
-		// note: currently largest kernel module on my system (excluding kheaders) is
-		// amdgpu.ko.xz at 3.4mb, 54 chunks (64kb), and expands to 24.4mb, which is
-		// reasonable to pass through the chunk differ.
-		// TODO: maybe get these args from looking at the base? or the chunk differ can look at
-		// req and return them? or try several values and take the matching one?
-		op.diffRecompress = []string{manifester.ExpandXz, "--check=crc32", "--lzma2=dict=1MiB"}
-	}
-
-	if len(op.diffRecompress) > 0 {
-		// diff with expanding and recompression
-		if !usingBase {
-			return nil, errors.New("recompress requires a base")
-		}
-
-		for reqIter.toFileStart(); reqIter.ent() == reqEnt; reqIter.next(1) {
-			reqDigest := reqIter.digest()
-			reqLoc := s.digestLoc(tx, reqDigest)
-			if reqLoc.Addr == 0 {
-				return nil, errors.New("digest in entry of requested digest is not mapped")
-			}
-			op.addReq(reqDigest, reqIter.size(), reqLoc)
-		}
-
-		// findFile will only return true if it found an entry and it has digests,
-		// i.e. missing, symlink, inline, etc. will all return false.
-		if baseIter.findFile(reqEnt.Path) {
-			baseEnt := baseIter.ent()
-			for baseIter.toFileStart(); baseIter.ent() == baseEnt; baseIter.next(1) {
-				baseDigest := baseIter.digest()
-				baseLoc, basePresent := s.digestPresent(tx, baseDigest)
-				if baseLoc.Addr == 0 {
-					return nil, errors.New("digest in entry of base digest is not mapped")
-				} else if !basePresent {
-					// Base is not present, don't bother with a batch (data is already compressed).
-					return nil, errors.New("recompress base chunk not present")
-				}
-				op.addBase(baseDigest, baseIter.size(), baseLoc)
-			}
-		} else {
-			return nil, errors.New("recompress base missing corresponding file")
-		}
-
-		// No errors, we can enter into diff map. For recompress diff we need to ask for the
-		// whole file so we may include chunks we already have, or are already being diffed
-		// (though that's very unlikely). In that case just leave the existing entry.
-		for _, i := range op.reqInfo {
-			if s.diffMap[i.loc] == nil {
-				s.diffMap[i.loc] = op
-			}
-		}
-
-	} else {
-		// normal diff
-
-		// TODO: this algorithm is kind of awful
-
-		// position baseIter at approximately the same place
-		baseIter.next(reqIdx)
-
-		for !s.opFullBase(op) || !s.opFullReq(op) {
-			baseDigest := baseIter.digest()
-			if baseDigest != cdig.Zero && !s.opFullBase(op) && !usingDigests[baseDigest] {
-				baseLoc, basePresent := s.digestPresent(tx, baseDigest)
-				if basePresent {
-					usingDigests[baseDigest] = true
-					op.addBase(baseDigest, baseIter.size(), baseLoc)
-				}
-			}
-
-			reqDigest := reqIter.digest()
-			if reqDigest != cdig.Zero && !s.opFullReq(op) && !usingDigests[reqDigest] {
-				reqLoc, reqPresent := s.digestPresent(tx, reqDigest)
-				if !reqPresent && reqLoc.Addr > 0 && s.diffMap[reqLoc] == nil {
-					usingDigests[reqDigest] = true
-					op.addReq(reqDigest, reqIter.size(), reqLoc)
-					// record we're diffing this one in the map
-					s.diffMap[reqLoc] = op
-				}
-			}
-
-			baseOk, reqOk := baseIter.next(1), reqIter.next(1)
-			if !baseOk && !reqOk {
-				break
-			}
-		}
-	}
-
-	recompress := ""
-	if len(op.diffRecompress) > 0 {
-		recompress = " <" + op.diffRecompress[0] + ">"
-	}
-
-	if usingBase && op.baseTotalSize > 0 {
-		log.Printf("diffing %s…-%s -> %s…-%s [%d/%d -> %d/%d]%s",
-			res.baseHash.String()[:5],
-			res.baseName,
-			res.reqHash.String()[:5],
-			res.reqName,
-			op.baseTotalSize,
-			len(op.baseInfo),
-			op.reqTotalSize,
-			len(op.reqInfo),
-			recompress,
-		)
-	} else {
-		log.Printf("batching %s…-%s [%d/%d]%s",
-			res.reqHash.String()[:5],
-			res.reqName,
-			op.reqTotalSize,
-			len(op.reqInfo),
-			recompress,
-		)
-	}
-
-	return op, nil
-}
-
-func (s *server) tryExtendDiffOp(
-	ctx context.Context,
-	tx *bbolt.Tx,
-	targetDigest cdig.CDig,
-	res catalogResult,
-	op *diffOp,
-	usingDigests map[cdig.CDig]bool,
-) {
-	// TODO: this is mostly a copy of code in tryBuildDiffOp. consolidate these.
-
-	if strings.HasPrefix(res.reqName, isManifestPrefix) {
-		// this is very unlikely to be useful for manifests
-		return
-	}
-	baseEntries, err := s.getDigestsFromImage(ctx, tx, res.baseHash, false)
-	if err != nil {
-		log.Println("failed to get digests for", res.baseHash, res.baseName)
-		return
-	}
-	baseIter := newDigestIterator(baseEntries)
-	reqEntries, err := s.getDigestsFromImage(ctx, tx, res.reqHash, false)
-	if err != nil {
-		log.Println("failed to get digests for", res.reqHash, res.reqName)
-		return
-	}
-	reqIter := newDigestIterator(reqEntries)
-
-	// find entry
-	reqIdx := 0
-	for reqIter.digest() != targetDigest {
-		if !reqIter.next(1) {
-			return // shouldn't happen
-		}
-		reqIdx++
-	}
-
-	newRR := s.findRecentRead(res.reqHash, reqIter.ent().Path)
-	if op.recentRead == nil || newRR.limitShift > op.recentRead.limitShift {
-		op.recentRead = newRR
-	}
-
-	// position baseIter at approximately the same place
-	baseIter.next(reqIdx)
-
-	changed := false
-	for !s.opFullBase(op) || !s.opFullReq(op) {
-		baseDigest := baseIter.digest()
-		if baseDigest != cdig.Zero && !s.opFullBase(op) && !usingDigests[baseDigest] {
-			baseLoc, basePresent := s.digestPresent(tx, baseDigest)
-			if basePresent {
-				usingDigests[baseDigest] = true
-				op.addBase(baseDigest, baseIter.size(), baseLoc)
-				changed = true
-			}
-		}
-
-		reqDigest := reqIter.digest()
-		if reqDigest != cdig.Zero && !s.opFullReq(op) && !usingDigests[reqDigest] {
-			reqLoc, reqPresent := s.digestPresent(tx, reqDigest)
-			if !reqPresent && reqLoc.Addr > 0 && s.diffMap[reqLoc] == nil {
-				usingDigests[reqDigest] = true
-				op.addReq(reqDigest, reqIter.size(), reqLoc)
-				// record we're diffing this one in the map
-				s.diffMap[reqLoc] = op
-				changed = true
-			}
-		}
-		baseOk, reqOk := baseIter.next(1), reqIter.next(1)
-		if !baseOk && !reqOk {
-			break
-		}
-	}
-	if !changed {
-		return
-	}
-
-	log.Printf("    +++ %s…-%s -> %s…-%s [%d/%d -> %d/%d]",
-		res.baseHash.String()[:5],
-		res.baseName,
-		res.reqHash.String()[:5],
-		res.reqName,
-		op.baseTotalSize,
-		len(op.baseInfo),
-		op.reqTotalSize,
-		len(op.reqInfo),
-	)
-}
-
-func (s *server) buildPrefetchOps(
-	ctx context.Context,
-	reqDigests []cdig.CDig,
-	reqSizes []int64,
-	res catalogResult,
-) ([]*diffOp, error) {
-	tx, err := s.db.Begin(false)
-	if err != nil {
-		return nil, err
-	}
-	defer tx.Rollback()
-
-	usingBase := res.baseName != noBaseName
-
-	var baseIter digestIterator
-	if usingBase {
-		baseEntries, err := s.getDigestsFromImage(ctx, tx, res.baseHash, false)
-		if err != nil {
-			log.Println("failed to get digests for", res.baseHash, res.baseName)
-			return nil, err
-		}
-		baseIter = newDigestIterator(baseEntries)
-	}
-
-	op := newDiffOp(opTypeDiff)
-	ops := []*diffOp{op}
-	newOp := func() {
-		op = newDiffOp(opTypeDiff)
-		ops = append(ops, op)
-	}
-
-	// req: fill ops up to ChunkDiffMaxDigests (much bigger than normal readahead), with
-	// not-present chunks
-	for i, reqDigest := range reqDigests {
-		if reqLoc, reqPresent := s.digestPresent(tx, reqDigest); !reqPresent && reqLoc.Addr > 0 {
-			if len(op.reqInfo) >= manifester.ChunkDiffMaxDigests {
-				newOp()
-			}
-			op.addReq(reqDigest, reqSizes[i], reqLoc)
-		}
-	}
-
-	if len(op.reqInfo) == 0 {
-		return nil, nil
-	}
-
-	// base: fill present chunks across ops made from req in order.
-	// this probably only works well if prefetching the whole image.
-	// TODO: ideally, we would look at corresponding files only, e.g. pass in a filter
-	// function.
-	opIdx := 0
-	op = ops[opIdx]
-	nextOp := func() {
-		if opIdx++; opIdx >= len(ops) {
-			op = nil
-		} else {
-			op = ops[opIdx]
-		}
-	}
-
-	for {
-		baseDigest := baseIter.digest()
-		if baseDigest == cdig.Zero {
-			break
-		}
-		if baseLoc, basePresent := s.digestPresent(tx, baseDigest); basePresent {
-			if len(op.baseInfo) >= manifester.ChunkDiffMaxDigests {
-				if nextOp(); op == nil {
-					break
-				}
-			}
-			op.addBase(baseDigest, baseIter.size(), baseLoc)
-		}
-		baseIter.next(1)
-	}
-
-	var baseTotalSize, reqTotalSize int64
-	var baseTotalLen, reqTotalLen int
-	for _, op := range ops {
-		baseTotalSize += op.baseTotalSize
-		baseTotalLen += len(op.baseInfo)
-		reqTotalSize += op.reqTotalSize
-		reqTotalLen += len(op.reqInfo)
-	}
-
-	if usingBase {
-		log.Printf("prefetching %s…-%s -> %s…-%s [%d/%d -> %d/%d in %d ops]",
-			res.baseHash.String()[:5],
-			res.baseName,
-			res.reqHash.String()[:5],
-			res.reqName,
-			baseTotalSize,
-			baseTotalLen,
-			reqTotalSize,
-			reqTotalLen,
-			len(ops),
-		)
-	} else {
-		log.Printf("prefetching %s…-%s [%d/%d in %d ops]",
-			res.reqHash.String()[:5],
-			res.reqName,
-			reqTotalSize,
-			reqTotalLen,
-			len(ops),
-		)
-	}
-
-	return ops, nil
-}
-
-func (s *server) opFullBase(op *diffOp) bool {
-	return len(op.baseInfo) >= min(manifester.ChunkDiffMaxDigests, s.cfg.ReadaheadChunks<<op.recentRead.limitShift)
-}
-func (s *server) opFullReq(op *diffOp) bool {
-	return len(op.reqInfo) >= min(manifester.ChunkDiffMaxDigests, s.cfg.ReadaheadChunks<<op.recentRead.limitShift)
 }
 
 // call with diffLock held
@@ -743,7 +325,7 @@ func (s *server) doDiffOp(ctx context.Context, op *diffOp) error {
 		}
 
 		// decompress if needed
-		baseData, err = s.diffDecompress(ctx, baseData, op.diffRecompress)
+		baseData, err = doDiffDecompress(ctx, baseData, op.diffRecompress)
 		if err != nil {
 			return fmt.Errorf("decompress error: %w", err)
 		}
@@ -772,7 +354,7 @@ func (s *server) doDiffOp(ctx context.Context, op *diffOp) error {
 			return fmt.Errorf("diff data has bad stats")
 		}
 		statsBytes = reqData[statsStart:]
-		reqData, err = s.diffRecompress(ctx, reqData[:statsStart], op.diffRecompress)
+		reqData, err = doDiffRecompress(ctx, reqData[:statsStart], op.diffRecompress)
 		if err != nil {
 			return fmt.Errorf("recompress error: %w", err)
 		}
@@ -993,48 +575,6 @@ func (s *server) getKnownChunk(loc erofs.SlabLoc, buf []byte) error {
 	return err
 }
 
-func (s *server) diffDecompress(ctx context.Context, data []byte, args []string) ([]byte, error) {
-	if len(args) == 0 {
-		return data, nil
-	}
-	switch args[0] {
-	case manifester.ExpandGz:
-		gz, err := gzip.NewReader(bytes.NewReader(data))
-		if err != nil {
-			return nil, err
-		}
-		return io.ReadAll(gz)
-
-	case manifester.ExpandXz:
-		xz := exec.Command(common.XzBin, "-d")
-		xz.Stdin = bytes.NewReader(data)
-		return xz.Output()
-
-	default:
-		return nil, fmt.Errorf("unknown expander %q", args[0])
-	}
-}
-
-func (s *server) diffRecompress(ctx context.Context, data []byte, args []string) ([]byte, error) {
-	if len(args) == 0 {
-		return data, nil
-	}
-	switch args[0] {
-	case manifester.ExpandGz:
-		gz := exec.Command(common.GzipBin, "-nc")
-		gz.Stdin = bytes.NewReader(data)
-		return gz.Output()
-
-	case manifester.ExpandXz:
-		xz := exec.Command(common.XzBin, append([]string{"-c"}, args[1:]...)...)
-		xz.Stdin = bytes.NewReader(data)
-		return xz.Output()
-
-	default:
-		return nil, fmt.Errorf("unknown expander %q", args[0])
-	}
-}
-
 func (s *server) locPresent(tx *bbolt.Tx, loc erofs.SlabLoc) bool {
 	if _, ok := s.presentMap.Get(loc); ok {
 		return true
@@ -1061,8 +601,8 @@ func (s *server) digestPresent(tx *bbolt.Tx, digest cdig.CDig) (erofs.SlabLoc, b
 func (s *server) findRecentRead(reqHash Sph, path string) *recentRead {
 	key := string(reqHash[:]) + path
 	if rr := s.recentReads[key]; rr != nil {
-		rr.limitShift = min(6, rr.limitShift+1)
-		log.Printf("another read for %s, increasing request size", path)
+		rr.reads++
+		// log.Printf("another read for %s, increasing request size", path)
 		rr.when = time.Now()
 		return rr
 	}
@@ -1084,11 +624,460 @@ func (s *server) pruneRecentReads() {
 	}
 }
 
+// diff op
+
+func newDiffOp(tp opType) *diffOp {
+	return &diffOp{
+		tp:   tp,
+		done: make(chan struct{}),
+	}
+}
+
+func (op *diffOp) addBase(digest cdig.CDig, size int64, loc erofs.SlabLoc) {
+	op.baseDigests = append(op.baseDigests, digest)
+	op.baseInfo = append(op.baseInfo, info{size, loc})
+	op.baseTotalSize += size
+}
+
+func (op *diffOp) addReq(digest cdig.CDig, size int64, loc erofs.SlabLoc) {
+	op.reqDigests = append(op.reqDigests, digest)
+	op.reqInfo = append(op.reqInfo, info{size, loc})
+	op.reqTotalSize += size
+}
+
+// op set
+
+func newOpSet(s *server) *opSet {
+	set := &opSet{
+		s:           s,
+		using:       make(map[cdig.CDig]struct{}),
+		maxOpSize:   initOpSize,
+		maxOps:      1,
+		sourcesLeft: maxSources,
+	}
+	set.newOp()
+	return set
+}
+
+func (set *opSet) shiftMax(limitShift int) {
+	for set.limitShift < limitShift {
+		set.limitShift++
+		if set.maxOpSize < maxOpSize {
+			set.maxOpSize *= 2
+		} else if set.maxOps < maxDiffOps {
+			set.maxOps *= 2
+		}
+	}
+}
+
+func (set *opSet) isUsing(dig cdig.CDig) bool {
+	_, ok := set.using[dig]
+	return ok
+}
+
+func (set *opSet) markUsing(dig cdig.CDig) {
+	set.using[dig] = struct{}{}
+}
+
+func (set *opSet) newOp() {
+	op := newDiffOp(opTypeDiff)
+	op.recentRead = set.op.recentRead // FIXME: hmmm...
+	set.ops = append(set.ops, op)
+	set.op = op
+}
+
+func (set *opSet) checkBase() {
+	if len(set.op.baseInfo) >= set.maxOpSize {
+		set.newOp()
+	}
+}
+func (set *opSet) checkReq() {
+	if len(set.op.reqInfo) >= set.maxOpSize {
+		set.newOp()
+	}
+}
+
+func (set *opSet) fullBase() bool {
+	// assumes baseInfo is filled in previous ops
+	return len(set.ops) >= set.maxOps && len(set.op.baseInfo) >= set.maxOpSize
+}
+func (set *opSet) fullReq() bool {
+	// assumes reqInfo is filled in previous ops
+	return len(set.ops) >= set.maxOps && len(set.op.reqInfo) >= set.maxOpSize
+}
+
+// call with diffLock held
+func (set *opSet) buildDiff(
+	targetDigest cdig.CDig,
+	sphps []SphPrefix,
+) error {
+	tx, err := set.s.db.Begin(false)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	// find an image with a base with similar data. go backwards on the assumption that recent
+	// images with this chunk will be more similar.
+	for i := len(sphps) - 1; i >= 0; i-- {
+		if res, err := set.s.catalogFindBase(tx, sphps[i]); err == nil {
+			set.buildExtendDiff(tx, targetDigest, res)
+
+			// can't extend recompress or full
+			if set.sourcesLeft == 0 || len(set.op.diffRecompress) > 0 || set.fullBase() && set.fullReq() {
+				break
+			}
+		}
+	}
+	// FIXME: encapsulate this condition?
+	if len(set.op.reqInfo) > 0 {
+		return nil
+	}
+
+	// can't find any base, diff latest against nothing
+	sph := sphps[len(sphps)-1]
+	foundSph, name := set.s.catalogFindName(tx, sph)
+	if len(name) == 0 {
+		return errors.New("store path hash not found")
+	}
+	set.buildExtendDiff(tx, targetDigest, catalogResult{
+		reqName:  name,
+		baseName: noBaseName,
+		reqHash:  foundSph,
+	})
+	return nil
+}
+
+// call with diffLock held
+func (set *opSet) buildExtendDiff(
+	tx *bbolt.Tx,
+	targetDigest cdig.CDig,
+	res catalogResult,
+) {
+	usingBase := res.baseName != noBaseName
+	firstOp := len(set.op.reqInfo) == 0
+
+	isManifest := strings.HasPrefix(res.reqName, isManifestPrefix)
+	if isManifest && !firstOp {
+		// extending is very unlikely to be useful for manifests
+		return
+	}
+	if usingBase {
+		if isManifest != strings.HasPrefix(res.baseName, isManifestPrefix) {
+			panic("catalog should not match manifest with data")
+		}
+	}
+
+	var baseIter digestIterator
+	if usingBase {
+		baseEntries, err := set.s.getDigestsFromImage(nil, tx, res.baseHash, isManifest)
+		if err != nil {
+			log.Println("failed to get digests for", res.baseHash, res.baseName)
+			return
+		}
+		baseIter = newDigestIterator(baseEntries)
+	}
+	reqEntries, err := set.s.getDigestsFromImage(nil, tx, res.reqHash, isManifest)
+	if err != nil {
+		log.Println("failed to get digests for", res.reqHash, res.reqName)
+		return
+	}
+	reqIter := newDigestIterator(reqEntries)
+
+	// find entry
+	reqIdx := 0
+	for reqIter.digest() != targetDigest {
+		if !reqIter.next(1) {
+			panic("req digest not found in manifest") // shouldn't happen
+		}
+		reqIdx++
+	}
+
+	reqEnt := reqIter.ent()
+	if firstOp {
+		log.Printf("read /nix/store/%s-%s%s", res.reqHash, res.reqName, reqEnt.Path)
+	} else { // later: don't bother logging this
+		log.Printf("  or /nix/store/%s-%s%s", res.reqHash, res.reqName, reqEnt.Path)
+	}
+
+	if firstOp {
+		if args := getRecompressArgs(reqEnt); len(args) > 0 {
+			if err := set.recompress(tx, res, args, baseIter, reqIter, reqEnt); err == nil {
+				// FIXME: log here
+				return
+			}
+		}
+	}
+
+	// FIXME: maybe recentRead should be on set instead of op?
+	newRR := set.s.findRecentRead(res.reqHash, reqEnt.Path)
+	if set.op.recentRead == nil || newRR.reads > set.op.recentRead.reads {
+		set.op.recentRead = newRR
+	}
+	set.shiftMax(set.op.recentRead.reads)
+
+	// try to find some file in base
+	if found := baseIter.findFile(reqEnt.Path); found {
+		// move to offset within file
+		baseIter.d = reqIter.d
+		baseIter.next(0) // correct iter in case base file is smaller
+	} else {
+		// can't find corresponding file, position based on index alone
+		baseIter.reset()
+		baseIter.next(reqIdx)
+	}
+
+	changed := false
+	for !set.fullBase() || !set.fullReq() {
+		baseDigest := baseIter.digest()
+		if baseDigest != cdig.Zero && !set.fullBase() && !set.isUsing(baseDigest) {
+			baseLoc, basePresent := set.s.digestPresent(tx, baseDigest)
+			if basePresent {
+				set.markUsing(baseDigest)
+				set.checkBase()
+				set.op.addBase(baseDigest, baseIter.size(), baseLoc)
+				changed = true
+			}
+		}
+
+		reqDigest := reqIter.digest()
+		if reqDigest != cdig.Zero && !set.fullReq() && !set.isUsing(reqDigest) {
+			reqLoc, reqPresent := set.s.digestPresent(tx, reqDigest)
+			if !reqPresent && reqLoc.Addr > 0 && set.s.diffMap[reqLoc] == nil {
+				set.markUsing(reqDigest)
+				set.checkReq()
+				set.op.addReq(reqDigest, reqIter.size(), reqLoc)
+				set.s.diffMap[reqLoc] = set.op
+				changed = true
+			}
+		}
+
+		baseOk, reqOk := baseIter.next(1), reqIter.next(1)
+		if !baseOk && !reqOk {
+			break
+		}
+	}
+	if !changed {
+		return
+	}
+	set.sourcesLeft--
+
+	// FIXME: logging
+	recompress := ""
+	if len(set.op.diffRecompress) > 0 {
+		recompress = " <" + set.op.diffRecompress[0] + ">"
+	}
+
+	if !firstOp {
+		log.Printf("    +++ %s…-%s -> %s…-%s [%d/%d -> %d/%d]",
+			res.baseHash.String()[:5],
+			res.baseName,
+			res.reqHash.String()[:5],
+			res.reqName,
+			set.op.baseTotalSize,
+			len(set.op.baseInfo),
+			set.op.reqTotalSize,
+			len(set.op.reqInfo),
+		)
+	} else if usingBase && set.op.baseTotalSize > 0 {
+		log.Printf("diffing %s…-%s -> %s…-%s [%d/%d -> %d/%d]%s",
+			res.baseHash.String()[:5],
+			res.baseName,
+			res.reqHash.String()[:5],
+			res.reqName,
+			set.op.baseTotalSize,
+			len(set.op.baseInfo),
+			set.op.reqTotalSize,
+			len(set.op.reqInfo),
+			recompress,
+		)
+	} else {
+		log.Printf("batching %s…-%s [%d/%d]%s",
+			res.reqHash.String()[:5],
+			res.reqName,
+			set.op.reqTotalSize,
+			len(set.op.reqInfo),
+			recompress,
+		)
+	}
+}
+
+func (set *opSet) recompress(
+	tx *bbolt.Tx,
+	res catalogResult,
+	args []string,
+	baseIter, reqIter digestIterator,
+	reqEnt *pb.Entry,
+) error {
+	// findFile will only return true if it found an entry and it has digests,
+	// i.e. zero baseIter, missing file, is symlink, inline, etc. will all return false.
+	if found := baseIter.findFile(reqEnt.Path); !found {
+		return errors.New("recompress base missing corresponding file")
+	}
+
+	baseEnt := baseIter.ent()
+	for baseIter.toFileStart(); baseIter.ent() == baseEnt; baseIter.next(1) {
+		baseDigest := baseIter.digest()
+		baseLoc, basePresent := set.s.digestPresent(tx, baseDigest)
+		if baseLoc.Addr == 0 {
+			return errors.New("digest in entry of base digest is not mapped")
+		} else if !basePresent {
+			// Base is not present, don't bother with a batch (data is already compressed).
+			return errors.New("recompress base chunk not present")
+		}
+		set.op.addBase(baseDigest, baseIter.size(), baseLoc)
+	}
+
+	// diff with expanding and recompression
+	for reqIter.toFileStart(); reqIter.ent() == reqEnt; reqIter.next(1) {
+		reqDigest := reqIter.digest()
+		reqLoc := set.s.digestLoc(tx, reqDigest)
+		if reqLoc.Addr == 0 {
+			return errors.New("digest in entry of requested digest is not mapped")
+		}
+		set.op.addReq(reqDigest, reqIter.size(), reqLoc)
+	}
+
+	// No errors, we can enter into diff map. For recompress diff we need to ask for the
+	// whole file so we may include chunks we already have, or are already being diffed
+	// (though that's very unlikely). In that case just leave the existing entry.
+	for _, i := range set.op.reqInfo {
+		if set.s.diffMap[i.loc] == nil {
+			set.s.diffMap[i.loc] = set.op
+		}
+	}
+	set.op.diffRecompress = args
+	return nil
+}
+
+/* FIXME
+
+func (set *opSet) buildPrefetch() {
+}
+
+func (s *server) buildPrefetchOps(
+	ctx context.Context,
+	reqDigests []cdig.CDig,
+	reqSizes []int64,
+	res catalogResult,
+) ([]*diffOp, error) {
+	tx, err := s.db.Begin(false)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+
+	usingBase := res.baseName != noBaseName
+
+	var baseIter digestIterator
+	if usingBase {
+		baseEntries, err := s.getDigestsFromImage(ctx, tx, res.baseHash, false)
+		if err != nil {
+			log.Println("failed to get digests for", res.baseHash, res.baseName)
+			return nil, err
+		}
+		baseIter = newDigestIterator(baseEntries)
+	}
+
+	op := newDiffOp(opTypeDiff)
+	ops := []*diffOp{op}
+	newOp := func() {
+		op = newDiffOp(opTypeDiff)
+		ops = append(ops, op)
+	}
+
+	// req: fill ops up to ChunkDiffMaxDigests (much bigger than normal readahead), with
+	// not-present chunks
+	for i, reqDigest := range reqDigests {
+		if reqLoc, reqPresent := s.digestPresent(tx, reqDigest); !reqPresent && reqLoc.Addr > 0 {
+			if len(op.reqInfo) >= manifester.ChunkDiffMaxDigests {
+				newOp()
+			}
+			op.addReq(reqDigest, reqSizes[i], reqLoc)
+		}
+	}
+
+	if len(op.reqInfo) == 0 {
+		return nil, nil
+	}
+
+	// base: fill present chunks across ops made from req in order.
+	// this probably only works well if prefetching the whole image.
+	// TODO: ideally, we would look at corresponding files only, e.g. pass in a filter
+	// function.
+	opIdx := 0
+	op = ops[opIdx]
+	nextOp := func() {
+		if opIdx++; opIdx >= len(ops) {
+			op = nil
+		} else {
+			op = ops[opIdx]
+		}
+	}
+
+	for {
+		baseDigest := baseIter.digest()
+		if baseDigest == cdig.Zero {
+			break
+		}
+		if baseLoc, basePresent := s.digestPresent(tx, baseDigest); basePresent {
+			if len(op.baseInfo) >= manifester.ChunkDiffMaxDigests {
+				if nextOp(); op == nil {
+					break
+				}
+			}
+			op.addBase(baseDigest, baseIter.size(), baseLoc)
+		}
+		baseIter.next(1)
+	}
+
+	var baseTotalSize, reqTotalSize int64
+	var baseTotalLen, reqTotalLen int
+	for _, op := range ops {
+		baseTotalSize += op.baseTotalSize
+		baseTotalLen += len(op.baseInfo)
+		reqTotalSize += op.reqTotalSize
+		reqTotalLen += len(op.reqInfo)
+	}
+
+	if usingBase {
+		log.Printf("prefetching %s…-%s -> %s…-%s [%d/%d -> %d/%d in %d ops]",
+			res.baseHash.String()[:5],
+			res.baseName,
+			res.reqHash.String()[:5],
+			res.reqName,
+			baseTotalSize,
+			baseTotalLen,
+			reqTotalSize,
+			reqTotalLen,
+			len(ops),
+		)
+	} else {
+		log.Printf("prefetching %s…-%s [%d/%d in %d ops]",
+			res.reqHash.String()[:5],
+			res.reqName,
+			reqTotalSize,
+			reqTotalLen,
+			len(ops),
+		)
+	}
+
+	return ops, nil
+}
+*/
+
+// digest iterator
+
 // digestIterator is positioned at first chunk
 func newDigestIterator(entries []*pb.Entry) digestIterator {
-	i := digestIterator{ents: entries, d: -cdig.Bytes}
-	i.next(1) // move to first actual digest
+	i := digestIterator{ents: entries}
+	i.reset()
 	return i
+}
+
+func (i *digestIterator) reset() bool {
+	i.e, i.d = 0, -cdig.Bytes
+	return i.next(1) // move to first actual digest
 }
 
 // entry that the current chunk belongs to
@@ -1158,35 +1147,4 @@ func (i *digestIterator) findFile(path string) bool {
 		}
 		i.e++
 	}
-}
-
-func newDiffOp(tp opType) *diffOp {
-	return &diffOp{
-		tp:   tp,
-		done: make(chan struct{}),
-	}
-}
-
-func (op *diffOp) addBase(digest cdig.CDig, size int64, loc erofs.SlabLoc) {
-	op.baseDigests = append(op.baseDigests, digest)
-	op.baseInfo = append(op.baseInfo, info{size, loc})
-	op.baseTotalSize += size
-}
-
-func (op *diffOp) addReq(digest cdig.CDig, size int64, loc erofs.SlabLoc) {
-	op.reqDigests = append(op.reqDigests, digest)
-	op.reqInfo = append(op.reqInfo, info{size, loc})
-	op.reqTotalSize += size
-}
-
-var reManPage = regexp.MustCompile(`^/share/man/.*[.]gz$`)
-var reLinuxKoXz = regexp.MustCompile(`^/lib/modules/[^/]+/kernel/.*[.]ko[.]xz$`)
-
-func isManPageGz(ent *pb.Entry) bool {
-	return ent.Type == pb.EntryType_REGULAR && reManPage.MatchString(ent.Path)
-}
-func isLinuxKoXz(ent *pb.Entry) bool {
-	// kheaders.ko.xz is mostly an embedded .tar.xz file (yes, again), so expanding it won't help.
-	return ent.Type == pb.EntryType_REGULAR && reLinuxKoXz.MatchString(ent.Path) &&
-		path.Base(ent.Path) != "kheaders.ko.xz"
 }
