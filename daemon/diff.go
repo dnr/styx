@@ -88,8 +88,6 @@ type (
 )
 
 const (
-	noBaseName = "<none>"
-
 	opTypeDiff opType = iota
 	opTypeSingle
 )
@@ -754,7 +752,6 @@ func (set *opSet) buildExtendDiff(
 	targetDigest cdig.CDig,
 	res catalogResult,
 ) {
-	usingBase := res.baseName != noBaseName
 	firstOp := len(set.op.reqInfo) == 0
 
 	isManifest := strings.HasPrefix(res.reqName, isManifestPrefix)
@@ -762,14 +759,14 @@ func (set *opSet) buildExtendDiff(
 		// extending is very unlikely to be useful for manifests
 		return
 	}
-	if usingBase {
+	if res.usingBase() {
 		if isManifest != strings.HasPrefix(res.baseName, isManifestPrefix) {
 			panic("catalog should not match manifest with data")
 		}
 	}
 
 	var baseIter digestIterator
-	if usingBase {
+	if res.usingBase() {
 		baseEntries, err := set.s.getDigestsFromImage(nil, tx, res.baseHash, isManifest)
 		if err != nil {
 			log.Println("failed to get digests for", res.baseHash, res.baseName)
@@ -803,7 +800,7 @@ func (set *opSet) buildExtendDiff(
 	if firstOp {
 		if args := getRecompressArgs(reqEnt); len(args) > 0 {
 			if err := set.recompress(tx, res, args, baseIter, reqIter, reqEnt); err == nil {
-				// FIXME: log here
+				set.log(res, args[0], true)
 				return
 			}
 		}
@@ -862,44 +859,7 @@ func (set *opSet) buildExtendDiff(
 	}
 	set.sourcesLeft--
 
-	// FIXME: logging
-	recompress := ""
-	if len(set.op.diffRecompress) > 0 {
-		recompress = " <" + set.op.diffRecompress[0] + ">"
-	}
-
-	if !firstOp {
-		log.Printf("    +++ %s…-%s -> %s…-%s [%d/%d -> %d/%d]",
-			res.baseHash.String()[:5],
-			res.baseName,
-			res.reqHash.String()[:5],
-			res.reqName,
-			set.op.baseTotalSize,
-			len(set.op.baseInfo),
-			set.op.reqTotalSize,
-			len(set.op.reqInfo),
-		)
-	} else if usingBase && set.op.baseTotalSize > 0 {
-		log.Printf("diffing %s…-%s -> %s…-%s [%d/%d -> %d/%d]%s",
-			res.baseHash.String()[:5],
-			res.baseName,
-			res.reqHash.String()[:5],
-			res.reqName,
-			set.op.baseTotalSize,
-			len(set.op.baseInfo),
-			set.op.reqTotalSize,
-			len(set.op.reqInfo),
-			recompress,
-		)
-	} else {
-		log.Printf("batching %s…-%s [%d/%d]%s",
-			res.reqHash.String()[:5],
-			res.reqName,
-			set.op.reqTotalSize,
-			len(set.op.reqInfo),
-			recompress,
-		)
-	}
+	set.log(res, "", firstOp)
 }
 
 func (set *opSet) recompress(
@@ -910,7 +870,7 @@ func (set *opSet) recompress(
 	reqEnt *pb.Entry,
 ) error {
 	// findFile will only return true if it found an entry and it has digests,
-	// i.e. zero baseIter, missing file, is symlink, inline, etc. will all return false.
+	// i.e. no base, missing file, is symlink, inline, etc. will all return false.
 	if found := baseIter.findFile(reqEnt.Path); !found {
 		return errors.New("recompress base missing corresponding file")
 	}
@@ -967,10 +927,8 @@ func (s *server) buildPrefetchOps(
 	}
 	defer tx.Rollback()
 
-	usingBase := res.baseName != noBaseName
-
 	var baseIter digestIterator
-	if usingBase {
+	if res.usingBase() {
 		baseEntries, err := s.getDigestsFromImage(ctx, tx, res.baseHash, false)
 		if err != nil {
 			log.Println("failed to get digests for", res.baseHash, res.baseName)
@@ -1040,7 +998,7 @@ func (s *server) buildPrefetchOps(
 		reqTotalLen += len(op.reqInfo)
 	}
 
-	if usingBase {
+	if res.usingBase() {
 		log.Printf("prefetching %s…-%s -> %s…-%s [%d/%d -> %d/%d in %d ops]",
 			res.baseHash.String()[:5],
 			res.baseName,
@@ -1065,6 +1023,47 @@ func (s *server) buildPrefetchOps(
 	return ops, nil
 }
 */
+
+func (set *opSet) log(
+	res catalogResult,
+	recompress string,
+	firstOp bool,
+) {
+	var sb strings.Builder
+
+	if !firstOp {
+		fmt.Fprintf(&sb, "+++ ")
+	}
+	if res.usingBase() {
+		fmt.Fprintf(&sb, "diff %s…-%s <~ %s…-%s",
+			res.reqHash.String()[:5],
+			res.reqName,
+			res.baseHash.String()[:5],
+			res.baseName,
+		)
+	} else {
+		fmt.Fprintf(&sb, "batch %s…-%s",
+			res.reqHash.String()[:5],
+			res.reqName,
+		)
+	}
+
+	for i, op := range set.ops {
+		if i != 0 && i != len(set.ops)-1 {
+			fmt.Fprintf(&sb, " …%d more…", len(set.ops)-2)
+		} else if op.baseTotalSize > 0 {
+			fmt.Fprintf(&sb, " [%d:%d <~ %d:%d]", len(op.reqInfo), op.reqTotalSize, len(op.baseInfo), op.baseTotalSize)
+		} else {
+			fmt.Fprintf(&sb, " [%d:%d]", len(op.reqInfo), op.reqTotalSize)
+		}
+	}
+
+	if len(recompress) > 0 {
+		fmt.Fprintf(&sb, " <using %s>", recompress)
+	}
+
+	log.Print(sb.String())
+}
 
 // digest iterator
 

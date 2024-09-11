@@ -14,6 +14,9 @@ const (
 	// Use only 80 bits for reverse references to save space in db.
 	// Collisions may be possible but would only lead to suboptimal diff base choices.
 	sphPrefixBytes = 10
+
+	// sentinel for not using a base
+	noBaseName = "<none>"
 )
 
 type (
@@ -28,6 +31,10 @@ type (
 		reqHash  Sph
 	}
 )
+
+func (res *catalogResult) usingBase() bool {
+	return res.baseName != noBaseName
+}
 
 func (s Sph) String() string {
 	return nixbase32.EncodeToString(s[:])
