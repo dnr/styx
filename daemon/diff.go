@@ -104,21 +104,31 @@ func (s *server) requestChunk(ctx context.Context, loc erofs.SlabLoc, digest cdi
 	var op *diffOp
 
 	s.diffLock.Lock()
-	if haveOp, ok := s.diffMap[loc]; ok {
-		op = haveOp
+	if op = s.diffMap[loc]; op != nil {
+		// being request already, wait on this one
 	} else if len(sphps) == 0 {
-		op, _ = s.buildSingleOp(ctx, loc, digest)
-		go s.startOp(ctx, op)
+		log.Print("missing sph references")
 	} else {
 		set := newOpSet(s)
-		err := set.buildDiff(digest, sphps)
+		tx, err := s.db.Begin(false)
 		if err != nil {
-			op, err = s.buildSingleOp(ctx, loc, digest)
-		} else if s.diffMap[loc] == nil {
-			// shouldn't happen:
-			log.Print("buildDiffOp did not include requested chunk")
-			op, err = s.buildSingleOp(ctx, loc, digest)
+			return err
 		}
+		err = set.buildDiff(tx, digest, sphps)
+		tx.Rollback()
+		if err != nil {
+			log.Printf("buildDiff failed: %v", err)
+		} else if op = s.diffMap[loc]; op == nil {
+			log.Print("buildDiff did not include requested chunk") // shouldn't happen
+		} else {
+			// note that op is left as diffMap[loc] to wait on
+			for _, startOp := range set.ops {
+				go s.startOp(ctx, startOp)
+			}
+		}
+	}
+	if op == nil {
+		op = s.buildSingleOp(loc, digest)
 		go s.startOp(ctx, op)
 	}
 	s.diffLock.Unlock()
@@ -136,28 +146,76 @@ func (s *server) requestChunk(ctx context.Context, loc erofs.SlabLoc, digest cdi
 	return op.err
 }
 
-func (s *server) requestPrefetch(ctx context.Context, reqDigests []cdig.CDig, reqSizes []int64, cres catalogResult) error {
-	panic("FIXME")
-	// // ignore diffLock for prefetches. TODO: is that the best approach?
-	// ops, err := s.buildPrefetchOps(ctx, reqDigests, reqSizes, cres)
-	// if err != nil || ops == nil {
-	// 	return err
-	// }
-	// for _, op := range ops {
-	// 	go s.startOp(ctx, op)
-	// }
-	// for _, op := range ops {
-	// 	<-op.done
-	// 	if op.err != nil {
-	// 		log.Printf("prefetch diff failed (%v)", op.err)
-	// 	}
-	// }
-	// for _, op := range ops {
-	// 	if op.err != nil {
-	// 		return op.err
-	// 	}
-	// }
-	// return nil
+func (s *server) requestPrefetch(ctx context.Context, reqs []cdig.CDig) error {
+	ops, err := s.buildAndStartPrefetch(ctx, reqs)
+	if err != nil {
+		return err
+	}
+	for _, op := range ops {
+		<-op.done
+		if op.err != nil {
+			log.Printf("prefetch request failed (%v)", op.err)
+		}
+	}
+	for _, op := range ops {
+		if op.err != nil {
+			return op.err
+		}
+	}
+	return nil
+}
+
+func (s *server) buildAndStartPrefetch(ctx context.Context, reqs []cdig.CDig) ([]*diffOp, error) {
+	s.diffLock.Lock()
+	defer s.diffLock.Unlock()
+
+	tx, err := s.db.Begin(false)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	cb := tx.Bucket(chunkBucket)
+
+	var allOps []*diffOp
+	have := make(map[*diffOp]struct{})
+
+	for _, req := range reqs {
+		loc := cb.Get(req[:])
+		if loc == nil {
+			return nil, errors.New("missing digest->loc reference")
+		}
+		l := loadLoc(loc)
+		if op := s.diffMap[l]; op != nil {
+			// already being requested
+			if _, ok := have[op]; !ok {
+				have[op] = struct{}{}
+				allOps = append(allOps, op)
+			}
+			continue
+		} else if s.locPresent(tx, l) {
+			continue
+		}
+		// build new requests
+		sphps := splitSphs(loc[6:])
+		if len(sphps) == 0 {
+			return nil, errors.New("missing sph references")
+		}
+		set := newOpSet(s)
+		err := set.buildDiff(tx, req, sphps)
+		if err != nil {
+			return nil, err
+		} else if op := s.diffMap[l]; op == nil {
+			return nil, errors.New("buildDiff did not include requested chunk")
+		} else {
+			have[op] = struct{}{}
+			allOps = append(allOps, op)
+		}
+		for _, startOp := range set.ops {
+			go s.startOp(ctx, startOp)
+		}
+	}
+
+	return allOps, nil
 }
 
 // currently this is only used to read manifest chunks
@@ -237,15 +295,14 @@ func (s *server) readSingle(ctx context.Context, loc erofs.SlabLoc, digest cdig.
 
 // call with diffLock held
 func (s *server) buildSingleOp(
-	ctx context.Context,
 	loc erofs.SlabLoc,
 	targetDigest cdig.CDig,
-) (*diffOp, error) {
+) *diffOp {
 	op := newDiffOp(opTypeSingle)
 	op.singleLoc = loc
 	op.singleDigest = targetDigest
 	s.diffMap[loc] = op
-	return op, nil
+	return op
 }
 
 // runs in separate goroutine
@@ -706,15 +763,10 @@ func (set *opSet) fullReq() bool {
 
 // call with diffLock held
 func (set *opSet) buildDiff(
+	tx *bbolt.Tx,
 	targetDigest cdig.CDig,
 	sphps []SphPrefix,
 ) error {
-	tx, err := set.s.db.Begin(false)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-
 	// find an image with a base with similar data. go backwards on the assumption that recent
 	// images with this chunk will be more similar.
 	for i := len(sphps) - 1; i >= 0; i-- {
@@ -909,120 +961,6 @@ func (set *opSet) recompress(
 	set.op.diffRecompress = args
 	return nil
 }
-
-/* FIXME
-
-func (set *opSet) buildPrefetch() {
-}
-
-func (s *server) buildPrefetchOps(
-	ctx context.Context,
-	reqDigests []cdig.CDig,
-	reqSizes []int64,
-	res catalogResult,
-) ([]*diffOp, error) {
-	tx, err := s.db.Begin(false)
-	if err != nil {
-		return nil, err
-	}
-	defer tx.Rollback()
-
-	var baseIter digestIterator
-	if res.usingBase() {
-		baseEntries, err := s.getDigestsFromImage(ctx, tx, res.baseHash, false)
-		if err != nil {
-			log.Println("failed to get digests for", res.baseHash, res.baseName)
-			return nil, err
-		}
-		baseIter = newDigestIterator(baseEntries)
-	}
-
-	op := newDiffOp(opTypeDiff)
-	ops := []*diffOp{op}
-	newOp := func() {
-		op = newDiffOp(opTypeDiff)
-		ops = append(ops, op)
-	}
-
-	// req: fill ops up to ChunkDiffMaxDigests (much bigger than normal readahead), with
-	// not-present chunks
-	for i, reqDigest := range reqDigests {
-		if reqLoc, reqPresent := s.digestPresent(tx, reqDigest); !reqPresent && reqLoc.Addr > 0 {
-			if len(op.reqInfo) >= manifester.ChunkDiffMaxDigests {
-				newOp()
-			}
-			op.addReq(reqDigest, reqSizes[i], reqLoc)
-		}
-	}
-
-	if len(op.reqInfo) == 0 {
-		return nil, nil
-	}
-
-	// base: fill present chunks across ops made from req in order.
-	// this probably only works well if prefetching the whole image.
-	// TODO: ideally, we would look at corresponding files only, e.g. pass in a filter
-	// function.
-	opIdx := 0
-	op = ops[opIdx]
-	nextOp := func() {
-		if opIdx++; opIdx >= len(ops) {
-			op = nil
-		} else {
-			op = ops[opIdx]
-		}
-	}
-
-	for {
-		baseDigest := baseIter.digest()
-		if baseDigest == cdig.Zero {
-			break
-		}
-		if baseLoc, basePresent := s.digestPresent(tx, baseDigest); basePresent {
-			if len(op.baseInfo) >= manifester.ChunkDiffMaxDigests {
-				if nextOp(); op == nil {
-					break
-				}
-			}
-			op.addBase(baseDigest, baseIter.size(), baseLoc)
-		}
-		baseIter.next(1)
-	}
-
-	var baseTotalSize, reqTotalSize int64
-	var baseTotalLen, reqTotalLen int
-	for _, op := range ops {
-		baseTotalSize += op.baseTotalSize
-		baseTotalLen += len(op.baseInfo)
-		reqTotalSize += op.reqTotalSize
-		reqTotalLen += len(op.reqInfo)
-	}
-
-	if res.usingBase() {
-		log.Printf("prefetching %s…-%s -> %s…-%s [%d/%d -> %d/%d in %d ops]",
-			res.baseHash.String()[:5],
-			res.baseName,
-			res.reqHash.String()[:5],
-			res.reqName,
-			baseTotalSize,
-			baseTotalLen,
-			reqTotalSize,
-			reqTotalLen,
-			len(ops),
-		)
-	} else {
-		log.Printf("prefetching %s…-%s [%d/%d in %d ops]",
-			res.reqHash.String()[:5],
-			res.reqName,
-			reqTotalSize,
-			reqTotalLen,
-			len(ops),
-		)
-	}
-
-	return ops, nil
-}
-*/
 
 func (set *opSet) log(
 	res catalogResult,
