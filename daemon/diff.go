@@ -443,12 +443,12 @@ func (s *server) doDiffOp(ctx context.Context, op *diffOp) error {
 	}
 	if err = json.Unmarshal(statsBytes, &st); err == nil {
 		if st.BaseChunks > 0 {
-			log.Printf("diff %d/%d -> %d/%d = %d (%.1f%%)",
-				st.BaseBytes, st.BaseChunks, st.ReqBytes, st.ReqChunks,
+			log.Printf("diff %d:%d <~ %d:%d = %d (%.1f%%)",
+				st.ReqChunks, st.ReqBytes, st.BaseChunks, st.BaseBytes,
 				st.DiffBytes, 100*float64(st.DiffBytes)/float64(st.ReqBytes))
 		} else {
-			log.Printf("batch %d/%d = %d (%.1f%%)",
-				st.ReqBytes, st.ReqChunks,
+			log.Printf("batch %d:%d = %d (%.1f%%)",
+				st.ReqChunks, st.ReqBytes,
 				st.DiffBytes, 100*float64(st.DiffBytes)/float64(st.ReqBytes))
 		}
 	} else {
@@ -843,10 +843,11 @@ func (set *opSet) buildExtendDiff(
 	}
 
 	reqEnt := reqIter.ent()
+	var readLog string
 	if firstOp {
-		log.Printf("read /nix/store/%s-%s%s", res.reqHash, res.reqName, reqEnt.Path)
+		readLog = fmt.Sprintf("read /nix/store/%s-%s%s", res.reqHash, res.reqName, reqEnt.Path)
 	} else { // later: don't bother logging this
-		log.Printf("  or /nix/store/%s-%s%s", res.reqHash, res.reqName, reqEnt.Path)
+		readLog = fmt.Sprintf("  or /nix/store/%s-%s%s", res.reqHash, res.reqName, reqEnt.Path)
 	}
 
 	if firstOp {
@@ -911,6 +912,7 @@ func (set *opSet) buildExtendDiff(
 	}
 	set.sourcesLeft--
 
+	log.Print(readLog)
 	set.log(res, "", firstOp)
 }
 
