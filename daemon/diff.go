@@ -31,7 +31,7 @@ const (
 
 	initOpSize = 16
 	maxOpSize  = 128 // must be ≤ manifester.ChunkDiffMaxDigests
-	maxDiffOps = 8   // prefetch can be more
+	maxDiffOps = 8
 	maxSources = 3
 )
 
@@ -113,7 +113,7 @@ func (s *server) requestChunk(ctx context.Context, loc erofs.SlabLoc, digest cdi
 		if err != nil {
 			return err
 		}
-		err = set.buildDiff(tx, digest, sphps)
+		err = set.buildDiff(tx, digest, sphps, true)
 		tx.Rollback()
 		if err != nil {
 			log.Printf("buildDiff failed: %v", err)
@@ -203,7 +203,8 @@ func (s *server) buildAndStartPrefetch(ctx context.Context, reqs []cdig.CDig) ([
 			return nil, errors.New("missing sph references")
 		}
 		set := newOpSet(s)
-		err := set.buildDiff(tx, req, sphps)
+		set.maxOpSize = maxOpSize // use larger ops immediately
+		err := set.buildDiff(tx, req, sphps, false)
 		if err != nil {
 			return nil, err
 		} else if op := s.diffMap[l]; op == nil {
@@ -331,7 +332,10 @@ func (s *server) startSingleOp(ctx context.Context, op *singleOp) {
 	}()
 
 	s.stats.singleReqs.Add(1)
-	op.err = s.readSingle(ctx, op.loc, op.digest)
+	if op.err = s.diffSem.Acquire(ctx, 1); op.err == nil {
+		defer s.diffSem.Release(1)
+		op.err = s.readSingle(ctx, op.loc, op.digest)
+	}
 }
 
 // runs in separate goroutine
@@ -370,7 +374,10 @@ func (s *server) startDiffOp(ctx context.Context, op *diffOp) {
 	} else {
 		s.stats.diffReqs.Add(1)
 	}
-	op.err = s.doDiffOp(ctx, op)
+	if op.err = s.diffSem.Acquire(ctx, 1); op.err == nil {
+		defer s.diffSem.Release(1)
+		op.err = s.doDiffOp(ctx, op)
+	}
 }
 
 func (s *server) doDiffOp(ctx context.Context, op *diffOp) error {
@@ -804,12 +811,13 @@ func (set *opSet) buildDiff(
 	tx *bbolt.Tx,
 	targetDigest cdig.CDig,
 	sphps []SphPrefix,
+	useRR bool,
 ) error {
 	// find an image with a base with similar data. go backwards on the assumption that recent
 	// images with this chunk will be more similar.
 	for i := len(sphps) - 1; i >= 0; i-- {
 		if res, err := set.s.catalogFindBase(tx, sphps[i]); err == nil {
-			set.buildExtendDiff(tx, targetDigest, res)
+			set.buildExtendDiff(tx, targetDigest, res, useRR)
 
 			// can't extend recompress or full
 			if set.sourcesLeft == 0 || len(set.op.recompress) > 0 || set.fullBase() && set.fullReq() {
@@ -831,7 +839,7 @@ func (set *opSet) buildDiff(
 		reqName:  name,
 		baseName: noBaseName,
 		reqHash:  foundSph,
-	})
+	}, useRR)
 	return nil
 }
 
@@ -840,6 +848,7 @@ func (set *opSet) buildExtendDiff(
 	tx *bbolt.Tx,
 	targetDigest cdig.CDig,
 	res catalogResult,
+	useRR bool,
 ) {
 	firstOp := !set.op.hasReq()
 
@@ -899,12 +908,14 @@ func (set *opSet) buildExtendDiff(
 		}
 	}
 
-	// FIXME: maybe recentRead should be on set instead of op?
-	newRR := set.s.findRecentRead(res.reqHash, reqEnt.Path)
-	if set.op.recentRead == nil || newRR.reads > set.op.recentRead.reads {
-		set.op.recentRead = newRR
+	if useRR {
+		// FIXME: maybe recentRead should be on set instead of op?
+		newRR := set.s.findRecentRead(res.reqHash, reqEnt.Path)
+		if set.op.recentRead == nil || newRR.reads > set.op.recentRead.reads {
+			set.op.recentRead = newRR
+		}
+		set.shiftMax(set.op.recentRead.reads)
 	}
-	set.shiftMax(set.op.recentRead.reads)
 
 	// try to find some file in base
 	if found := baseIter.findFile(reqEnt.Path); found {

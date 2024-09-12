@@ -23,6 +23,7 @@ import (
 	"github.com/lunixbochs/struc"
 	"github.com/nix-community/go-nix/pkg/narinfo/signature"
 	"go.etcd.io/bbolt"
+	"golang.org/x/sync/semaphore"
 	"golang.org/x/sys/unix"
 	"google.golang.org/protobuf/proto"
 
@@ -87,6 +88,7 @@ type (
 		diffLock    sync.Mutex
 		diffMap     map[erofs.SlabLoc]reqOp
 		recentReads map[string]*recentRead
+		diffSem     *semaphore.Weighted
 
 		shutdownChan chan struct{}
 		shutdownWait sync.WaitGroup
@@ -154,6 +156,7 @@ func CachefilesServer(cfg Config) *server {
 		mountCtxMap:  *common.NewSimpleSyncMap[string, context.Context](),
 		diffMap:      make(map[erofs.SlabLoc]reqOp),
 		recentReads:  make(map[string]*recentRead),
+		diffSem:      semaphore.NewWeighted(int64(cfg.Workers)),
 		shutdownChan: make(chan struct{}),
 	}
 }
