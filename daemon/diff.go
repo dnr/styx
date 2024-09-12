@@ -61,7 +61,7 @@ type (
 
 		baseDigests, reqDigests     []cdig.CDig
 		baseInfo, reqInfo           []info
-		baseTotalSize, reqTotalSize int64
+		baseTotalSize, reqTotalSize int32
 		recompress                  []string
 
 		// the contents of recentRead is under diffLock
@@ -82,7 +82,7 @@ type (
 	}
 
 	info struct {
-		size int64
+		size int32
 		loc  erofs.SlabLoc
 	}
 
@@ -321,10 +321,10 @@ func (s *server) doDiffOp(ctx context.Context, op *diffOp) error {
 	if op.hasBase() {
 		baseData = make([]byte, op.baseTotalSize)
 		for _, i := range op.baseInfo {
-			if err := s.getKnownChunk(i.loc, baseData[p:p+i.size]); err != nil {
+			if err := s.getKnownChunk(i.loc, baseData[p:p+int64(i.size)]); err != nil {
 				return fmt.Errorf("getKnownChunk error: %w", err)
 			}
-			p += i.size
+			p += int64(i.size)
 		}
 
 		// decompress if needed
@@ -371,7 +371,7 @@ func (s *server) doDiffOp(ctx context.Context, op *diffOp) error {
 	p = 0
 	for idx, i := range op.reqInfo {
 		// slice with cap to force copy if less than block size
-		b := reqData[p : p+i.size : p+i.size]
+		b := reqData[p : p+int64(i.size) : p+int64(i.size)]
 		if err := s.gotNewChunk(i.loc, op.reqDigests[idx], b); err != nil {
 			if len(op.recompress) > 0 && strings.Contains(err.Error(), "digest mismatch") {
 				// we didn't recompress correctly, fall back to single
@@ -380,7 +380,7 @@ func (s *server) doDiffOp(ctx context.Context, op *diffOp) error {
 			}
 			return fmt.Errorf("gotNewChunk error (diff): %w", err)
 		}
-		p += i.size
+		p += int64(i.size)
 	}
 
 	// rest is json stats
@@ -723,13 +723,13 @@ func (op *diffOp) resetDiff() {
 	op.recompress = nil
 }
 
-func (op *diffOp) addBase(digest cdig.CDig, size int64, loc erofs.SlabLoc) {
+func (op *diffOp) addBase(digest cdig.CDig, size int32, loc erofs.SlabLoc) {
 	op.baseDigests = append(op.baseDigests, digest)
 	op.baseInfo = append(op.baseInfo, info{size, loc})
 	op.baseTotalSize += size
 }
 
-func (op *diffOp) addReq(digest cdig.CDig, size int64, loc erofs.SlabLoc) {
+func (op *diffOp) addReq(digest cdig.CDig, size int32, loc erofs.SlabLoc) {
 	op.reqDigests = append(op.reqDigests, digest)
 	op.reqInfo = append(op.reqInfo, info{size, loc})
 	op.reqTotalSize += size
@@ -1081,12 +1081,12 @@ func (i *digestIterator) digest() cdig.CDig {
 }
 
 // size of this chunk
-func (i *digestIterator) size() int64 {
+func (i *digestIterator) size() int32 {
 	ent := i.ent()
 	if ent == nil {
 		return -1
 	}
-	return common.ChunkShift.FileChunkSize(ent.Size, i.d+cdig.Bytes >= len(ent.Digests))
+	return int32(common.ChunkShift.FileChunkSize(ent.Size, i.d+cdig.Bytes >= len(ent.Digests)))
 }
 
 // moves forward n chunks. returns true if valid.
