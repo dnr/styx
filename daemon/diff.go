@@ -338,14 +338,14 @@ func (s *server) startOp(ctx context.Context, op *diffOp) {
 
 	switch op.tp {
 	case opTypeDiff:
-		if len(op.baseInfo) == 0 {
+		if !op.hasBase() {
 			s.stats.batchReqs.Add(1)
 		} else {
 			s.stats.diffReqs.Add(1)
 		}
 		op.err = s.doDiffOp(ctx, op)
 		if op.err != nil {
-			if len(op.baseInfo) == 0 {
+			if !op.hasBase() {
 				s.stats.batchErrs.Add(1)
 			} else {
 				s.stats.diffErrs.Add(1)
@@ -370,7 +370,7 @@ func (s *server) doDiffOp(ctx context.Context, op *diffOp) error {
 	var p int64
 	var baseData []byte
 
-	if len(op.baseInfo) > 0 {
+	if op.hasBase() {
 		baseData = make([]byte, op.baseTotalSize)
 		for _, i := range op.baseInfo {
 			if err := s.getKnownChunk(i.loc, baseData[p:p+i.size]); err != nil {
@@ -392,7 +392,7 @@ func (s *server) doDiffOp(ctx context.Context, op *diffOp) error {
 	if err != nil {
 		return fmt.Errorf("expandChunkDiff error: %w", err)
 	}
-	if len(op.baseInfo) == 0 {
+	if !op.hasBase() {
 		s.stats.batchBytes.Add(diffCounter.c)
 	} else {
 		s.stats.diffBytes.Add(diffCounter.c)
@@ -443,11 +443,11 @@ func (s *server) doDiffOp(ctx context.Context, op *diffOp) error {
 	}
 	if err = json.Unmarshal(statsBytes, &st); err == nil {
 		if st.BaseChunks > 0 {
-			log.Printf("diff %d:%d <~ %d:%d = %d (%.1f%%)",
+			log.Printf("diff [%d:%d <~ %d:%d] = %d (%.1f%%)",
 				st.ReqChunks, st.ReqBytes, st.BaseChunks, st.BaseBytes,
 				st.DiffBytes, 100*float64(st.DiffBytes)/float64(st.ReqBytes))
 		} else {
-			log.Printf("batch %d:%d = %d (%.1f%%)",
+			log.Printf("batch [%d:%d] = %d (%.1f%%)",
 				st.ReqChunks, st.ReqBytes,
 				st.DiffBytes, 100*float64(st.DiffBytes)/float64(st.ReqBytes))
 		}
@@ -688,6 +688,24 @@ func newDiffOp(tp opType) *diffOp {
 	}
 }
 
+func (op *diffOp) hasBase() bool {
+	return len(op.baseInfo) > 0
+}
+
+func (op *diffOp) hasReq() bool {
+	return len(op.reqInfo) > 0
+}
+
+func (op *diffOp) resetDiff() {
+	op.baseDigests = nil
+	op.reqDigests = nil
+	op.baseInfo = nil
+	op.reqInfo = nil
+	op.baseTotalSize = 0
+	op.reqTotalSize = 0
+	op.diffRecompress = nil
+}
+
 func (op *diffOp) addBase(digest cdig.CDig, size int64, loc erofs.SlabLoc) {
 	op.baseDigests = append(op.baseDigests, digest)
 	op.baseInfo = append(op.baseInfo, info{size, loc})
@@ -781,8 +799,7 @@ func (set *opSet) buildDiff(
 			}
 		}
 	}
-	// FIXME: encapsulate this condition?
-	if len(set.op.reqInfo) > 0 {
+	if set.op.hasReq() {
 		return nil
 	}
 
@@ -806,7 +823,7 @@ func (set *opSet) buildExtendDiff(
 	targetDigest cdig.CDig,
 	res catalogResult,
 ) {
-	firstOp := len(set.op.reqInfo) == 0
+	firstOp := !set.op.hasReq()
 
 	isManifest := strings.HasPrefix(res.reqName, isManifestPrefix)
 	if isManifest && !firstOp {
@@ -852,11 +869,14 @@ func (set *opSet) buildExtendDiff(
 		readLog = fmt.Sprintf("  or /nix/store/%s-%s%s", res.reqHash, res.reqName, reqEnt.Path)
 	}
 
-	if firstOp {
+	if firstOp && res.usingBase() {
 		if args := getRecompressArgs(reqEnt); len(args) > 0 {
-			if err := set.recompress(tx, res, args, baseIter, reqIter, reqEnt); err == nil {
+			if err := set.buildRecompress(tx, res, args, baseIter, reqIter, reqEnt); err == nil {
 				set.log(res, args[0], true)
 				return
+			} else {
+				log.Println("skipping recompress:", err)
+				set.op.resetDiff()
 			}
 		}
 	}
@@ -918,7 +938,7 @@ func (set *opSet) buildExtendDiff(
 	set.log(res, "", firstOp)
 }
 
-func (set *opSet) recompress(
+func (set *opSet) buildRecompress(
 	tx *bbolt.Tx,
 	res catalogResult,
 	args []string,
@@ -926,9 +946,9 @@ func (set *opSet) recompress(
 	reqEnt *pb.Entry,
 ) error {
 	// findFile will only return true if it found an entry and it has digests,
-	// i.e. no base, missing file, is symlink, inline, etc. will all return false.
+	// i.e. missing file, is symlink, inline, etc. will all return false.
 	if found := baseIter.findFile(reqEnt.Path); !found {
-		return errors.New("recompress base missing corresponding file")
+		return errors.New("base missing corresponding file: " + reqEnt.Path)
 	}
 
 	baseEnt := baseIter.ent()
@@ -938,8 +958,8 @@ func (set *opSet) recompress(
 		if baseLoc.Addr == 0 {
 			return errors.New("digest in entry of base digest is not mapped")
 		} else if !basePresent {
-			// Base is not present, don't bother with a batch (data is already compressed).
-			return errors.New("recompress base chunk not present")
+			// Base is not present, don't bother with recompress (data is already compressed).
+			return errors.New("base chunk not present")
 		}
 		set.op.addBase(baseDigest, baseIter.size(), baseLoc)
 	}
@@ -949,7 +969,7 @@ func (set *opSet) recompress(
 		reqDigest := reqIter.digest()
 		reqLoc := set.s.digestLoc(tx, reqDigest)
 		if reqLoc.Addr == 0 {
-			return errors.New("digest in entry of requested digest is not mapped")
+			return errors.New("digest in entry of req digest is not mapped")
 		}
 		set.op.addReq(reqDigest, reqIter.size(), reqLoc)
 	}
@@ -993,7 +1013,7 @@ func (set *opSet) log(
 	for i, op := range set.ops {
 		if i != 0 && i != len(set.ops)-1 {
 			fmt.Fprintf(&sb, " …%d more…", len(set.ops)-2)
-		} else if op.baseTotalSize > 0 {
+		} else if op.hasBase() {
 			fmt.Fprintf(&sb, " [%d:%d <~ %d:%d]", len(op.reqInfo), op.reqTotalSize, len(op.baseInfo), op.baseTotalSize)
 		} else {
 			fmt.Fprintf(&sb, " [%d:%d]", len(op.reqInfo), op.reqTotalSize)
