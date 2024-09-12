@@ -43,7 +43,6 @@ type (
 	}
 
 	reqOp interface {
-		start(context.Context, *server) // call in new goroutine
 		wait() error
 	}
 
@@ -121,15 +120,17 @@ func (s *server) requestChunk(ctx context.Context, loc erofs.SlabLoc, digest cdi
 		} else if op = s.diffMap[loc]; op == nil {
 			log.Print("buildDiff did not include requested chunk") // shouldn't happen
 		} else {
+			// TODO: if set is a single op, with a single req and no base, change to single
+
 			// note that op is left as diffMap[loc] to wait on
 			for _, startOp := range set.ops {
-				go startOp.start(ctx, s)
+				go s.startDiffOp(ctx, startOp)
 			}
 		}
 	}
 	if op == nil {
 		sop := s.buildSingleOp(loc, digest)
-		go sop.start(ctx, s)
+		go s.startSingleOp(ctx, sop)
 		op = sop
 	}
 	s.diffLock.Unlock()
@@ -212,7 +213,7 @@ func (s *server) buildAndStartPrefetch(ctx context.Context, reqs []cdig.CDig) ([
 			allOps = append(allOps, op)
 		}
 		for _, startOp := range set.ops {
-			go startOp.start(ctx, s)
+			go s.startDiffOp(ctx, startOp)
 		}
 	}
 
@@ -306,6 +307,70 @@ func (s *server) buildSingleOp(
 	}
 	s.diffMap[loc] = op
 	return op
+}
+
+// runs in separate goroutine
+func (s *server) startSingleOp(ctx context.Context, op *singleOp) {
+	defer func() {
+		if r := recover(); r != nil {
+			op.err = fmt.Errorf("panic in single op: %v", r)
+		}
+		if op.err != nil {
+			s.stats.singleErrs.Add(1)
+		}
+
+		// clear references to this op from the map
+		s.diffLock.Lock()
+		if s.diffMap[op.loc] == reqOp(op) {
+			delete(s.diffMap, op.loc)
+		}
+		s.diffLock.Unlock()
+
+		// wake up waiters
+		close(op.done)
+	}()
+
+	s.stats.singleReqs.Add(1)
+	op.err = s.readSingle(ctx, op.loc, op.digest)
+}
+
+// runs in separate goroutine
+func (s *server) startDiffOp(ctx context.Context, op *diffOp) {
+	defer func() {
+		if r := recover(); r != nil {
+			op.err = fmt.Errorf("panic in diff op: %v", r)
+		}
+		if op.err != nil {
+			if !op.hasBase() {
+				s.stats.batchErrs.Add(1)
+			} else {
+				s.stats.diffErrs.Add(1)
+			}
+		}
+
+		// clear references to this op from the map
+		s.diffLock.Lock()
+		for _, i := range op.reqInfo {
+			if s.diffMap[i.loc] == reqOp(op) {
+				delete(s.diffMap, i.loc)
+			}
+		}
+		// update recentRead timer
+		if op.recentRead != nil {
+			op.recentRead.when = time.Now()
+		}
+		s.diffLock.Unlock()
+
+		// wake up waiters
+		close(op.done)
+	}()
+
+	if !op.hasBase() {
+		s.stats.batchReqs.Add(1)
+	} else {
+		s.stats.diffReqs.Add(1)
+	}
+	op.err = s.doDiffOp(ctx, op)
 }
 
 func (s *server) doDiffOp(ctx context.Context, op *diffOp) error {
@@ -629,76 +694,12 @@ func (s *server) pruneRecentReads() {
 
 // single op
 
-// runs in separate goroutine
-func (op *singleOp) start(ctx context.Context, s *server) {
-	defer func() {
-		if r := recover(); r != nil {
-			op.err = fmt.Errorf("panic in single op: %v", r)
-		}
-		if op.err != nil {
-			s.stats.singleErrs.Add(1)
-		}
-
-		// clear references to this op from the map
-		s.diffLock.Lock()
-		if s.diffMap[op.loc] == reqOp(op) {
-			delete(s.diffMap, op.loc)
-		}
-		s.diffLock.Unlock()
-
-		// wake up waiters
-		close(op.done)
-	}()
-
-	s.stats.singleReqs.Add(1)
-	op.err = s.readSingle(ctx, op.loc, op.digest)
-}
-
 func (op *singleOp) wait() error {
 	<-op.done
 	return op.err
 }
 
 // diff op
-
-// runs in separate goroutine
-func (op *diffOp) start(ctx context.Context, s *server) {
-	defer func() {
-		if r := recover(); r != nil {
-			op.err = fmt.Errorf("panic in diff op: %v", r)
-		}
-		if op.err != nil {
-			if !op.hasBase() {
-				s.stats.batchErrs.Add(1)
-			} else {
-				s.stats.diffErrs.Add(1)
-			}
-		}
-
-		// clear references to this op from the map
-		s.diffLock.Lock()
-		for _, i := range op.reqInfo {
-			if s.diffMap[i.loc] == reqOp(op) {
-				delete(s.diffMap, i.loc)
-			}
-		}
-		// update recentRead timer
-		if op.recentRead != nil {
-			op.recentRead.when = time.Now()
-		}
-		s.diffLock.Unlock()
-
-		// wake up waiters
-		close(op.done)
-	}()
-
-	if !op.hasBase() {
-		s.stats.batchReqs.Add(1)
-	} else {
-		s.stats.diffReqs.Add(1)
-	}
-	op.err = s.doDiffOp(ctx, op)
-}
 
 func (op *diffOp) wait() error {
 	<-op.done
