@@ -63,17 +63,20 @@ type (
 		baseTotalSize, reqTotalSize int32
 		recompress                  []string
 
-		// the contents of recentRead is under diffLock
-		recentRead *recentRead
+		// shared with all ops in opSet.
+		// the contents of the recentReads are under diffLock.
+		rrs *[maxSources]*recentRead
 	}
 
 	// context for building set of diff ops
 	opSet struct {
-		s           *server
-		tx          *bbolt.Tx
-		op          *diffOp // always last value in ops
-		ops         []*diffOp
-		using       map[cdig.CDig]struct{}
+		s     *server
+		tx    *bbolt.Tx
+		op    *diffOp // last op in ops
+		ops   []*diffOp
+		using map[cdig.CDig]struct{}
+		// rrs is indirect so that diffOps can point to it without keeping opSet live
+		rrs         *[maxSources]*recentRead
 		limitShift  int
 		maxOpSize   int
 		maxOps      int
@@ -359,9 +362,11 @@ func (s *server) startDiffOp(ctx context.Context, op *diffOp) {
 				delete(s.diffMap, i.loc)
 			}
 		}
-		// update recentRead timer
-		if op.recentRead != nil {
-			op.recentRead.when = time.Now()
+		// update recentRead timers
+		for _, rr := range op.rrs[:] {
+			if rr != nil {
+				rr.when = time.Now()
+			}
 		}
 		s.diffLock.Unlock()
 
@@ -749,6 +754,7 @@ func newOpSet(s *server) *opSet {
 	set := &opSet{
 		s:           s,
 		using:       make(map[cdig.CDig]struct{}),
+		rrs:         new([maxSources]*recentRead),
 		maxOpSize:   initOpSize,
 		maxOps:      1,
 		sourcesLeft: maxSources,
@@ -768,6 +774,17 @@ func (set *opSet) shiftMax(limitShift int) {
 	}
 }
 
+func (set *opSet) addRecentRead(rr *recentRead) {
+	for i := 0; i < maxSources; i++ {
+		if set.rrs[i] == rr {
+			return
+		} else if set.rrs[i] == nil {
+			set.rrs[i] = rr
+			return
+		}
+	}
+}
+
 func (set *opSet) isUsing(dig cdig.CDig) bool {
 	_, ok := set.using[dig]
 	return ok
@@ -778,9 +795,9 @@ func (set *opSet) markUsing(dig cdig.CDig) {
 }
 
 func (set *opSet) newOp() {
-	op := &diffOp{done: make(chan struct{})}
-	if set.op != nil { // FIXME: hmmm...
-		op.recentRead = set.op.recentRead
+	op := &diffOp{
+		done: make(chan struct{}),
+		rrs:  set.rrs,
 	}
 	set.ops = append(set.ops, op)
 	set.op = op
@@ -909,12 +926,9 @@ func (set *opSet) buildExtendDiff(
 	}
 
 	if useRR {
-		// FIXME: maybe recentRead should be on set instead of op?
-		newRR := set.s.findRecentRead(res.reqHash, reqEnt.Path)
-		if set.op.recentRead == nil || newRR.reads > set.op.recentRead.reads {
-			set.op.recentRead = newRR
-		}
-		set.shiftMax(set.op.recentRead.reads)
+		rr := set.s.findRecentRead(res.reqHash, reqEnt.Path)
+		set.addRecentRead(rr)
+		set.shiftMax(rr.reads)
 	}
 
 	// try to find some file in base
