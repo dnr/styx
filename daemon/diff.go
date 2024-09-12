@@ -917,7 +917,7 @@ func (set *opSet) buildExtendDiff(
 	}
 
 	changed := false
-	for !set.fullBase() || !set.fullReq() {
+	for {
 		baseDigest := baseIter.digest()
 		if baseDigest != cdig.Zero && !set.fullBase() && !set.isUsing(baseDigest) {
 			baseLoc, basePresent := set.s.digestPresent(tx, baseDigest)
@@ -941,10 +941,11 @@ func (set *opSet) buildExtendDiff(
 			}
 		}
 
-		baseOk, reqOk := baseIter.next(1), reqIter.next(1)
-		if !baseOk && !reqOk {
+		if (baseDigest == cdig.Zero || set.fullBase()) && (reqDigest == cdig.Zero || set.fullReq()) {
 			break
 		}
+		baseIter.next(1)
+		reqIter.next(1)
 	}
 	if !changed {
 		return
