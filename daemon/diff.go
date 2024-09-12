@@ -736,7 +736,9 @@ func (set *opSet) markUsing(dig cdig.CDig) {
 
 func (set *opSet) newOp() {
 	op := newDiffOp(opTypeDiff)
-	op.recentRead = set.op.recentRead // FIXME: hmmm...
+	if set.op != nil { // FIXME: hmmm...
+		op.recentRead = set.op.recentRead
+	}
 	set.ops = append(set.ops, op)
 	set.op = op
 }
