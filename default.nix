@@ -66,9 +66,10 @@ rec {
       "53qwclnym7a6vzs937jjmsfqxlxlsf2y-opusfile-0.12"
       "kcyrz2y8si9ry5p8qkmj0gp41n01sa1y-opusfile-0.12"
       "qa22bifihaxyvn6q2a6w9m0nklqrk9wh-opusfile-0.12"
+      "xpq4yhadyhazkcsggmqd7rsgvxb3kjy4-gnugrep-3.11"
       # "kbi7qf642gsxiv51yqank8bnx39w3crd-calf-0.90.3"
     ];
-    hash = "sha256-NcLWG05a8YLXM62cSQR6D/Ne9/YbS/NkPspzdF7u648=";
+    hash = "sha256-j1L/FWbQ3XNTfD/ogcihfJ3pL/0glEeNmLfLBYnFpaM=";
   in pkgs.stdenv.mkDerivation {
     name = "styx-test-data";
     builder = pkgs.writeShellScript "build-testdata" ''

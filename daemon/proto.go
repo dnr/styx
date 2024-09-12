@@ -41,7 +41,10 @@ type (
 	// returns Status
 
 	PrefetchReq struct {
+		// absolute path of file or directory to prefetch (unless using StorePath)
 		Path string
+		// optional, if set use this StorePath and consider Path under it
+		StorePath string
 	}
 	// returns Status
 

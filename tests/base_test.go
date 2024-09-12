@@ -257,6 +257,17 @@ func (tb *testBase) debug(req ...daemon.DebugReq) *daemon.DebugResp {
 	return &res
 }
 
+func (tb *testBase) prefetch(sph, path string) {
+	sock := filepath.Join(tb.cachedir, "styx.sock")
+	c := client.NewClient(sock)
+	var res daemon.Status
+	req := &daemon.PrefetchReq{Path: path, StorePath: sph}
+	code, err := c.Call(daemon.PrefetchPath, req, &res)
+	require.NoError(tb.t, err)
+	require.Equal(tb.t, code, http.StatusOK)
+	require.True(tb.t, res.Success, "error:", res.Error)
+}
+
 func (tb *testBase) dropCaches() {
 	fd, err := unix.Open("/proc/sys/vm/drop_caches", unix.O_WRONLY, 0)
 	require.NoError(tb.t, err)
