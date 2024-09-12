@@ -882,7 +882,7 @@ func (set *opSet) buildExtendDiff(
 	// find entry
 	reqIdx := 0
 	for reqIter.digest() != targetDigest {
-		if !reqIter.next(1) {
+		if reqIter.next(1) == nil {
 			panic("req digest not found in manifest") // shouldn't happen
 		}
 		reqIdx++
@@ -956,8 +956,14 @@ func (set *opSet) buildExtendDiff(
 		if (baseDigest == cdig.Zero || set.fullBase()) && (reqDigest == cdig.Zero || set.fullReq()) {
 			break
 		}
-		baseIter.next(1)
-		reqIter.next(1)
+
+		_, newReqEnt := baseIter.next(1), reqIter.next(1)
+
+		if len(set.ops) > 1 && newReqEnt != nil && newReqEnt.Path != reqEnt.Path {
+			// we're doing more than one op because we got multiple reads for the same file in
+			// succession. we can stop after the file.
+			break
+		}
 	}
 	if !changed {
 		return
@@ -1066,7 +1072,7 @@ func newDigestIterator(entries []*pb.Entry) digestIterator {
 	return i
 }
 
-func (i *digestIterator) reset() bool {
+func (i *digestIterator) reset() *pb.Entry {
 	i.e, i.d = 0, -cdig.Bytes
 	return i.next(1) // move to first actual digest
 }
@@ -1102,14 +1108,14 @@ func (i *digestIterator) size() int32 {
 }
 
 // moves forward n chunks. returns true if valid.
-func (i *digestIterator) next(n int) bool {
+func (i *digestIterator) next(n int) *pb.Entry {
 	i.d += n * cdig.Bytes
 	for {
 		ent := i.ent()
 		if ent == nil {
-			return false
+			return nil
 		} else if i.d+cdig.Bytes <= len(ent.Digests) {
-			return true
+			return ent
 		}
 		i.e++
 		i.d -= len(ent.Digests)
