@@ -853,9 +853,8 @@ func (set *opSet) buildDiff(
 		return errors.New("store path hash not found")
 	}
 	set.buildExtendDiff(tx, targetDigest, catalogResult{
-		reqName:  name,
-		baseName: noBaseName,
-		reqHash:  foundSph,
+		reqName: name,
+		reqHash: foundSph,
 	}, useRR)
 	return nil
 }
