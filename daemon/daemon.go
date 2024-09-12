@@ -85,7 +85,7 @@ type (
 		// note: we open a read-only transaction inside of diffLock.
 		// therefore we must not try to lock diffLock while in a read or write tx.
 		diffLock    sync.Mutex
-		diffMap     map[erofs.SlabLoc]*diffOp
+		diffMap     map[erofs.SlabLoc]reqOp
 		recentReads map[string]*recentRead
 
 		shutdownChan chan struct{}
@@ -152,7 +152,7 @@ func CachefilesServer(cfg Config) *server {
 		presentMap:   *common.NewSimpleSyncMap[erofs.SlabLoc, struct{}](),
 		readKnownMap: *common.NewSimpleSyncMap[erofs.SlabLoc, struct{}](),
 		mountCtxMap:  *common.NewSimpleSyncMap[string, context.Context](),
-		diffMap:      make(map[erofs.SlabLoc]*diffOp),
+		diffMap:      make(map[erofs.SlabLoc]reqOp),
 		recentReads:  make(map[string]*recentRead),
 		shutdownChan: make(chan struct{}),
 	}

@@ -42,25 +42,30 @@ type (
 		d    int // current digest offset (bytes)
 	}
 
-	opType int
+	reqOp interface {
+		start(context.Context, *server) // call in new goroutine
+		wait() error
+	}
+
+	singleOp struct {
+		err  error         // result. only written by start, read by wait
+		done chan struct{} // closed by start after writing err
+
+		loc    erofs.SlabLoc
+		digest cdig.CDig
+	}
 
 	diffOp struct {
-		tp   opType        // type of operation. constant.
-		err  error         // result. only written by startOp, read by callers after done is closed
-		done chan struct{} // closed by startOp after writing err
+		err  error         // result. only written by start, read by wait
+		done chan struct{} // closed by start after writing err
 
-		// info for diff op
 		baseDigests, reqDigests     []cdig.CDig
 		baseInfo, reqInfo           []info
 		baseTotalSize, reqTotalSize int64
-		diffRecompress              []string
+		recompress                  []string
 
 		// the contents of recentRead is under diffLock
 		recentRead *recentRead
-
-		// info for single op
-		singleLoc    erofs.SlabLoc
-		singleDigest cdig.CDig
 	}
 
 	// context for building set of diff ops
@@ -87,11 +92,6 @@ type (
 	}
 )
 
-const (
-	opTypeDiff opType = iota
-	opTypeSingle
-)
-
 func (s *server) requestChunk(ctx context.Context, loc erofs.SlabLoc, digest cdig.CDig, sphps []SphPrefix) error {
 	if _, ok := s.readKnownMap.Get(loc); ok {
 		// We think we have this chunk and are trying to use it as a base, but we got asked for
@@ -101,7 +101,7 @@ func (s *server) requestChunk(ctx context.Context, loc erofs.SlabLoc, digest cdi
 		sphps = nil
 	}
 
-	var op *diffOp
+	var op reqOp
 
 	s.diffLock.Lock()
 	if op = s.diffMap[loc]; op != nil {
@@ -123,27 +123,29 @@ func (s *server) requestChunk(ctx context.Context, loc erofs.SlabLoc, digest cdi
 		} else {
 			// note that op is left as diffMap[loc] to wait on
 			for _, startOp := range set.ops {
-				go s.startOp(ctx, startOp)
+				go startOp.start(ctx, s)
 			}
 		}
 	}
 	if op == nil {
-		op = s.buildSingleOp(loc, digest)
-		go s.startOp(ctx, op)
+		sop := s.buildSingleOp(loc, digest)
+		go sop.start(ctx, s)
+		op = sop
 	}
 	s.diffLock.Unlock()
 
 	// TODO: consider racing the diff against a single chunk read (with small delay)
 	// return when either is done
 
-	<-op.done
-
-	if op.err != nil && op.tp != opTypeSingle {
-		log.Printf("diff failed (%v), doing plain read", op.err)
-		return s.requestChunk(ctx, loc, digest, nil)
+	err := op.wait()
+	if err != nil {
+		if _, ok := op.(*singleOp); !ok {
+			log.Printf("diff failed (%v), doing plain read", err)
+			return s.requestChunk(ctx, loc, digest, nil)
+		}
 	}
 
-	return op.err
+	return err
 }
 
 func (s *server) requestPrefetch(ctx context.Context, reqs []cdig.CDig) error {
@@ -152,20 +154,19 @@ func (s *server) requestPrefetch(ctx context.Context, reqs []cdig.CDig) error {
 		return err
 	}
 	for _, op := range ops {
-		<-op.done
-		if op.err != nil {
-			log.Printf("prefetch request failed (%v)", op.err)
+		if err := op.wait(); err != nil {
+			log.Printf("prefetch request failed (%v)", err)
 		}
 	}
 	for _, op := range ops {
-		if op.err != nil {
-			return op.err
+		if err := op.wait(); err != nil {
+			return err
 		}
 	}
 	return nil
 }
 
-func (s *server) buildAndStartPrefetch(ctx context.Context, reqs []cdig.CDig) ([]*diffOp, error) {
+func (s *server) buildAndStartPrefetch(ctx context.Context, reqs []cdig.CDig) ([]reqOp, error) {
 	s.diffLock.Lock()
 	defer s.diffLock.Unlock()
 
@@ -176,8 +177,8 @@ func (s *server) buildAndStartPrefetch(ctx context.Context, reqs []cdig.CDig) ([
 	defer tx.Rollback()
 	cb := tx.Bucket(chunkBucket)
 
-	var allOps []*diffOp
-	have := make(map[*diffOp]struct{})
+	var allOps []reqOp
+	have := make(map[reqOp]struct{})
 
 	for _, req := range reqs {
 		loc := cb.Get(req[:])
@@ -211,7 +212,7 @@ func (s *server) buildAndStartPrefetch(ctx context.Context, reqs []cdig.CDig) ([
 			allOps = append(allOps, op)
 		}
 		for _, startOp := range set.ops {
-			go s.startOp(ctx, startOp)
+			go startOp.start(ctx, s)
 		}
 	}
 
@@ -297,71 +298,18 @@ func (s *server) readSingle(ctx context.Context, loc erofs.SlabLoc, digest cdig.
 func (s *server) buildSingleOp(
 	loc erofs.SlabLoc,
 	targetDigest cdig.CDig,
-) *diffOp {
-	op := newDiffOp(opTypeSingle)
-	op.singleLoc = loc
-	op.singleDigest = targetDigest
+) *singleOp {
+	op := &singleOp{
+		done:   make(chan struct{}),
+		loc:    loc,
+		digest: targetDigest,
+	}
 	s.diffMap[loc] = op
 	return op
 }
 
-// runs in separate goroutine
-func (s *server) startOp(ctx context.Context, op *diffOp) {
-	defer func() {
-		if r := recover(); r != nil {
-			op.err = fmt.Errorf("panic in diff op: %v", r)
-		}
-
-		// clear references to this op from the map
-		s.diffLock.Lock()
-		switch op.tp {
-		case opTypeDiff:
-			for _, i := range op.reqInfo {
-				if s.diffMap[i.loc] == op {
-					delete(s.diffMap, i.loc)
-				}
-			}
-		case opTypeSingle:
-			if s.diffMap[op.singleLoc] == op {
-				delete(s.diffMap, op.singleLoc)
-			}
-		}
-		// update recentRead timer
-		if op.recentRead != nil {
-			op.recentRead.when = time.Now()
-		}
-		s.diffLock.Unlock()
-
-		// wake up waiters
-		close(op.done)
-	}()
-
-	switch op.tp {
-	case opTypeDiff:
-		if !op.hasBase() {
-			s.stats.batchReqs.Add(1)
-		} else {
-			s.stats.diffReqs.Add(1)
-		}
-		op.err = s.doDiffOp(ctx, op)
-		if op.err != nil {
-			if !op.hasBase() {
-				s.stats.batchErrs.Add(1)
-			} else {
-				s.stats.diffErrs.Add(1)
-			}
-		}
-	case opTypeSingle:
-		s.stats.singleReqs.Add(1)
-		op.err = s.readSingle(ctx, op.singleLoc, op.singleDigest)
-		if op.err != nil {
-			s.stats.singleErrs.Add(1)
-		}
-	}
-}
-
 func (s *server) doDiffOp(ctx context.Context, op *diffOp) error {
-	diff, err := s.getChunkDiff(ctx, op.baseDigests, op.reqDigests, op.diffRecompress)
+	diff, err := s.getChunkDiff(ctx, op.baseDigests, op.reqDigests, op.recompress)
 	if err != nil {
 		return fmt.Errorf("getChunkDiff error: %w", err)
 	}
@@ -380,7 +328,7 @@ func (s *server) doDiffOp(ctx context.Context, op *diffOp) error {
 		}
 
 		// decompress if needed
-		baseData, err = doDiffDecompress(ctx, baseData, op.diffRecompress)
+		baseData, err = doDiffDecompress(ctx, baseData, op.recompress)
 		if err != nil {
 			return fmt.Errorf("decompress error: %w", err)
 		}
@@ -399,7 +347,7 @@ func (s *server) doDiffOp(ctx context.Context, op *diffOp) error {
 	}
 
 	var statsBytes []byte
-	if len(op.diffRecompress) > 0 {
+	if len(op.recompress) > 0 {
 		// reqData contains the concatenation of _un_compressed data plus stats.
 		// we need to recompress the data but not the stats, so strip off the stats.
 		// note: this only works since stats are only ints. if we have nested objects or
@@ -409,7 +357,7 @@ func (s *server) doDiffOp(ctx context.Context, op *diffOp) error {
 			return fmt.Errorf("diff data has bad stats")
 		}
 		statsBytes = reqData[statsStart:]
-		reqData, err = doDiffRecompress(ctx, reqData[:statsStart], op.diffRecompress)
+		reqData, err = doDiffRecompress(ctx, reqData[:statsStart], op.recompress)
 		if err != nil {
 			return fmt.Errorf("recompress error: %w", err)
 		}
@@ -425,7 +373,7 @@ func (s *server) doDiffOp(ctx context.Context, op *diffOp) error {
 		// slice with cap to force copy if less than block size
 		b := reqData[p : p+i.size : p+i.size]
 		if err := s.gotNewChunk(i.loc, op.reqDigests[idx], b); err != nil {
-			if len(op.diffRecompress) > 0 && strings.Contains(err.Error(), "digest mismatch") {
+			if len(op.recompress) > 0 && strings.Contains(err.Error(), "digest mismatch") {
 				// we didn't recompress correctly, fall back to single
 				// TODO: be able to try with different parameter variants
 				return fmt.Errorf("recompress mismatch")
@@ -679,13 +627,82 @@ func (s *server) pruneRecentReads() {
 	}
 }
 
+// single op
+
+// runs in separate goroutine
+func (op *singleOp) start(ctx context.Context, s *server) {
+	defer func() {
+		if r := recover(); r != nil {
+			op.err = fmt.Errorf("panic in single op: %v", r)
+		}
+		if op.err != nil {
+			s.stats.singleErrs.Add(1)
+		}
+
+		// clear references to this op from the map
+		s.diffLock.Lock()
+		if s.diffMap[op.loc] == reqOp(op) {
+			delete(s.diffMap, op.loc)
+		}
+		s.diffLock.Unlock()
+
+		// wake up waiters
+		close(op.done)
+	}()
+
+	s.stats.singleReqs.Add(1)
+	op.err = s.readSingle(ctx, op.loc, op.digest)
+}
+
+func (op *singleOp) wait() error {
+	<-op.done
+	return op.err
+}
+
 // diff op
 
-func newDiffOp(tp opType) *diffOp {
-	return &diffOp{
-		tp:   tp,
-		done: make(chan struct{}),
+// runs in separate goroutine
+func (op *diffOp) start(ctx context.Context, s *server) {
+	defer func() {
+		if r := recover(); r != nil {
+			op.err = fmt.Errorf("panic in diff op: %v", r)
+		}
+		if op.err != nil {
+			if !op.hasBase() {
+				s.stats.batchErrs.Add(1)
+			} else {
+				s.stats.diffErrs.Add(1)
+			}
+		}
+
+		// clear references to this op from the map
+		s.diffLock.Lock()
+		for _, i := range op.reqInfo {
+			if s.diffMap[i.loc] == reqOp(op) {
+				delete(s.diffMap, i.loc)
+			}
+		}
+		// update recentRead timer
+		if op.recentRead != nil {
+			op.recentRead.when = time.Now()
+		}
+		s.diffLock.Unlock()
+
+		// wake up waiters
+		close(op.done)
+	}()
+
+	if !op.hasBase() {
+		s.stats.batchReqs.Add(1)
+	} else {
+		s.stats.diffReqs.Add(1)
 	}
+	op.err = s.doDiffOp(ctx, op)
+}
+
+func (op *diffOp) wait() error {
+	<-op.done
+	return op.err
 }
 
 func (op *diffOp) hasBase() bool {
@@ -703,7 +720,7 @@ func (op *diffOp) resetDiff() {
 	op.reqInfo = nil
 	op.baseTotalSize = 0
 	op.reqTotalSize = 0
-	op.diffRecompress = nil
+	op.recompress = nil
 }
 
 func (op *diffOp) addBase(digest cdig.CDig, size int64, loc erofs.SlabLoc) {
@@ -753,7 +770,7 @@ func (set *opSet) markUsing(dig cdig.CDig) {
 }
 
 func (set *opSet) newOp() {
-	op := newDiffOp(opTypeDiff)
+	op := &diffOp{done: make(chan struct{})}
 	if set.op != nil { // FIXME: hmmm...
 		op.recentRead = set.op.recentRead
 	}
@@ -794,7 +811,7 @@ func (set *opSet) buildDiff(
 			set.buildExtendDiff(tx, targetDigest, res)
 
 			// can't extend recompress or full
-			if set.sourcesLeft == 0 || len(set.op.diffRecompress) > 0 || set.fullBase() && set.fullReq() {
+			if set.sourcesLeft == 0 || len(set.op.recompress) > 0 || set.fullBase() && set.fullReq() {
 				break
 			}
 		}
@@ -982,7 +999,7 @@ func (set *opSet) buildRecompress(
 			set.s.diffMap[i.loc] = set.op
 		}
 	}
-	set.op.diffRecompress = args
+	set.op.recompress = args
 	return nil
 }
 
