@@ -58,27 +58,27 @@ func TestDigestIterator(t *testing.T) {
 	r.Equal(fb(d1), i.digest())
 	r.EqualValues(common.ChunkShift.Size(), i.size())
 
-	r.True(i.next(1))
+	r.NotNil(i.next(1))
 	r.Equal(testEntries[2], i.ent())
 	r.Equal(fb(d2), i.digest())
 	r.EqualValues(100, i.size())
 
-	r.True(i.next(1))
+	r.NotNil(i.next(1))
 	r.Equal(testEntries[4], i.ent())
 	r.Equal(fb(d3), i.digest())
 	r.EqualValues(500, i.size())
 
-	r.True(i.next(1))
+	r.NotNil(i.next(1))
 	r.Equal(testEntries[6], i.ent())
 	r.Equal(fb(d3), i.digest())
 	r.EqualValues(common.ChunkShift.Size(), i.size())
 
-	r.True(i.next(2))
+	r.NotNil(i.next(2))
 	r.Equal(testEntries[6], i.ent())
 	r.Equal(fb(d1), i.digest())
 	r.EqualValues(300, i.size())
 
-	r.False(i.next(1))
+	r.Nil(i.next(1))
 }
 
 func TestDigestIterator_FindFile(t *testing.T) {
@@ -99,7 +99,7 @@ func TestDigestIterator_ToFileStart(t *testing.T) {
 	r := require.New(t)
 	i := newDigestIterator(testEntries)
 
-	r.True(i.next(4))
+	r.NotNil(i.next(4))
 	r.Equal(testEntries[6], i.ent())
 	r.Equal(fb(d2), i.digest())
 	r.EqualValues(common.ChunkShift.Size(), i.size())

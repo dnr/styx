@@ -5,7 +5,6 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/dnr/styx/common"
 	"github.com/dnr/styx/common/cdig"
 	"github.com/nix-community/go-nix/pkg/nixbase32"
 	"github.com/nix-community/go-nix/pkg/storepath"
@@ -19,8 +18,6 @@ func (s *server) handlePrefetchReq(ctx context.Context, r *PrefetchReq) (*Status
 
 	haveReq := make(map[cdig.CDig]struct{})
 	var reqs []cdig.CDig
-	var reqSizes []int64
-	var cres catalogResult
 
 	err := s.db.View(func(tx *bbolt.Tx) error {
 		var sphStr string
@@ -53,13 +50,11 @@ func (s *server) handlePrefetchReq(ctx context.Context, r *PrefetchReq) (*Status
 		for _, e := range ents {
 			if len(e.Digests) > 0 && underDir(e.Path, p) {
 				digests := cdig.FromSliceAlias(e.Digests)
-				for digestIdx, d := range digests {
+				for _, d := range digests {
 					// just do a simple de-dup here, don't check presence
 					if _, ok := haveReq[d]; !ok {
 						haveReq[d] = struct{}{}
 						reqs = append(reqs, d)
-						size := common.ChunkShift.FileChunkSize(e.Size, digestIdx == len(digests)-1)
-						reqSizes = append(reqSizes, size)
 					}
 				}
 			}
@@ -67,19 +62,10 @@ func (s *server) handlePrefetchReq(ctx context.Context, r *PrefetchReq) (*Status
 		if len(reqs) == 0 {
 			return nil
 		}
-		// look this up while we have the tx
-		cres, err = s.catalogFindBaseFromHashAndName(tx, sph, storePath)
-		if err != nil {
-			cres = catalogResult{
-				reqName:  name,
-				baseName: noBaseName,
-				reqHash:  sph,
-			}
-		}
 		return nil
 	})
 	if err != nil || len(reqs) == 0 {
 		return nil, err
 	}
-	return nil, s.requestPrefetch(ctx, reqs, reqSizes, cres)
+	return nil, s.requestPrefetch(ctx, reqs)
 }

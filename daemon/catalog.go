@@ -23,11 +23,14 @@ type (
 	catalogResult struct {
 		reqName  string
 		baseName string
-		matchLen int
 		baseHash Sph
 		reqHash  Sph
 	}
 )
+
+func (res *catalogResult) usingBase() bool {
+	return res.baseName != ""
+}
 
 func (s Sph) String() string {
 	return nixbase32.EncodeToString(s[:])
@@ -120,7 +123,6 @@ func (s *server) catalogFindBaseFromHashAndName(tx *bbolt.Tx, reqHash Sph, reqNa
 	return catalogResult{
 		reqName:  reqName,
 		baseName: bestname,
-		matchLen: bestmatch,
 		baseHash: besthash,
 		reqHash:  reqHash,
 	}, nil

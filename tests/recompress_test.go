@@ -17,8 +17,8 @@ func TestRecompress(t *testing.T) {
 	man1 := filepath.Join(mp1, "share", "man", "man1", "bash.1.gz")
 	require.Equal(t, "0s9d681f8smlsdvbp6lin9qrbsp3hz3dnf4pdhwi883v8l1486r7", tb.nixHash(man1))
 	d1 := tb.debug()
-	require.NotZero(t, d1.Stats.SingleReqs)
-	require.Zero(t, d1.Stats.BatchReqs+d1.Stats.DiffReqs)
+	require.NotZero(t, d1.Stats.BatchReqs)
+	require.Zero(t, d1.Stats.SingleReqs+d1.Stats.DiffReqs)
 
 	mp2 := tb.mount("8vyj9c6g424mz0v3kvzkskhvzhwj6288-bash-interactive-5.2-p15-man")
 	man2 := filepath.Join(mp2, "share", "man", "man1", "bash.1.gz")
