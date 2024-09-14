@@ -20,6 +20,7 @@ type (
 		diffBytes         atomic.Int64 // with-base diff bytes received (compressed)
 		diffErrs          atomic.Int64 // with-base diff request error count
 		recompressReqs    atomic.Int64 // reqs with recompression
+		extraReqs         atomic.Int64 // extra read-ahead reqs (beyond 1 per read)
 	}
 
 	Stats struct {
@@ -39,6 +40,7 @@ type (
 		DiffBytes         int64 // with-base diff bytes received (compressed)
 		DiffErrs          int64 // with-base diff request error count
 		RecompressReqs    int64 // reqs with recompression
+		ExtraReqs         int64 // extra read-ahead reqs (beyond 1 per read)
 	}
 )
 
@@ -60,5 +62,6 @@ func (s *daemonStats) export() Stats {
 		DiffBytes:         s.diffBytes.Load(),
 		DiffErrs:          s.diffErrs.Load(),
 		RecompressReqs:    s.recompressReqs.Load(),
+		ExtraReqs:         s.extraReqs.Load(),
 	}
 }

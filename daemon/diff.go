@@ -29,10 +29,11 @@ import (
 const (
 	recentReadExpiry = 30 * time.Second
 
-	initOpSize = 16
-	maxOpSize  = 128 // must be ≤ manifester.ChunkDiffMaxDigests
-	maxDiffOps = 8
-	maxSources = 3
+	// only public so they can be referenced by tests
+	InitOpSize = 16
+	MaxOpSize  = 128 // must be ≤ manifester.ChunkDiffMaxDigests
+	MaxDiffOps = 8
+	MaxSources = 3
 )
 
 type (
@@ -65,7 +66,7 @@ type (
 
 		// shared with all ops in opSet.
 		// the contents of the recentReads are under diffLock.
-		rrs *[maxSources]*recentRead
+		rrs *[MaxSources]*recentRead
 	}
 
 	// context for building set of diff ops
@@ -76,7 +77,7 @@ type (
 		ops   []*diffOp
 		using map[cdig.CDig]struct{}
 		// rrs is indirect so that diffOps can point to it without keeping opSet live
-		rrs         *[maxSources]*recentRead
+		rrs         *[MaxSources]*recentRead
 		limitShift  int
 		maxOpSize   int
 		maxOps      int
@@ -128,6 +129,9 @@ func (s *server) requestChunk(ctx context.Context, loc erofs.SlabLoc, digest cdi
 			// note that op is left as diffMap[loc] to wait on
 			for _, startOp := range set.ops {
 				go s.startDiffOp(ctx, startOp)
+			}
+			if extra := len(set.ops) - 1; extra > 0 {
+				s.stats.extraReqs.Add(int64(extra))
 			}
 		}
 	}
@@ -206,7 +210,7 @@ func (s *server) buildAndStartPrefetch(ctx context.Context, reqs []cdig.CDig) ([
 			return nil, errors.New("missing sph references")
 		}
 		set := newOpSet(s)
-		set.maxOpSize = maxOpSize // use larger ops immediately
+		set.maxOpSize = MaxOpSize // use larger ops immediately
 		err := set.buildDiff(tx, req, sphps, false)
 		if err != nil {
 			return nil, err
@@ -218,6 +222,9 @@ func (s *server) buildAndStartPrefetch(ctx context.Context, reqs []cdig.CDig) ([
 		}
 		for _, startOp := range set.ops {
 			go s.startDiffOp(ctx, startOp)
+		}
+		if extra := len(set.ops) - 1; extra > 0 {
+			s.stats.extraReqs.Add(int64(extra))
 		}
 	}
 
@@ -754,10 +761,10 @@ func newOpSet(s *server) *opSet {
 	set := &opSet{
 		s:           s,
 		using:       make(map[cdig.CDig]struct{}),
-		rrs:         new([maxSources]*recentRead),
-		maxOpSize:   initOpSize,
+		rrs:         new([MaxSources]*recentRead),
+		maxOpSize:   InitOpSize,
 		maxOps:      1,
-		sourcesLeft: maxSources,
+		sourcesLeft: MaxSources,
 	}
 	set.newOp()
 	return set
@@ -766,16 +773,16 @@ func newOpSet(s *server) *opSet {
 func (set *opSet) shiftMax(limitShift int) {
 	for set.limitShift < limitShift {
 		set.limitShift++
-		if set.maxOpSize < maxOpSize {
+		if set.maxOpSize < MaxOpSize {
 			set.maxOpSize *= 2
-		} else if set.maxOps < maxDiffOps {
+		} else if set.maxOps < MaxDiffOps {
 			set.maxOps *= 2
 		}
 	}
 }
 
 func (set *opSet) addRecentRead(rr *recentRead) {
-	for i := 0; i < maxSources; i++ {
+	for i := 0; i < MaxSources; i++ {
 		if set.rrs[i] == rr {
 			return
 		} else if set.rrs[i] == nil {

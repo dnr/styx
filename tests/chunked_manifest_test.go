@@ -48,10 +48,10 @@ func TestChunkedManifest(t *testing.T) {
 	require.Equal(t, "0v60mg7qj7mfd27s1nnldb0041ln08xs1bw7zn1mmjiaq02myzlh", tb.nixHash(mp4))
 }
 
-// func TestNoOverflowBeforeSuper(t *testing.T) {
-// 	tb := newTestBase(t)
-// 	tb.startManifester()
-// 	tb.startDaemon()
-// 	mp1 := tb.mount("kbi7qf642gsxiv51yqank8bnx39w3crd-calf-0.90.3")
-// 	require.Equal(t, "1bhyfn2k8w41cx7ddarmjmwscas0946n6gw5mralx9lg0vbbcx6d", tb.nixHash(mp1))
-// }
+func TestNoOverflowBeforeSuper(t *testing.T) {
+	tb := newTestBase(t)
+	tb.startManifester()
+	tb.startDaemon()
+	mp1 := tb.mount("kbi7qf642gsxiv51yqank8bnx39w3crd-calf-0.90.3")
+	require.Equal(t, "1bhyfn2k8w41cx7ddarmjmwscas0946n6gw5mralx9lg0vbbcx6d", tb.nixHash(mp1))
+}
