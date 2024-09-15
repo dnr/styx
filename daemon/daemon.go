@@ -789,22 +789,28 @@ func (s *server) Start() error {
 	}
 	go s.pruneRecentReads()
 	go s.cachefilesServer()
+	// TODO: get number of slabs from db and mount them all
+	if err := s.mountSlabImage(0); err != nil {
+		log.Print(err)
+		// don't exit here, we can operate, just without diffing
+	}
 	log.Println("cachefiles server ready, using", s.cfg.CachePath)
 	systemd.Ready()
 	s.restoreMounts()
 	return nil
 }
 
+// this is only for tests! the real daemon doesn't clean up, since we can't restore the cache
+// state, it dies and lets systemd keep the devnode open.
 func (s *server) Stop() {
 	log.Print("stopping daemon...")
 	close(s.shutdownChan) // stops the socket server
 
 	s.closeAllFds() // TODO: do this before or after closing the devnode?
 
-	fd := s.devnode.Load()
-	s.devnode.Store(0)
-	unix.Close(int(fd))
+	fd := s.devnode.Swap(0)
 	s.shutdownWait.Wait()
+	unix.Close(int(fd))
 
 	s.db.Close()
 
@@ -934,7 +940,6 @@ func (s *server) handleOpen(msgId, objectId, fd, flags uint32, volume, cookie []
 
 	var cacheSize int64
 	fsid := string(cookie)
-	mountSlabImage := -1
 
 	defer func() {
 		if r := recover(); r != nil {
@@ -954,8 +959,6 @@ func (s *server) handleOpen(msgId, objectId, fd, flags uint32, volume, cookie []
 		}
 		if cacheSize < 0 {
 			unix.Close(int(fd))
-		} else if mountSlabImage >= 0 {
-			go s.mountSlabImage(mountSlabImage)
 		}
 	}()
 
@@ -971,7 +974,6 @@ func (s *server) handleOpen(msgId, objectId, fd, flags uint32, volume, cookie []
 			return err
 		}
 		cacheSize, retErr = s.handleOpenSlab(msgId, objectId, fd, flags, common.TruncU16(slabId))
-		mountSlabImage = slabId
 		return
 	} else if idx := strings.TrimPrefix(fsid, slabImagePrefix); idx != fsid {
 		log.Println("open slab image", idx, "as", objectId)
@@ -1199,47 +1201,55 @@ func (s *server) handleReadSlab(state *openFileState, ln, off uint64) (retErr er
 	return s.requestChunk(ctx, erofs.SlabLoc{slabId, addr}, digest, sphps)
 }
 
-func (s *server) mountSlabImage(slabId int) {
+func (s *server) mountSlabImage(slabId int) error {
 	fsid := slabImagePrefix + strconv.Itoa(slabId)
 	mountPoint := filepath.Join(s.cfg.CachePath, fsid)
+	logMsg := "opened slab image file for"
 	if mounted, err := isErofsMount(mountPoint); err != nil || !mounted {
-		if err := os.MkdirAll(mountPoint, 0755); err != nil {
-			log.Println("error mkdir on slab image mountpoint", mountPoint, err)
+		if err = os.MkdirAll(mountPoint, 0755); err != nil {
+			return fmt.Errorf("error mkdir on slab image mountpoint %s: %w", mountPoint, err)
 		}
 		opts := fmt.Sprintf("domain_id=%s,fsid=%s", s.cfg.CacheDomain, fsid)
-		err := unix.Mount("none", mountPoint, "erofs", 0, opts)
-		if err != nil {
-			log.Println("error mounting slab image", fsid, "on", mountPoint, err)
-			return
+		if err = unix.Mount("none", mountPoint, "erofs", 0, opts); err != nil {
+			return fmt.Errorf("error mounting slab image %s on %s: %w", fsid, mountPoint, err)
 		}
-		log.Println("mounted slab image", fsid, "on", mountPoint)
+		// unmount and mount again to force slab to be flushed to disk.
+		// if anything else is mounted already this won't work, though it won't hurt either.
+		// in that case, we assume this happened the first time.
+		if err = unix.Unmount(mountPoint, 0); err != nil {
+			return fmt.Errorf("error unmounting slab image %s on %s: %w", fsid, mountPoint, err)
+		}
+		if err = unix.Mount("none", mountPoint, "erofs", 0, opts); err != nil {
+			return fmt.Errorf("error mounting slab image %s on %s: %w", fsid, mountPoint, err)
+		}
+		logMsg = "mounted and " + logMsg
 	}
 	slabFile := filepath.Join(mountPoint, "slab")
 	slabFd, err := unix.Open(slabFile, unix.O_RDONLY, 0)
 	if err != nil {
-		log.Println("error opening slab image file", slabFile, err)
 		_ = unix.Unmount(mountPoint, 0)
-		return
+		return fmt.Errorf("error opening slab image file %s: %w", slabFile, err)
 	}
 	// disable readahead so we don't get requests for parts we haven't written
 	if err = unix.Fadvise(slabFd, 0, 0, unix.FADV_RANDOM); err != nil {
-		log.Println("error fadvise", err)
 		_ = unix.Close(slabFd)
 		_ = unix.Unmount(mountPoint, 0)
-		return
+		return fmt.Errorf("error in fadvise on slab image file: %w", err)
 	}
 
 	s.stateLock.Lock()
 	if state := s.stateBySlab[common.TruncU16(slabId)]; state == nil {
 		s.stateLock.Unlock()
-		log.Print("state not found in mountSlabImage")
 		_ = unix.Close(slabFd)
 		_ = unix.Unmount(mountPoint, 0)
-		return
+		return fmt.Errorf("state not found in mountSlabImage")
 	} else {
 		state.readFd = common.TruncU32(slabFd)
 		s.stateLock.Unlock()
 	}
+
+	log.Println(logMsg, fsid, "on", mountPoint)
+	return nil
 }
 
 // slab manager
