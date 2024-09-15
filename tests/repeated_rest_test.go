@@ -12,9 +12,7 @@ import (
 
 func TestRepeatedRead(t *testing.T) {
 	tb := newTestBase(t)
-
-	tb.startManifester()
-	tb.startDaemon()
+	tb.startAll()
 
 	mp1 := tb.mount("d30xd6x3669hg2a6xwjb1r3nb9a99sw2-openblas-0.3.27")
 	bigFile := filepath.Join(mp1, "lib/libopenblasp-r0.3.27.so")

@@ -9,9 +9,7 @@ import (
 
 func TestRecompress(t *testing.T) {
 	tb := newTestBase(t)
-
-	tb.startManifester()
-	tb.startDaemon()
+	tb.startAll()
 
 	mp1 := tb.mount("cd1nbildgzzfryjg82njnn36i4ynyf8h-bash-interactive-5.1-p16-man")
 	man1 := filepath.Join(mp1, "share", "man", "man1", "bash.1.gz")

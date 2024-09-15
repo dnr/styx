@@ -8,9 +8,7 @@ import (
 
 func TestBare(t *testing.T) {
 	tb := newTestBase(t)
-
-	tb.startManifester()
-	tb.startDaemon()
+	tb.startAll()
 
 	// bare file package
 	mp1 := tb.mount("3a7xq2qhxw2r7naqmc53akmx7yvz0mkf-less-is-more.patch")

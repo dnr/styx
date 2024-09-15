@@ -1,6 +1,7 @@
 package tests
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"math/rand"
@@ -18,6 +19,7 @@ import (
 	"github.com/dnr/styx/common"
 	"github.com/dnr/styx/common/cdig"
 	"github.com/dnr/styx/common/client"
+	"github.com/dnr/styx/common/systemd"
 	"github.com/dnr/styx/daemon"
 	"github.com/dnr/styx/manifester"
 	"github.com/dnr/styx/pb"
@@ -48,19 +50,24 @@ type (
 
 		tdserver   *http.Server
 		manifester service
-		daemon     service
+		daemon     *daemon.Server
+		fdstore    map[string]int
 	}
 )
 
 var (
 	TestdataDir = "/must-set-with-ldflags"
+
+	_ systemd.FdStore = (*testBase)(nil)
 )
 
 func newTestBase(t *testing.T) *testBase {
 	log.SetFlags(log.Lmicroseconds | log.Lshortfile)
 
-	// check uid
-	require.Equal(t, 0, os.Getuid(), "tests must be run as root")
+	// have to be root, skip otherwise so go test ./... works
+	if os.Getuid() != 0 {
+		t.Skip("tests must be run as root")
+	}
 
 	// check nothing else has devnode
 	var exitErr *exec.ExitError
@@ -88,6 +95,7 @@ func newTestBase(t *testing.T) *testBase {
 		cachedir:     cachedir,
 		upstreamHost: fmt.Sprintf("localhost:%d", tdport),
 		upstreamUrl:  fmt.Sprintf("http://localhost:%d/", tdport),
+		fdstore:      make(map[string]int),
 	}
 	t.Cleanup(tb.cleanup)
 	return tb
@@ -104,7 +112,7 @@ func (tb *testBase) cleanup() {
 	}
 	if tb.daemon != nil {
 		tb.t.Log("stopping daemon")
-		tb.daemon.Stop()
+		tb.daemon.Stop(true)
 	}
 }
 
@@ -115,6 +123,12 @@ func (tb *testBase) startTestDataServer() {
 		Handler: http.FileServer(http.Dir(TestdataDir)),
 	}
 	go tb.tdserver.ListenAndServe()
+}
+
+func (tb *testBase) startAll() {
+	tb.startManifester()
+	tb.startDaemon()
+	tb.initDaemon()
 }
 
 func (tb *testBase) startManifester() {
@@ -167,15 +181,14 @@ func (tb *testBase) startDaemon() {
 		CacheDomain:     tb.tag,
 		ErofsBlockShift: blockShift,
 		// SmallFileCutoff: 224,
-		Workers:         10,
-		ReadaheadChunks: 8,
-		IsTesting:       true,
+		Workers:   10,
+		IsTesting: true,
+		FdStore:   tb,
 	})
 	err := d.Start()
 	require.NoError(tb.t, err)
 	tb.t.Log("daemon running in", tb.cachedir)
 	tb.daemon = d
-	tb.initDaemon()
 }
 
 func (tb *testBase) initDaemon() {
@@ -274,3 +287,14 @@ func (tb *testBase) dropCaches() {
 	unix.Write(fd, []byte("3"))
 	unix.Close(fd)
 }
+
+// implement systemd.FdStore
+func (tb *testBase) Ready() {}
+func (tb *testBase) GetFd(name string) (int, error) {
+	if fd, ok := tb.fdstore[name]; ok {
+		return fd, nil
+	}
+	return 0, errors.New("missing")
+}
+func (tb *testBase) SaveFd(name string, fd int) { tb.fdstore[name] = fd }
+func (tb *testBase) RemoveFd(name string)       { delete(tb.fdstore, name) }

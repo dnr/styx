@@ -8,9 +8,7 @@ import (
 
 func TestDiffChunks(t *testing.T) {
 	tb := newTestBase(t)
-
-	tb.startManifester()
-	tb.startDaemon()
+	tb.startAll()
 
 	// these are very similar 144K packages so should diff well
 	mp1 := tb.mount("qa22bifihaxyvn6q2a6w9m0nklqrk9wh-opusfile-0.12")

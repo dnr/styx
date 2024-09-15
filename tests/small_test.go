@@ -11,9 +11,7 @@ import (
 
 func TestSmallImage(t *testing.T) {
 	tb := newTestBase(t)
-
-	tb.startManifester()
-	tb.startDaemon()
+	tb.startAll()
 
 	// 144K package
 	mp1 := tb.mount("qa22bifihaxyvn6q2a6w9m0nklqrk9wh-opusfile-0.12")

@@ -13,7 +13,18 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-func GetFd(name string) (int, error) {
+type (
+	FdStore interface {
+		Ready()
+		GetFd(name string) (int, error)
+		SaveFd(name string, fd int)
+		RemoveFd(name string)
+	}
+
+	SystemdFdStore struct{}
+)
+
+func (SystemdFdStore) GetFd(name string) (int, error) {
 	pid, err := strconv.Atoi(os.Getenv("LISTEN_PID"))
 	if err != nil || pid != os.Getpid() {
 		return 0, errors.New("no fds passed")
@@ -33,7 +44,7 @@ func GetFd(name string) (int, error) {
 	return 0, errors.New("name not found")
 }
 
-func SaveFd(name string, fd int) {
+func (SystemdFdStore) SaveFd(name string, fd int) {
 	addr := notifyAddr()
 	if addr == nil {
 		return
@@ -54,11 +65,11 @@ func SaveFd(name string, fd int) {
 	}
 }
 
-func RemoveFd(name string) {
+func (SystemdFdStore) RemoveFd(name string) {
 	send(fmt.Sprintf("FDSTOREREMOVE=1\nFDNAME=%s", name))
 }
 
-func Ready() {
+func (SystemdFdStore) Ready() {
 	send("READY=1")
 }
 

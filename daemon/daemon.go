@@ -130,10 +130,10 @@ type (
 		ErofsBlockShift int
 		// SmallFileCutoff int
 
-		Workers         int
-		ReadaheadChunks int
+		Workers int
 
 		IsTesting bool
+		FdStore   systemd.FdStore
 	}
 )
 
@@ -299,10 +299,10 @@ func (s *Server) openDevNode() (int, error) {
 }
 
 func (s *Server) setupDevNode() error {
-	fd, err := systemd.GetFd(savedFdName)
+	fd, err := s.cfg.FdStore.GetFd(savedFdName)
 	if err == nil {
 		if _, err = unix.Write(fd, []byte("restore")); err != nil {
-			systemd.RemoveFd(savedFdName)
+			s.cfg.FdStore.RemoveFd(savedFdName)
 			unix.Close(fd)
 			return err
 		}
@@ -316,7 +316,7 @@ func (s *Server) setupDevNode() error {
 		return err
 	}
 	s.devnode.Store(int32(fd))
-	systemd.SaveFd(savedFdName, fd)
+	s.cfg.FdStore.SaveFd(savedFdName, fd)
 	log.Println("set up cachefiles device")
 	return nil
 }
@@ -732,14 +732,14 @@ func (s *Server) Start() error {
 		// don't exit here, we can operate, just without diffing
 	}
 	log.Println("cachefiles server ready, using", s.cfg.CachePath)
-	systemd.Ready()
+	s.cfg.FdStore.Ready()
 	s.restoreMounts()
 	return nil
 }
 
 // this is only for tests! the real daemon doesn't clean up, since we can't restore the cache
 // state, it dies and lets systemd keep the devnode open.
-func (s *Server) Stop() {
+func (s *Server) Stop(closeDevnode bool) {
 	log.Print("stopping daemon...")
 	close(s.shutdownChan) // stops the socket server
 
@@ -747,7 +747,9 @@ func (s *Server) Stop() {
 
 	fd := s.devnode.Swap(0)
 	s.shutdownWait.Wait()
-	unix.Close(int(fd))
+	if closeDevnode {
+		unix.Close(int(fd))
+	}
 
 	s.db.Close()
 

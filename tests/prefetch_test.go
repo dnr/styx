@@ -9,8 +9,7 @@ import (
 
 func TestPrefetch(t *testing.T) {
 	tb := newTestBase(t)
-	tb.startManifester()
-	tb.startDaemon()
+	tb.startAll()
 
 	mp1 := tb.mount("qa22bifihaxyvn6q2a6w9m0nklqrk9wh-opusfile-0.12")
 	sph := "qa22bifihaxyvn6q2a6w9m0nklqrk9wh"
@@ -69,8 +68,7 @@ func TestPrefetch(t *testing.T) {
 
 func TestPrefetchLarge(t *testing.T) {
 	tb := newTestBase(t)
-	tb.startManifester()
-	tb.startDaemon()
+	tb.startAll()
 
 	mp1 := tb.mount("xpq4yhadyhazkcsggmqd7rsgvxb3kjy4-gnugrep-3.11")
 	sph := "xpq4yhadyhazkcsggmqd7rsgvxb3kjy4"
