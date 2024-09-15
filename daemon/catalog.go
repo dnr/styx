@@ -47,7 +47,7 @@ func SphPrefixFromBytes(b []byte) (sphp SphPrefix) {
 }
 
 // sph prefix -> rest of name
-func (s *server) catalogFindName(tx *bbolt.Tx, reqHashPrefix SphPrefix) (Sph, string) {
+func (s *Server) catalogFindName(tx *bbolt.Tx, reqHashPrefix SphPrefix) (Sph, string) {
 	cur := tx.Bucket(catalogRBucket).Cursor()
 	// Note that Seek on this prefix will find the first key that matches it.
 	// It may be the "wrong" one due to a collision since we use only half the bytes.
@@ -57,12 +57,12 @@ func (s *server) catalogFindName(tx *bbolt.Tx, reqHashPrefix SphPrefix) (Sph, st
 }
 
 // given a hash, find another hash that we think is the most similar candidate
-func (s *server) catalogFindBase(tx *bbolt.Tx, reqHashPrefix SphPrefix) (catalogResult, error) {
+func (s *Server) catalogFindBase(tx *bbolt.Tx, reqHashPrefix SphPrefix) (catalogResult, error) {
 	reqHash, reqName := s.catalogFindName(tx, reqHashPrefix)
 	return s.catalogFindBaseFromHashAndName(tx, reqHash, reqName)
 }
 
-func (s *server) catalogFindBaseFromHashAndName(tx *bbolt.Tx, reqHash Sph, reqName string) (catalogResult, error) {
+func (s *Server) catalogFindBaseFromHashAndName(tx *bbolt.Tx, reqHash Sph, reqName string) (catalogResult, error) {
 	if len(reqName) == 0 {
 		return catalogResult{}, errors.New("store path hash not found")
 	} else if len(reqName) < 3 {

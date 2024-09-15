@@ -160,7 +160,7 @@ func (tb *testBase) startDaemon() {
 		tb.t.Error("start manifester before daemon")
 	}
 
-	d := daemon.CachefilesServer(daemon.Config{
+	d := daemon.NewServer(daemon.Config{
 		DevPath:         devnode,
 		CachePath:       tb.cachedir,
 		CacheTag:        tb.tag,

@@ -58,7 +58,7 @@ const (
 )
 
 type (
-	server struct {
+	Server struct {
 		cfg        *Config
 		post       atomic.Pointer[postinit]
 		blockShift common.BlkShift
@@ -137,13 +137,13 @@ type (
 	}
 )
 
-var _ erofs.SlabManager = (*server)(nil)
+var _ erofs.SlabManager = (*Server)(nil)
 var errAlreadyMounted = errors.New("already mounted")
 
 // init stuff
 
-func CachefilesServer(cfg Config) *server {
-	return &server{
+func NewServer(cfg Config) *Server {
+	return &Server{
 		cfg:          &cfg,
 		blockShift:   common.BlkShift(cfg.ErofsBlockShift),
 		msgPool:      &sync.Pool{New: func() any { return make([]byte, CACHEFILES_MSG_MAX_SIZE) }},
@@ -161,11 +161,11 @@ func CachefilesServer(cfg Config) *server {
 	}
 }
 
-func (s *server) p() *postinit {
+func (s *Server) p() *postinit {
 	return s.post.Load()
 }
 
-func (s *server) postInit(params *pb.DaemonParams, keys []signature.PublicKey) error {
+func (s *Server) postInit(params *pb.DaemonParams, keys []signature.PublicKey) error {
 	post := &postinit{
 		keys:   keys,
 		csread: manifester.NewChunkStoreReadUrl(params.ChunkReadUrl, manifester.ChunkReadPath),
@@ -178,7 +178,7 @@ func (s *server) postInit(params *pb.DaemonParams, keys []signature.PublicKey) e
 	return nil
 }
 
-func (s *server) openDb() (err error) {
+func (s *Server) openDb() (err error) {
 	if err := os.MkdirAll(s.cfg.CachePath, 0700); err != nil {
 		return err
 	}
@@ -251,11 +251,11 @@ func (s *server) openDb() (err error) {
 	})
 }
 
-func (s *server) setupEnv() error {
+func (s *Server) setupEnv() error {
 	return exec.Command(common.ModprobeBin, "cachefiles").Run()
 }
 
-func (s *server) setupManifestSlab() error {
+func (s *Server) setupManifestSlab() error {
 	var id uint16 = manifestSlabOffset
 	mfSlabPath := filepath.Join(s.cfg.CachePath, manifestSlabPrefix+strconv.Itoa(int(id)))
 	fd, err := unix.Open(mfSlabPath, unix.O_RDWR|unix.O_CREAT, 0600)
@@ -277,7 +277,7 @@ func (s *server) setupManifestSlab() error {
 	return nil
 }
 
-func (s *server) openDevNode() (int, error) {
+func (s *Server) openDevNode() (int, error) {
 	fd, err := unix.Open(s.cfg.DevPath, unix.O_RDWR, 0600)
 	if err == unix.ENOENT {
 		_ = unix.Mknod(s.cfg.DevPath, 0600|unix.S_IFCHR, 10<<8+122)
@@ -298,7 +298,7 @@ func (s *server) openDevNode() (int, error) {
 	return fd, nil
 }
 
-func (s *server) setupDevNode() error {
+func (s *Server) setupDevNode() error {
 	fd, err := systemd.GetFd(savedFdName)
 	if err == nil {
 		if _, err = unix.Write(fd, []byte("restore")); err != nil {
@@ -325,7 +325,7 @@ func (s *server) setupDevNode() error {
 
 // Does a transaction on a record in imageBucket. f should mutate its argument and return nil.
 // If f returns an error, the record will not be written.
-func (s *server) imageTx(sph string, f func(*pb.DbImage) error) error {
+func (s *Server) imageTx(sph string, f func(*pb.DbImage) error) error {
 	return s.db.Update(func(tx *bbolt.Tx) error {
 		var img pb.DbImage
 		b := tx.Bucket(imageBucket)
@@ -344,7 +344,7 @@ func (s *server) imageTx(sph string, f func(*pb.DbImage) error) error {
 	})
 }
 
-func (s *server) startSocketServer() (err error) {
+func (s *Server) startSocketServer() (err error) {
 	socketPath := filepath.Join(s.cfg.CachePath, Socket)
 	os.Remove(socketPath)
 	l, err := net.ListenUnix("unix", &net.UnixAddr{Net: "unix", Name: socketPath})
@@ -451,7 +451,7 @@ func jsonmw[reqT, resT any](f func(context.Context, *reqT) (*resT, error)) func(
 	}
 }
 
-func (s *server) handleInitReq(ctx context.Context, r *InitReq) (*Status, error) {
+func (s *Server) handleInitReq(ctx context.Context, r *InitReq) (*Status, error) {
 	if s.p() != nil {
 		// TODO: add ability to modify some params
 		return nil, mwErr(http.StatusConflict, "already initialized")
@@ -490,7 +490,7 @@ func (s *server) handleInitReq(ctx context.Context, r *InitReq) (*Status, error)
 	})
 }
 
-func (s *server) handleMountReq(ctx context.Context, r *MountReq) (*Status, error) {
+func (s *Server) handleMountReq(ctx context.Context, r *MountReq) (*Status, error) {
 	if s.p() == nil {
 		return nil, mwErr(http.StatusPreconditionFailed, "styx is not initialized, call 'styx init --params=...'")
 	}
@@ -529,7 +529,7 @@ func (s *server) handleMountReq(ctx context.Context, r *MountReq) (*Status, erro
 	return nil, s.tryMount(ctx, r, haveImageSize, haveIsBare)
 }
 
-func (s *server) tryMount(ctx context.Context, req *MountReq, haveImageSize int64, haveIsBare bool) error {
+func (s *Server) tryMount(ctx context.Context, req *MountReq, haveImageSize int64, haveIsBare bool) error {
 	cookie, _, _ := strings.Cut(req.StorePath, "-")
 
 	mountCtx := &mountContext{}
@@ -616,7 +616,7 @@ func (s *server) tryMount(ctx context.Context, req *MountReq, haveImageSize int6
 	return mountErr
 }
 
-func (s *server) handleUmountReq(ctx context.Context, r *UmountReq) (*Status, error) {
+func (s *Server) handleUmountReq(ctx context.Context, r *UmountReq) (*Status, error) {
 	if s.p() == nil {
 		return nil, mwErr(http.StatusPreconditionFailed, "styx is not initialized, call 'styx init --params=...'")
 	}
@@ -651,7 +651,7 @@ func (s *server) handleUmountReq(ctx context.Context, r *UmountReq) (*Status, er
 	return nil, umountErr
 }
 
-func (s *server) handleGcReq(ctx context.Context, r *GcReq) (*Status, error) {
+func (s *Server) handleGcReq(ctx context.Context, r *GcReq) (*Status, error) {
 	if s.p() == nil {
 		return nil, mwErr(http.StatusPreconditionFailed, "styx is not initialized, call 'styx init --params=...'")
 	}
@@ -660,7 +660,7 @@ func (s *server) handleGcReq(ctx context.Context, r *GcReq) (*Status, error) {
 	return nil, errors.New("unimplemented")
 }
 
-func (s *server) restoreMounts() {
+func (s *Server) restoreMounts() {
 	var toRestore []*pb.DbImage
 	_ = s.db.View(func(tx *bbolt.Tx) error {
 		cur := tx.Bucket(imageBucket).Cursor()
@@ -708,7 +708,7 @@ func (s *server) restoreMounts() {
 
 // cachefiles server
 
-func (s *server) Start() error {
+func (s *Server) Start() error {
 	if err := s.setupEnv(); err != nil {
 		return err
 	}
@@ -739,7 +739,7 @@ func (s *server) Start() error {
 
 // this is only for tests! the real daemon doesn't clean up, since we can't restore the cache
 // state, it dies and lets systemd keep the devnode open.
-func (s *server) Stop() {
+func (s *Server) Stop() {
 	log.Print("stopping daemon...")
 	close(s.shutdownChan) // stops the socket server
 
@@ -754,7 +754,7 @@ func (s *server) Stop() {
 	log.Print("daemon shutdown done")
 }
 
-func (s *server) closeAllFds() {
+func (s *Server) closeAllFds() {
 	s.stateLock.Lock()
 	defer s.stateLock.Unlock()
 	for _, state := range s.cacheState {
@@ -762,7 +762,7 @@ func (s *server) closeAllFds() {
 	}
 }
 
-func (s *server) cachefilesServer() {
+func (s *Server) cachefilesServer() {
 	s.shutdownWait.Add(1)
 	defer s.shutdownWait.Done()
 
@@ -834,7 +834,7 @@ func (s *server) cachefilesServer() {
 	close(wchan)
 }
 
-func (s *server) handleMessage(buf []byte) (retErr error) {
+func (s *Server) handleMessage(buf []byte) (retErr error) {
 	defer func() {
 		if r := recover(); r != nil {
 			retErr = fmt.Errorf("panic in handle: %v", r)
@@ -871,7 +871,7 @@ func (s *server) handleMessage(buf []byte) (retErr error) {
 	}
 }
 
-func (s *server) handleOpen(msgId, objectId, fd, flags uint32, volume, cookie []byte) (retErr error) {
+func (s *Server) handleOpen(msgId, objectId, fd, flags uint32, volume, cookie []byte) (retErr error) {
 	// volume is "erofs,<domain_id>\x00" (domain_id is same as fsid if not specified)
 	// cookie is "<fsid>"
 
@@ -929,7 +929,7 @@ func (s *server) handleOpen(msgId, objectId, fd, flags uint32, volume, cookie []
 	}
 }
 
-func (s *server) handleOpenSlab(msgId, objectId, fd, flags uint32, id uint16) (int64, error) {
+func (s *Server) handleOpenSlab(msgId, objectId, fd, flags uint32, id uint16) (int64, error) {
 	// record open state
 	s.stateLock.Lock()
 	defer s.stateLock.Unlock()
@@ -944,7 +944,7 @@ func (s *server) handleOpenSlab(msgId, objectId, fd, flags uint32, id uint16) (i
 	return slabBytes, nil
 }
 
-func (s *server) handleOpenSlabImage(msgId, objectId, fd, flags uint32, id uint16) (int64, error) {
+func (s *Server) handleOpenSlabImage(msgId, objectId, fd, flags uint32, id uint16) (int64, error) {
 	// record open state
 	s.stateLock.Lock()
 	defer s.stateLock.Unlock()
@@ -958,7 +958,7 @@ func (s *server) handleOpenSlabImage(msgId, objectId, fd, flags uint32, id uint1
 	return 1 << s.blockShift, nil
 }
 
-func (s *server) handleOpenImage(msgId, objectId, fd, flags uint32, cookie string) (int64, error) {
+func (s *Server) handleOpenImage(msgId, objectId, fd, flags uint32, cookie string) (int64, error) {
 	ctx, _ := s.mountCtxMap.Get(cookie)
 	if ctx == nil {
 		return 0, fmt.Errorf("missing context in handleOpenImage for %s", cookie)
@@ -979,7 +979,7 @@ func (s *server) handleOpenImage(msgId, objectId, fd, flags uint32, cookie strin
 	return mountCtx.imageSize, nil
 }
 
-func (s *server) handleClose(msgId, objectId uint32) error {
+func (s *Server) handleClose(msgId, objectId uint32) error {
 	log.Println("close", objectId)
 	s.stateLock.Lock()
 	state := s.cacheState[objectId]
@@ -999,7 +999,7 @@ func (s *server) handleClose(msgId, objectId uint32) error {
 	return nil
 }
 
-func (s *server) closeState(state *openFileState) {
+func (s *Server) closeState(state *openFileState) {
 	if state.writeFd > 0 {
 		_ = unix.Close(int(state.writeFd))
 	}
@@ -1012,7 +1012,7 @@ func (s *server) closeState(state *openFileState) {
 	}
 }
 
-func (s *server) handleRead(msgId, objectId uint32, ln, off uint64) (retErr error) {
+func (s *Server) handleRead(msgId, objectId uint32, ln, off uint64) (retErr error) {
 	s.stateLock.Lock()
 	state := s.cacheState[objectId]
 	s.stateLock.Unlock()
@@ -1043,7 +1043,7 @@ func (s *server) handleRead(msgId, objectId uint32, ln, off uint64) (retErr erro
 	}
 }
 
-func (s *server) handleReadImage(state *openFileState, _, _ uint64) error {
+func (s *Server) handleReadImage(state *openFileState, _, _ uint64) error {
 	if state.imageData == nil {
 		return errors.New("got read request when already written image")
 	}
@@ -1057,7 +1057,7 @@ func (s *server) handleReadImage(state *openFileState, _, _ uint64) error {
 	return nil
 }
 
-func (s *server) handleReadSlabImage(state *openFileState, ln, off uint64) error {
+func (s *Server) handleReadSlabImage(state *openFileState, ln, off uint64) error {
 	var devid string
 	if off == 0 {
 		// only superblock needs this
@@ -1072,7 +1072,7 @@ func (s *server) handleReadSlabImage(state *openFileState, ln, off uint64) error
 	return err
 }
 
-func (s *server) handleReadSlab(state *openFileState, ln, off uint64) (retErr error) {
+func (s *Server) handleReadSlab(state *openFileState, ln, off uint64) (retErr error) {
 	s.stats.slabReads.Add(1)
 	defer func() {
 		if retErr != nil {
@@ -1126,7 +1126,7 @@ func (s *server) handleReadSlab(state *openFileState, ln, off uint64) (retErr er
 	return s.requestChunk(ctx, erofs.SlabLoc{slabId, addr}, digest, sphps)
 }
 
-func (s *server) mountSlabImage(slabId int) error {
+func (s *Server) mountSlabImage(slabId int) error {
 	fsid := slabImagePrefix + strconv.Itoa(slabId)
 	mountPoint := filepath.Join(s.cfg.CachePath, fsid)
 	logMsg := "opened slab image file for"
@@ -1226,14 +1226,14 @@ func appendSph(loc []byte, sph Sph) []byte {
 	return newLoc
 }
 
-func (s *server) VerifyParams(blockShift common.BlkShift) error {
+func (s *Server) VerifyParams(blockShift common.BlkShift) error {
 	if blockShift != s.blockShift {
 		return errors.New("mismatched params")
 	}
 	return nil
 }
 
-func (s *server) AllocateBatch(ctx context.Context, blocks []uint16, digests []cdig.CDig, forManifest bool) ([]erofs.SlabLoc, error) {
+func (s *Server) AllocateBatch(ctx context.Context, blocks []uint16, digests []cdig.CDig, forManifest bool) ([]erofs.SlabLoc, error) {
 	// TODO: pass this through regular arg?
 	sph := ctx.Value("sph").(Sph)
 
@@ -1289,12 +1289,12 @@ func (s *server) AllocateBatch(ctx context.Context, blocks []uint16, digests []c
 	return common.ValOrErr(out, err)
 }
 
-func (s *server) SlabInfo(slabId uint16) (tag string, totalBlocks uint32) {
+func (s *Server) SlabInfo(slabId uint16) (tag string, totalBlocks uint32) {
 	return slabPrefix + strconv.Itoa(int(slabId)), common.TruncU32(uint64(slabBytes) >> s.blockShift)
 }
 
 // like AllocateBatch but only lookup
-func (s *server) lookupLocs(tx *bbolt.Tx, digests []cdig.CDig) ([]erofs.SlabLoc, error) {
+func (s *Server) lookupLocs(tx *bbolt.Tx, digests []cdig.CDig) ([]erofs.SlabLoc, error) {
 	out := make([]erofs.SlabLoc, len(digests))
 	cb := tx.Bucket(chunkBucket)
 	for i := range out {

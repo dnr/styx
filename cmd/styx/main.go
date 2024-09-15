@@ -198,7 +198,7 @@ func main() {
 			&cobra.Command{Use: "daemon", Short: "act as local daemon"},
 			withDaemonConfig,
 			func(c *cobra.Command, args []string) error {
-				err := daemon.CachefilesServer(get[daemon.Config](c)).Start()
+				err := daemon.NewServer(get[daemon.Config](c)).Start()
 				if err != nil {
 					return err
 				}

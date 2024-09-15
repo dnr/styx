@@ -11,7 +11,7 @@ import (
 	"go.etcd.io/bbolt"
 )
 
-func (s *server) handlePrefetchReq(ctx context.Context, r *PrefetchReq) (*Status, error) {
+func (s *Server) handlePrefetchReq(ctx context.Context, r *PrefetchReq) (*Status, error) {
 	if s.p() == nil {
 		return nil, mwErr(http.StatusPreconditionFailed, "styx is not initialized, call 'styx init --params=...'")
 	}

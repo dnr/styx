@@ -71,7 +71,7 @@ type (
 
 	// context for building set of diff ops
 	opSet struct {
-		s     *server
+		s     *Server
 		tx    *bbolt.Tx
 		op    *diffOp // last op in ops
 		ops   []*diffOp
@@ -95,7 +95,7 @@ type (
 	}
 )
 
-func (s *server) requestChunk(ctx context.Context, loc erofs.SlabLoc, digest cdig.CDig, sphps []SphPrefix) error {
+func (s *Server) requestChunk(ctx context.Context, loc erofs.SlabLoc, digest cdig.CDig, sphps []SphPrefix) error {
 	if _, ok := s.readKnownMap.Get(loc); ok {
 		// We think we have this chunk and are trying to use it as a base, but we got asked for
 		// it again. This shouldn't happen, but at least try to recover by doing a single read
@@ -156,7 +156,7 @@ func (s *server) requestChunk(ctx context.Context, loc erofs.SlabLoc, digest cdi
 	return err
 }
 
-func (s *server) requestPrefetch(ctx context.Context, reqs []cdig.CDig) error {
+func (s *Server) requestPrefetch(ctx context.Context, reqs []cdig.CDig) error {
 	ops, err := s.buildAndStartPrefetch(ctx, reqs)
 	if err != nil {
 		return err
@@ -174,7 +174,7 @@ func (s *server) requestPrefetch(ctx context.Context, reqs []cdig.CDig) error {
 	return nil
 }
 
-func (s *server) buildAndStartPrefetch(ctx context.Context, reqs []cdig.CDig) ([]reqOp, error) {
+func (s *Server) buildAndStartPrefetch(ctx context.Context, reqs []cdig.CDig) ([]reqOp, error) {
 	s.diffLock.Lock()
 	defer s.diffLock.Unlock()
 
@@ -232,7 +232,7 @@ func (s *server) buildAndStartPrefetch(ctx context.Context, reqs []cdig.CDig) ([
 }
 
 // currently this is only used to read manifest chunks
-func (s *server) readChunks(
+func (s *Server) readChunks(
 	ctx context.Context,
 	useTx *bbolt.Tx, // optional
 	totalSize int64,
@@ -287,7 +287,7 @@ func (s *server) readChunks(
 	return out, nil
 }
 
-func (s *server) readSingle(ctx context.Context, loc erofs.SlabLoc, digest cdig.CDig) error {
+func (s *Server) readSingle(ctx context.Context, loc erofs.SlabLoc, digest cdig.CDig) error {
 	// we have no size info here
 	buf := s.chunkPool.Get(int(common.ChunkShift.Size()))
 	defer s.chunkPool.Put(buf)
@@ -307,7 +307,7 @@ func (s *server) readSingle(ctx context.Context, loc erofs.SlabLoc, digest cdig.
 }
 
 // call with diffLock held
-func (s *server) buildSingleOp(
+func (s *Server) buildSingleOp(
 	loc erofs.SlabLoc,
 	targetDigest cdig.CDig,
 ) *singleOp {
@@ -321,7 +321,7 @@ func (s *server) buildSingleOp(
 }
 
 // runs in separate goroutine
-func (s *server) startSingleOp(ctx context.Context, op *singleOp) {
+func (s *Server) startSingleOp(ctx context.Context, op *singleOp) {
 	defer func() {
 		if r := recover(); r != nil {
 			op.err = fmt.Errorf("panic in single op: %v", r)
@@ -349,7 +349,7 @@ func (s *server) startSingleOp(ctx context.Context, op *singleOp) {
 }
 
 // runs in separate goroutine
-func (s *server) startDiffOp(ctx context.Context, op *diffOp) {
+func (s *Server) startDiffOp(ctx context.Context, op *diffOp) {
 	defer func() {
 		if r := recover(); r != nil {
 			op.err = fmt.Errorf("panic in diff op: %v", r)
@@ -392,7 +392,7 @@ func (s *server) startDiffOp(ctx context.Context, op *diffOp) {
 	}
 }
 
-func (s *server) doDiffOp(ctx context.Context, op *diffOp) error {
+func (s *Server) doDiffOp(ctx context.Context, op *diffOp) error {
 	diff, err := s.getChunkDiff(ctx, op.baseDigests, op.reqDigests, op.recompress)
 	if err != nil {
 		return fmt.Errorf("getChunkDiff error: %w", err)
@@ -491,7 +491,7 @@ func (s *server) doDiffOp(ctx context.Context, op *diffOp) error {
 }
 
 // gotNewChunk may reslice b up to block size and zero up to the new size!
-func (s *server) gotNewChunk(loc erofs.SlabLoc, digest cdig.CDig, b []byte) error {
+func (s *Server) gotNewChunk(loc erofs.SlabLoc, digest cdig.CDig, b []byte) error {
 	if err := digest.Check(b); err != nil {
 		return err
 	}
@@ -551,7 +551,7 @@ func (s *server) gotNewChunk(loc erofs.SlabLoc, digest cdig.CDig, b []byte) erro
 	return nil
 }
 
-func (s *server) getChunkDiff(ctx context.Context, bases, reqs []cdig.CDig, recompress []string) (io.ReadCloser, error) {
+func (s *Server) getChunkDiff(ctx context.Context, bases, reqs []cdig.CDig, recompress []string) (io.ReadCloser, error) {
 	r := manifester.ChunkDiffReq{Bases: cdig.ToSliceAlias(bases), Reqs: cdig.ToSliceAlias(reqs)}
 	if len(recompress) > 0 {
 		r.ExpandBeforeDiff = recompress[0]
@@ -569,7 +569,7 @@ func (s *server) getChunkDiff(ctx context.Context, bases, reqs []cdig.CDig, reco
 }
 
 // note: called with read-only tx
-func (s *server) getDigestsFromImage(ctx context.Context, tx *bbolt.Tx, sph Sph, isManifest bool) ([]*pb.Entry, error) {
+func (s *Server) getDigestsFromImage(ctx context.Context, tx *bbolt.Tx, sph Sph, isManifest bool) ([]*pb.Entry, error) {
 	if isManifest {
 		// get the image sph back. makeManifestSph is its own inverse.
 		sph = makeManifestSph(sph)
@@ -610,7 +610,7 @@ func (s *server) getDigestsFromImage(ctx context.Context, tx *bbolt.Tx, sph Sph,
 }
 
 // simplified form of getDigestsFromImage (TODO: consolidate)
-func (s *server) getManifestLocal(ctx context.Context, tx *bbolt.Tx, key []byte) (*pb.Manifest, error) {
+func (s *Server) getManifestLocal(ctx context.Context, tx *bbolt.Tx, key []byte) (*pb.Manifest, error) {
 	v := tx.Bucket(manifestBucket).Get(key)
 	if v == nil {
 		return nil, errors.New("manifest not found")
@@ -641,7 +641,7 @@ func (s *server) getManifestLocal(ctx context.Context, tx *bbolt.Tx, key []byte)
 	return common.ValOrErr(&m, err)
 }
 
-func (s *server) getKnownChunk(loc erofs.SlabLoc, buf []byte) error {
+func (s *Server) getKnownChunk(loc erofs.SlabLoc, buf []byte) error {
 	var readFd int
 	s.stateLock.Lock()
 	if state := s.stateBySlab[loc.SlabId]; state != nil {
@@ -662,7 +662,7 @@ func (s *server) getKnownChunk(loc erofs.SlabLoc, buf []byte) error {
 	return err
 }
 
-func (s *server) locPresent(tx *bbolt.Tx, loc erofs.SlabLoc) bool {
+func (s *Server) locPresent(tx *bbolt.Tx, loc erofs.SlabLoc) bool {
 	if _, ok := s.presentMap.Get(loc); ok {
 		return true
 	}
@@ -671,7 +671,7 @@ func (s *server) locPresent(tx *bbolt.Tx, loc erofs.SlabLoc) bool {
 	return db.Get(addrKey(loc.Addr|presentMask)) != nil
 }
 
-func (s *server) digestLoc(tx *bbolt.Tx, digest cdig.CDig) erofs.SlabLoc {
+func (s *Server) digestLoc(tx *bbolt.Tx, digest cdig.CDig) erofs.SlabLoc {
 	v := tx.Bucket(chunkBucket).Get(digest[:])
 	if v == nil {
 		log.Println("missing chunk entry in digestLoc", digest)
@@ -680,12 +680,12 @@ func (s *server) digestLoc(tx *bbolt.Tx, digest cdig.CDig) erofs.SlabLoc {
 	return loadLoc(v)
 }
 
-func (s *server) digestPresent(tx *bbolt.Tx, digest cdig.CDig) (erofs.SlabLoc, bool) {
+func (s *Server) digestPresent(tx *bbolt.Tx, digest cdig.CDig) (erofs.SlabLoc, bool) {
 	loc := s.digestLoc(tx, digest)
 	return loc, s.locPresent(tx, loc)
 }
 
-func (s *server) findRecentRead(reqHash Sph, path string) *recentRead {
+func (s *Server) findRecentRead(reqHash Sph, path string) *recentRead {
 	key := string(reqHash[:]) + path
 	if rr := s.recentReads[key]; rr != nil {
 		rr.reads++
@@ -698,7 +698,7 @@ func (s *server) findRecentRead(reqHash Sph, path string) *recentRead {
 	return rr
 }
 
-func (s *server) pruneRecentReads() {
+func (s *Server) pruneRecentReads() {
 	t := time.NewTicker(recentReadExpiry / 2)
 	defer t.Stop()
 	for range t.C {
@@ -757,7 +757,7 @@ func (op *diffOp) addReq(digest cdig.CDig, size int32, loc erofs.SlabLoc) {
 
 // op set
 
-func newOpSet(s *server) *opSet {
+func newOpSet(s *Server) *opSet {
 	set := &opSet{
 		s:           s,
 		using:       make(map[cdig.CDig]struct{}),

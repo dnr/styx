@@ -13,7 +13,7 @@ import (
 	"github.com/dnr/styx/pb"
 )
 
-func (s *server) handleDebugReq(ctx context.Context, r *DebugReq) (*DebugResp, error) {
+func (s *Server) handleDebugReq(ctx context.Context, r *DebugReq) (*DebugResp, error) {
 	// allow this even before "initialized"
 
 	res := &DebugResp{

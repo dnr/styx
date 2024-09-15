@@ -24,7 +24,7 @@ import (
 	"github.com/dnr/styx/pb"
 )
 
-func (s *server) getManifestAndBuildImage(ctx context.Context, req *MountReq) ([]byte, error) {
+func (s *Server) getManifestAndBuildImage(ctx context.Context, req *MountReq) ([]byte, error) {
 	cookie, _, _ := strings.Cut(req.StorePath, "-")
 
 	// convert to binary
@@ -143,7 +143,7 @@ func (s *server) getManifestAndBuildImage(ctx context.Context, req *MountReq) ([
 	return image.Bytes(), nil
 }
 
-func (s *server) getManifestFromManifester(ctx context.Context, upstream, sph string, narSize int64) ([]byte, error) {
+func (s *Server) getManifestFromManifester(ctx context.Context, upstream, sph string, narSize int64) ([]byte, error) {
 	// check cached first
 	mReq := manifester.ManifestReq{
 		Upstream:      upstream,
@@ -175,7 +175,7 @@ func (s *server) getManifestFromManifester(ctx context.Context, upstream, sph st
 	return b, nil
 }
 
-func (s *server) getNewManifest(ctx context.Context, url string, req manifester.ManifestReq, narSize int64) ([]byte, error) {
+func (s *Server) getNewManifest(ctx context.Context, url string, req manifester.ManifestReq, narSize int64) ([]byte, error) {
 	start := time.Now()
 
 	shardBy := s.p().params.ShardManifestBytes

@@ -16,7 +16,7 @@ import (
 	"github.com/dnr/styx/common"
 )
 
-func (s *server) handleRepairReq(ctx context.Context, r *RepairReq) (*Status, error) {
+func (s *Server) handleRepairReq(ctx context.Context, r *RepairReq) (*Status, error) {
 	// allow this even before "initialized"
 
 	if r.Presence {
@@ -33,7 +33,7 @@ func (s *server) handleRepairReq(ctx context.Context, r *RepairReq) (*Status, er
 	return nil, nil
 }
 
-func (s *server) repairPresence(slab uint16, path string) {
+func (s *Server) repairPresence(slab uint16, path string) {
 	blk := fmt.Sprintf("-b%d", s.blockShift.Size())
 	// TODO: use FIEMAP ioctl directly
 	out, err := exec.Command(common.FilefragBin, "-evs", blk, path).Output()
