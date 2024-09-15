@@ -490,20 +490,24 @@ func (s *Server) doDiffOp(ctx context.Context, op *diffOp) error {
 	return nil
 }
 
+func (s *Server) getWriteFdForSlab(slabId uint16) (int, error) {
+	s.stateLock.Lock()
+	defer s.stateLock.Unlock()
+	if state := s.stateBySlab[slabId]; state != nil {
+		return int(state.writeFd), nil
+	}
+	return 0, errors.New("slab not loaded or missing write fd")
+}
+
 // gotNewChunk may reslice b up to block size and zero up to the new size!
 func (s *Server) gotNewChunk(loc erofs.SlabLoc, digest cdig.CDig, b []byte) error {
 	if err := digest.Check(b); err != nil {
 		return err
 	}
 
-	var writeFd int
-	s.stateLock.Lock()
-	if state := s.stateBySlab[loc.SlabId]; state != nil {
-		writeFd = int(state.writeFd)
-	}
-	s.stateLock.Unlock()
-	if writeFd == 0 {
-		return errors.New("slab not loaded or missing write fd")
+	writeFd, err := s.getWriteFdForSlab(loc.SlabId)
+	if err != nil {
+		return err
 	}
 
 	// we can only write full + aligned blocks
@@ -642,11 +646,8 @@ func (s *Server) getManifestLocal(ctx context.Context, tx *bbolt.Tx, key []byte)
 }
 
 func (s *Server) getKnownChunk(loc erofs.SlabLoc, buf []byte) error {
-	var readFd int
 	s.stateLock.Lock()
-	if state := s.stateBySlab[loc.SlabId]; state != nil {
-		readFd = int(state.readFd)
-	}
+	readFd := s.readfdBySlab[loc.SlabId]
 	s.stateLock.Unlock()
 	if readFd == 0 {
 		return errors.New("slab not loaded or missing read fd")

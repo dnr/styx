@@ -69,9 +69,13 @@ type (
 		devnode    atomic.Int32
 		stats      daemonStats
 
-		stateLock   sync.Mutex
-		cacheState  map[uint32]*openFileState // object id -> state
-		stateBySlab map[uint16]*openFileState // slab id -> state
+		stateLock    sync.Mutex
+		cacheState   map[uint32]*openFileState // object id -> state
+		stateBySlab  map[uint16]*openFileState // slab id -> state
+		readfdBySlab map[uint16]int            // slab id -> readfd
+		// readfds are kept in a separate map because after a restore, we may load the slab
+		// image and readfd before the slab is loaded by erofs/cachefiles. this doesn't make
+		// sense but it seems to work that way.
 
 		// keeps track of locs that we know are present before we persist them
 		presentMap common.SimpleSyncMap[erofs.SlabLoc, struct{}]
@@ -108,7 +112,6 @@ type (
 
 		// for slabs, slab images, and manifest slabs
 		slabId uint16
-		readFd uint32
 		// cacheFd uint32
 
 		// for store images
@@ -151,6 +154,7 @@ func NewServer(cfg Config) *Server {
 		builder:      erofs.NewBuilder(erofs.BuilderConfig{BlockShift: cfg.ErofsBlockShift}),
 		cacheState:   make(map[uint32]*openFileState),
 		stateBySlab:  make(map[uint16]*openFileState),
+		readfdBySlab: make(map[uint16]int),
 		presentMap:   *common.NewSimpleSyncMap[erofs.SlabLoc, struct{}](),
 		readKnownMap: *common.NewSimpleSyncMap[erofs.SlabLoc, struct{}](),
 		mountCtxMap:  *common.NewSimpleSyncMap[string, context.Context](),
@@ -270,10 +274,10 @@ func (s *Server) setupManifestSlab() error {
 		writeFd: common.TruncU32(fd), // write and read to same fd
 		tp:      typeManifestSlab,
 		slabId:  id,
-		readFd:  common.TruncU32(fd),
 		// cacheFd: fd,
 	}
 	s.stateBySlab[id] = state
+	s.readfdBySlab[id] = fd
 	return nil
 }
 
@@ -743,12 +747,16 @@ func (s *Server) Stop(closeDevnode bool) {
 	log.Print("stopping daemon...")
 	close(s.shutdownChan) // stops the socket server
 
-	s.closeAllFds() // TODO: do this before or after closing the devnode?
-
+	// signal to cachefiles server and workers to stop
 	fd := s.devnode.Swap(0)
+	// wait for workers to stop
 	s.shutdownWait.Wait()
+	// close fds of open objects
+	s.closeAllFds()
+	// maybe close devnode too
 	if closeDevnode {
 		unix.Close(int(fd))
+		s.cfg.FdStore.RemoveFd(savedFdName)
 	}
 
 	s.db.Close()
@@ -760,7 +768,13 @@ func (s *Server) closeAllFds() {
 	s.stateLock.Lock()
 	defer s.stateLock.Unlock()
 	for _, state := range s.cacheState {
-		s.closeState(state)
+		var readFd int
+		switch state.tp {
+		case typeSlab, typeManifestSlab:
+			readFd = s.readfdBySlab[state.slabId]
+		}
+
+		s.closeState(state, readFd)
 	}
 }
 
@@ -993,20 +1007,26 @@ func (s *Server) handleClose(msgId, objectId uint32) error {
 	if state.tp == typeSlab {
 		delete(s.stateBySlab, state.slabId)
 	}
+	var readFd int
+	switch state.tp {
+	case typeSlab, typeManifestSlab:
+		readFd = s.readfdBySlab[state.slabId]
+		delete(s.readfdBySlab, state.slabId)
+	}
 	delete(s.cacheState, objectId)
 	s.stateLock.Unlock()
 
 	// do rest of cleanup outside lock
-	s.closeState(state)
+	s.closeState(state, readFd)
 	return nil
 }
 
-func (s *Server) closeState(state *openFileState) {
+func (s *Server) closeState(state *openFileState, readFd int) {
 	if state.writeFd > 0 {
 		_ = unix.Close(int(state.writeFd))
 	}
-	if state.readFd > 0 && state.readFd != state.writeFd {
-		_ = unix.Close(int(state.readFd))
+	if readFd > 0 && readFd != int(state.writeFd) {
+		_ = unix.Close(readFd)
 	}
 	if state.tp == typeSlab {
 		mp := filepath.Join(s.cfg.CachePath, slabImagePrefix+strconv.Itoa(int(state.slabId)))
@@ -1132,6 +1152,7 @@ func (s *Server) mountSlabImage(slabId int) error {
 	fsid := slabImagePrefix + strconv.Itoa(slabId)
 	mountPoint := filepath.Join(s.cfg.CachePath, fsid)
 	logMsg := "opened slab image file for"
+
 	if mounted, err := isErofsMount(mountPoint); err != nil || !mounted {
 		if err = os.MkdirAll(mountPoint, 0755); err != nil {
 			return fmt.Errorf("error mkdir on slab image mountpoint %s: %w", mountPoint, err)
@@ -1151,32 +1172,35 @@ func (s *Server) mountSlabImage(slabId int) error {
 		}
 		logMsg = "mounted and " + logMsg
 	}
-	slabFile := filepath.Join(mountPoint, "slab")
-	slabFd, err := unix.Open(slabFile, unix.O_RDONLY, 0)
+
+	slabFd, err := s.openSlabImageFile(mountPoint)
 	if err != nil {
 		_ = unix.Unmount(mountPoint, 0)
-		return fmt.Errorf("error opening slab image file %s: %w", slabFile, err)
-	}
-	// disable readahead so we don't get requests for parts we haven't written
-	if err = unix.Fadvise(slabFd, 0, 0, unix.FADV_RANDOM); err != nil {
-		_ = unix.Close(slabFd)
-		_ = unix.Unmount(mountPoint, 0)
-		return fmt.Errorf("error in fadvise on slab image file: %w", err)
+		return fmt.Errorf("error opening slab image file %s: %w", mountPoint, err)
 	}
 
 	s.stateLock.Lock()
-	if state := s.stateBySlab[common.TruncU16(slabId)]; state == nil {
-		s.stateLock.Unlock()
-		_ = unix.Close(slabFd)
-		_ = unix.Unmount(mountPoint, 0)
-		return fmt.Errorf("state not found in mountSlabImage")
-	} else {
-		state.readFd = common.TruncU32(slabFd)
-		s.stateLock.Unlock()
-	}
+	s.readfdBySlab[common.TruncU16(slabId)] = slabFd
+	s.stateLock.Unlock()
 
 	log.Println(logMsg, fsid, "on", mountPoint)
 	return nil
+}
+
+func (s *Server) openSlabImageFile(mountPoint string) (int, error) {
+	slabFile := filepath.Join(mountPoint, "slab")
+	slabFd, err := unix.Open(slabFile, unix.O_RDONLY, 0)
+	if err != nil {
+		return 0, err
+	}
+
+	// disable readahead so we don't get requests for parts we haven't written
+	if err = unix.Fadvise(slabFd, 0, 0, unix.FADV_RANDOM); err != nil {
+		_ = unix.Close(slabFd)
+		return 0, fmt.Errorf("fadvise: %w", err)
+	}
+
+	return slabFd, nil
 }
 
 // slab manager
