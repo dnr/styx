@@ -311,14 +311,6 @@ func (s *server) setupDevNode() error {
 		return nil
 	}
 
-	/* TODO
-	if !s.haveSlabFiles() {
-		if err := s.preCreateSlabs(); err != nil {
-			return err
-		}
-	}
-	*/
-
 	fd, err = s.openDevNode()
 	if err != nil {
 		return err
@@ -328,61 +320,6 @@ func (s *server) setupDevNode() error {
 	log.Println("set up cachefiles device")
 	return nil
 }
-
-/* TODO
-
-func (s *server) haveSlabFiles() bool {
-	for i := uint16(0); i < preCreatedSlabs; i++ {
-		tag, _ := s.SlabInfo(i)
-		backingPath := filepath.Join(s.cfg.CachePath, fscachePath(s.cfg.CacheDomain, tag))
-		if unix.Access(backingPath, unix.O_RDWR) != nil {
-			return false
-		}
-	}
-	return true
-}
-
-func (s *server) preCreateSlabs() error {
-	// this is weird: when new files are opened by cachefiles, it keeps them as unlinked files
-	// first, and doesn't link them into the fs until the cache is closed properly. we want
-	// direct (backdoor) access to the backing file for the slab files, which we can only get
-	// by opening them by name. to fix this, we make the fs look like cachefiles set everything
-	// up and created the files itself in a prior run. the xattrs are required otherwise
-	// cachefiles will reject the files.
-
-	// this is the "volume" directory, corresponding to our "domain"
-	vol := filepath.Join(s.cfg.CachePath, "cache", "Ierofs,"+s.cfg.CacheDomain)
-	if err := os.MkdirAll(vol, 0700); err != nil {
-		return err
-	} else if err := unix.Setxattr(vol, fscacheXattrName, fscacheVolumeXattr(), 0); err != nil {
-		return err
-	} else if err := os.Mkdir(filepath.Join(s.cfg.CachePath, "graveyard"), 0700); err != nil {
-		return err
-	}
-	for i := 0; i < 256; i++ {
-		if err := os.Mkdir(filepath.Join(vol, fmt.Sprintf("@%02x", i)), 0700); err != nil {
-			return err
-		}
-	}
-	xattrVal := fscacheDataXattr(slabBytes)
-	for i := uint16(0); i < preCreatedSlabs; i++ {
-		tag, _ := s.SlabInfo(i)
-		backingPath := filepath.Join(s.cfg.CachePath, fscachePath(s.cfg.CacheDomain, tag))
-		fd, err := unix.Open(backingPath, unix.O_RDWR|unix.O_CREAT, 0600)
-		if err != nil {
-			return err
-		} else if err = unix.Ftruncate(fd, slabBytes); err != nil {
-			unix.Close(fd)
-			return err
-		} else if err = unix.Fsetxattr(fd, fscacheXattrName, xattrVal, 0); err != nil {
-			unix.Close(fd)
-			return err
-		}
-		unix.Close(fd)
-	}
-	return nil
-}
-*/
 
 // socket server + mount management
 
@@ -993,18 +930,6 @@ func (s *server) handleOpen(msgId, objectId, fd, flags uint32, volume, cookie []
 }
 
 func (s *server) handleOpenSlab(msgId, objectId, fd, flags uint32, id uint16) (int64, error) {
-	/* TODO
-	// find backing file
-	tag, _ := s.SlabInfo(id)
-	backingPath := filepath.Join(s.cfg.CachePath, fscachePath(s.cfg.CacheDomain, tag))
-	// we mostly just need read access, but open for write also so we can punch holes for gc
-	cacheFd, err := unix.Open(backingPath, unix.O_RDWR, 0600)
-	if err != nil {
-		log.Println("failed to open backing file for slab", id)
-		return 0, err
-	}
-	*/
-
 	// record open state
 	s.stateLock.Lock()
 	defer s.stateLock.Unlock()
