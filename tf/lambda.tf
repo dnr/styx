@@ -129,9 +129,16 @@ resource "aws_lambda_function" "manifester" {
   image_config {
     command = [
       "manifester",
-      // must be in the same region:
+      # must be in the same region:
       "--chunkbucket=${aws_s3_bucket.styx.id}",
       "--styx_ssm_signkey=${aws_ssm_parameter.manifester_signkey.name}",
+      # Uncomment these to allow manifester to build from styx nix cache on-demand.
+      # This shouldn't be necessary since CI pre-builds manifests and they should
+      # be cached.
+      # "--allowed_upstream=cache.nixos.org",
+      # "--allowed_upstream=${aws_s3_bucket.styx.id}.s3.amazonaws.com",
+      # "--nix_pubkey=cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY=",
+      # "--nix_pubkey=${trimspace(file("../keys/styx-nixcache-test-1.public"))}",
     ]
   }
 }

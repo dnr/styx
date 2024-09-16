@@ -106,6 +106,7 @@ func (s *server) handleManifest(w http.ResponseWriter, req *http.Request) {
 	cmpSb, err := s.mb.Build(req.Context(), r.Upstream, r.StorePathHash, r.ShardTotal, r.ShardIndex, "")
 
 	if err != nil {
+		log.Println("build error:", err)
 		w.Header().Set("Content-Type", "text/plain")
 		switch {
 		case errors.Is(err, ErrReq):

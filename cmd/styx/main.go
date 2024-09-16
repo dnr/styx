@@ -107,7 +107,7 @@ func withManifesterConfig(c *cobra.Command) runE {
 	var cfg manifester.Config
 
 	c.Flags().StringVar(&cfg.Bind, "bind", ":7420", "address to listen on")
-	c.Flags().StringArrayVar(&cfg.AllowedUpstreams, "allowed-upstream",
+	c.Flags().StringArrayVar(&cfg.AllowedUpstreams, "allowed_upstream",
 		[]string{"cache.nixos.org"}, "allowed upstream binary caches")
 	c.Flags().IntVar(&cfg.ChunkDiffZstdLevel, "chunk_diff_zstd_level", 3, "encoder level for chunk diffs")
 	c.Flags().IntVar(&cfg.ChunkDiffParallel, "chunk_diff_parallel", 60, "parallelism for loading chunks for diff")
