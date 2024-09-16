@@ -1,6 +1,6 @@
 #!/bin/sh
 # use like:
-#   imagestats -i /nix/store/j5hf8xgjlpvnlcnx1vskmhxwwwd934hi-my-package
+#   imagestats /nix/store/j5hf8xgjlpvnlcnx1vskmhxwwwd934hi-my-package
 args=()
 for i; do args+=(-i "$i"); done
 exec 7>&1
@@ -9,8 +9,9 @@ sudo styx debug "${args[@]}" |
   jq -r '
   .Images.[].Manifest.entries.[] |
     select(.type == 1 and .size > 224) |
-    {path: .path, all: (.size / 65536 | ceil), pres: (.stats_present_chunks // 0)} |
-    # use this instead for blocks:
-    # {path: .path, all: (.size / 4096 | ceil), pres: (.stats_present_blocks // 0)} |
+    # use this for chunks:
+    # {path: .path, all: (.size / 65536 | ceil), pres: (.stats_present_chunks // 0)} |
+    # use this blocks for blocks:
+    {path: .path, all: (.size / 4096 | ceil), pres: (.stats_present_blocks // 0)} |
     "\(.path)  \(.pres) / \(.all) = \(.pres/.all)"
   ' | sort -s -n -k6

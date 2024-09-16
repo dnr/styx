@@ -30,7 +30,7 @@ const (
 	recentReadExpiry = 30 * time.Second
 
 	// only public so they can be referenced by tests
-	InitOpSize = 16
+	InitOpSize = 8
 	MaxOpSize  = 128 // must be ≤ manifester.ChunkDiffMaxDigests
 	MaxDiffOps = 8
 	MaxSources = 3
@@ -811,11 +811,6 @@ func (set *opSet) newOp() {
 	set.op = op
 }
 
-func (set *opSet) checkBase() {
-	if len(set.op.baseInfo) >= set.maxOpSize {
-		set.newOp()
-	}
-}
 func (set *opSet) checkReq() {
 	if len(set.op.reqInfo) >= set.maxOpSize {
 		set.newOp()
@@ -951,17 +946,6 @@ func (set *opSet) buildExtendDiff(
 
 	changed := false
 	for {
-		baseDigest := baseIter.digest()
-		if baseDigest != cdig.Zero && !set.fullBase() && !set.isUsing(baseDigest) {
-			baseLoc, basePresent := set.s.digestPresent(tx, baseDigest)
-			if basePresent {
-				set.markUsing(baseDigest)
-				set.checkBase()
-				set.op.addBase(baseDigest, baseIter.size(), baseLoc)
-				changed = true
-			}
-		}
-
 		reqDigest := reqIter.digest()
 		if reqDigest != cdig.Zero && !set.fullReq() && !set.isUsing(reqDigest) {
 			reqLoc, reqPresent := set.s.digestPresent(tx, reqDigest)
@@ -970,6 +954,17 @@ func (set *opSet) buildExtendDiff(
 				set.checkReq()
 				set.op.addReq(reqDigest, reqIter.size(), reqLoc)
 				set.s.diffMap[reqLoc] = set.op
+				changed = true
+			}
+		}
+
+		// fill base only if room in this op, don't make more ops just for base
+		baseDigest := baseIter.digest()
+		if baseDigest != cdig.Zero && len(set.op.baseInfo) < set.maxOpSize && !set.isUsing(baseDigest) {
+			baseLoc, basePresent := set.s.digestPresent(tx, baseDigest)
+			if basePresent {
+				set.markUsing(baseDigest)
+				set.op.addBase(baseDigest, baseIter.size(), baseLoc)
 				changed = true
 			}
 		}
@@ -1069,7 +1064,9 @@ func (set *opSet) log(
 
 	for i, op := range set.ops {
 		if i != 0 && i != len(set.ops)-1 {
-			fmt.Fprintf(&sb, " …%d more…", len(set.ops)-2)
+			if i == 1 {
+				fmt.Fprintf(&sb, " …%d more…", len(set.ops)-2)
+			}
 		} else if op.hasBase() {
 			fmt.Fprintf(&sb, " [%d:%d <~ %d:%d]", len(op.reqInfo), op.reqTotalSize, len(op.baseInfo), op.baseTotalSize)
 		} else {
