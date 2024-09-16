@@ -54,7 +54,8 @@ func withStartConfig(c *cobra.Command) runE {
 	const region = "us-east-1"
 	const level = 9
 	defCopyDest := fmt.Sprintf("s3://%s/%s/?region=%s&compression=zstd&compression-level=%d", bucket, subdir, region, level)
-	defUpstream := fmt.Sprintf("https://%s.s3.amazonaws.com/%s/", bucket, subdir) // note missing region
+	// note missing region since it's us-east-1. also note trailing slash must be present to match cache key.
+	defUpstream := fmt.Sprintf("https://%s.s3.amazonaws.com/%s/", bucket, subdir)
 	c.Flags().StringVar(&cfg.Args.StyxRepo.Repo, "styx_repo", "https://github.com/dnr/styx/", "url of styx repo")
 	c.Flags().StringVar(&cfg.Args.CopyDest, "copy_dest", defCopyDest, "store path for copying built packages")
 	c.Flags().StringVar(&cfg.Args.ManifestUpstream, "manifest_upstream", defUpstream, "read-only url for dest store")
