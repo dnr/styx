@@ -103,7 +103,7 @@ func (s *server) handleManifest(w http.ResponseWriter, req *http.Request) {
 
 	log.Println("req", r.StorePathHash, "from", r.Upstream)
 
-	cmpSb, err := s.mb.Build(req.Context(), r.Upstream, r.StorePathHash, r.ShardTotal, r.ShardIndex, "")
+	mres, err := s.mb.Build(req.Context(), r.Upstream, r.StorePathHash, r.ShardTotal, r.ShardIndex, "")
 
 	if err != nil {
 		log.Println("build error:", err)
@@ -128,7 +128,7 @@ func (s *server) handleManifest(w http.ResponseWriter, req *http.Request) {
 	}
 
 	w.Header().Set("Content-Encoding", "zstd")
-	w.Write(cmpSb)
+	w.Write(mres.Bytes)
 }
 
 func (s *server) handleChunkDiff(w http.ResponseWriter, req *http.Request) {

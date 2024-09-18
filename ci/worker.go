@@ -24,6 +24,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/autoscaling"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/ssm"
 	"github.com/nix-community/go-nix/pkg/narinfo/signature"
 	"go.temporal.io/api/workflowservice/v1"
@@ -36,6 +37,7 @@ import (
 	"github.com/dnr/styx/common"
 	"github.com/dnr/styx/common/errgroup"
 	"github.com/dnr/styx/manifester"
+	"github.com/dnr/styx/pb"
 )
 
 type (
@@ -64,8 +66,10 @@ type (
 	}
 
 	heavyActivities struct {
-		cfg WorkerConfig
-		b   *manifester.ManifestBuilder
+		cfg   WorkerConfig
+		b     *manifester.ManifestBuilder
+		zp    *common.ZstdCtxPool
+		s3cli *s3.Client
 	}
 
 	scaler struct {
@@ -96,6 +100,7 @@ const (
 	// build
 	buildHeartbeat = 1 * time.Minute
 	buildTimeout   = 2 * time.Hour
+	gcInterval     = 7 * 24 * time.Hour
 )
 
 var globalScaler atomic.Pointer[scaler]
@@ -142,7 +147,17 @@ func RunWorker(ctx context.Context, cfg WorkerConfig) error {
 			return err
 		}
 		w = worker.New(c, heavyTaskQueue, worker.Options{})
-		w.RegisterActivity(&heavyActivities{cfg: cfg, b: b})
+		s3cli, err := getS3Cli()
+		if err != nil {
+			return err
+		}
+		ha := &heavyActivities{
+			cfg:   cfg,
+			b:     b,
+			zp:    common.GetZstdCtxPool(),
+			s3cli: s3cli,
+		}
+		w.RegisterActivity(ha)
 	}
 	return w.Run(worker.InterruptCh())
 }
@@ -226,6 +241,9 @@ func ci(ctx workflow.Context, args *CiArgs) error {
 		l.Info("build succeeded", "relid", args.LastRelID, "styx", args.LastStyxCommit)
 		prevNames := args.PrevNames
 		args.PrevNames = bres.Names
+		if bres.NewLastGC > 0 {
+			args.LastGC = bres.NewLastGC
+		}
 
 		// notify
 		ciNotify(ctx, &notifyReq{
@@ -236,6 +254,7 @@ func ci(ctx workflow.Context, args *CiArgs) error {
 			PrevNames:     prevNames,
 			NewNames:      bres.Names,
 			ManifestStats: bres.ManifestStats,
+			GCSummary:     bres.GCSummary,
 		})
 	}
 	return workflow.NewContinueAsNewError(ctx, ci, args)
@@ -517,16 +536,20 @@ func (a *heavyActivities) HeavyBuild(ctx context.Context, req *buildReq) (*build
 		return nil, err
 	}
 	var pathInfo []pathInfoJson
-	var toSign bytes.Buffer
-	var toCopy bytes.Buffer
-	var toManifest []manifestReq
-	var names []string
 	if err := json.Unmarshal(j, &pathInfo); err != nil {
 		l.Error("get closure json unmarshal error", "error", err)
 		return nil, err
 	}
 
+	var toSign, toCopy bytes.Buffer
+	toManifest := make([]manifestReq, 0, len(pathInfo))
+	names := make([]string, 0, len(pathInfo))
+	sphForRoot := make([]string, 0, len(pathInfo))
+
 	for _, pi := range pathInfo {
+		// add all to root record in case some of these filtered ones end up getting copied
+		sphForRoot = append(sphForRoot, pi.Path[11:43])
+
 		// filter out tiny build-specific stuff
 		if strings.Contains(pi.Path, "-nixos-system-") ||
 			strings.Contains(pi.Path, "-security-wrapper-") ||
@@ -534,6 +557,7 @@ func (a *heavyActivities) HeavyBuild(ctx context.Context, req *buildReq) (*build
 			strings.Contains(pi.Path, "-etc-") {
 			continue
 		}
+
 		names = append(names, pi.Path[44:])
 		public := pi.fromPublicCache()
 		upstream := req.Args.PublicCacheUpstream
@@ -606,17 +630,58 @@ func (a *heavyActivities) HeavyBuild(ctx context.Context, req *buildReq) (*build
 	egCtx := errgroup.WithContext(ctx)
 	egCtx.SetLimit(runtime.NumCPU())
 	a.b.ClearStats()
-	for _, m := range toManifest {
+	mcacheForRoot := make([]string, len(toManifest))
+	for i, m := range toManifest {
 		m := m
 		egCtx.Go(func() error {
 			sph := m.storePath[11:43]
-			_, err := a.b.Build(egCtx, m.upstream, sph, 0, 0, m.storePath)
+			mres, err := a.b.Build(egCtx, m.upstream, sph, 0, 0, m.storePath)
+			if mres != nil {
+				mcacheForRoot[i] = mres.CacheKey
+			}
 			return err
 		})
 	}
 	if err := egCtx.Wait(); err != nil {
 		l.Error("manifest error", "error", err)
 		return nil, err
+	}
+
+	// write root
+
+	stage.Store("write root")
+	btime := time.Now()
+	root := &pb.BuildRoot{
+		Meta: &pb.BuildRootMeta{
+			BuildTime:  btime.Unix(),
+			NixRelId:   req.RelID,
+			StyxCommit: req.StyxCommit,
+		},
+		StorePathHash: sphForRoot,
+		Manifest:      mcacheForRoot,
+	}
+	brkey := strings.Join([]string{
+		"build",
+		btime.Format(time.RFC3339),
+		req.RelID,
+		req.StyxCommit[:12],
+	}, "@")
+	err = a.writeBuildRoot(ctx, root, brkey)
+	if err != nil {
+		l.Error("write build root error", "error", err)
+		return nil, err
+	}
+
+	// gc
+
+	newLastGC := req.Args.LastGC
+	var gcSummary strings.Builder
+	if btime.Unix()-req.Args.LastGC > int64(gcInterval.Seconds()) {
+		newLastGC = btime.Unix()
+
+		stage.Store("gc")
+
+		// FIXME
 	}
 
 	slices.Sort(names)
@@ -626,6 +691,8 @@ func (a *heavyActivities) HeavyBuild(ctx context.Context, req *buildReq) (*build
 	return &buildRes{
 		Names:         names,
 		ManifestStats: a.b.Stats(),
+		NewLastGC:     newLastGC,
+		GCSummary:     gcSummary.String(),
 	}, nil
 }
 
@@ -700,6 +767,16 @@ var getSSMCli = sync.OnceValues(func() (*ssm.Client, error) {
 		return nil, err
 	}
 	return ssm.NewFromConfig(awscfg), nil
+})
+
+var getS3Cli = sync.OnceValues(func() (*s3.Client, error) {
+	awscfg, err := getAwsCfg()
+	if err != nil {
+		return nil, err
+	}
+	return s3.NewFromConfig(awscfg, func(o *s3.Options) {
+		o.EndpointOptions.DisableHTTPS = true
+	}), nil
 })
 
 func (pi *pathInfoJson) fromPublicCache() bool {

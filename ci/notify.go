@@ -73,6 +73,11 @@ Packages:
 {{.}}
 {{end}}
 {{end}}
+{{if .req.GCSummary}}
+
+GC summary:
+{{.req.GCSummary}}
+{{end}}
 `)), args)
 	if err != nil {
 		return err

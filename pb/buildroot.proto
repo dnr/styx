@@ -1,0 +1,18 @@
+syntax = "proto3";
+
+package pb;
+option go_package = "github.com/dnr/styx/pb";
+
+message BuildRoot {
+  BuildRootMeta meta = 10;
+  // store path hash as nix32 (base of .narinfo file in nix cache)
+  repeated string store_path_hash = 5;
+  // manifest cache key
+  repeated string manifest = 6;
+}
+
+message BuildRootMeta {
+  int64 build_time = 1;
+  string nix_rel_id = 2;
+  string styx_commit = 3;
+}

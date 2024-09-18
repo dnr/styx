@@ -30,6 +30,7 @@ type (
 		LastRelID      string // "nixos-23.11.7609.5c2ec3a5c2ee"
 		LastStyxCommit string
 		PrevNames      []string
+		LastGC         int64 // unix seconds
 	}
 
 	RepoConfig struct {
@@ -65,6 +66,8 @@ type (
 		FakeError     string
 		Names         []string
 		ManifestStats manifester.Stats
+		NewLastGC     int64  `json:",omitempty"`
+		GCSummary     string `json:",omitempty"`
 	}
 
 	notifyReq struct {
@@ -75,5 +78,6 @@ type (
 		BuildElapsed        time.Duration
 		PrevNames, NewNames []string
 		ManifestStats       manifester.Stats
+		GCSummary           string `json:",omitempty"`
 	}
 )

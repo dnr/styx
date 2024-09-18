@@ -79,6 +79,11 @@ type (
 		// Sign manifests with these keys.
 		SigningKeys []signature.SecretKey
 	}
+
+	ManifestBuildRes struct {
+		CacheKey string // path relative to ManifestCachePath
+		Bytes    []byte
+	}
 )
 
 var (
@@ -130,7 +135,7 @@ func (b *ManifestBuilder) Build(
 	upstream, storePathHash string,
 	shardTotal, shardIndex int,
 	useLocalStoreDump string,
-) ([]byte, error) {
+) (*ManifestBuildRes, error) {
 	// get narinfo
 
 	upstreamUrl, err := url.Parse(upstream)
@@ -345,7 +350,10 @@ func (b *ManifestBuilder) Build(
 	}
 	log.Println("manifest", storePathHash, "added to cache")
 	b.stats.Manifests.Add(1)
-	return cmpSb, nil
+	return &ManifestBuildRes{
+		CacheKey: cacheKey,
+		Bytes:    cmpSb,
+	}, nil
 }
 
 func (b *ManifestBuilder) BuildFromNar(ctx context.Context, args *BuildArgs, r io.Reader) (*pb.Manifest, error) {
