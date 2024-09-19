@@ -67,6 +67,16 @@ func withStartConfig(c *cobra.Command) runE {
 	}
 }
 
+func withGCConfig(c *cobra.Command) runE {
+	var cfg ci.GCConfig
+	c.Flags().StringVar(&cfg.Bucket, "bucket", "styx-1", "s3 bucket")
+	c.Flags().DurationVar(&cfg.MaxAge, "max_age", 30*24*time.Hour, "gc age")
+	return func(c *cobra.Command, args []string) error {
+		store(c, cfg)
+		return nil
+	}
+}
+
 func main() {
 	root := cmd(
 		&cobra.Command{
@@ -85,6 +95,13 @@ func main() {
 			withStartConfig,
 			func(c *cobra.Command, args []string) error {
 				return ci.Start(c.Context(), get[ci.StartConfig](c))
+			},
+		),
+		cmd(
+			&cobra.Command{Use: "gclocal", Short: "run gc from this process (mostly for testing)"},
+			withGCConfig,
+			func(c *cobra.Command, args []string) error {
+				return ci.GCLocal(c.Context(), get[ci.GCConfig](c))
 			},
 		),
 	)
