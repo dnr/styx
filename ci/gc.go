@@ -1,6 +1,7 @@
 package ci
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"log"
@@ -10,8 +11,14 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"google.golang.org/protobuf/proto"
 
 	"github.com/dnr/styx/common"
+	"github.com/dnr/styx/pb"
+)
+
+const (
+	buildRootPrefix = "buildroot/"
 )
 
 type (
@@ -37,6 +44,30 @@ type (
 
 func (gc *gc) logln(args ...any)            { fmt.Fprintln(gc.summary, args...) }
 func (gc *gc) logf(msg string, args ...any) { fmt.Fprintf(gc.summary, msg+"\n", args...) }
+
+func (gc *gc) writeBuildRoot(ctx context.Context, br *pb.BuildRoot, key string) error {
+	data, err := proto.Marshal(br)
+	if err != nil {
+		return err
+	}
+
+	key = buildRootPrefix + key
+	z := gc.zp.Get()
+	defer gc.zp.Put(z)
+	d, err := z.Compress(nil, data)
+	if err != nil {
+		return err
+	}
+	_, err = gc.s3.PutObject(ctx, &s3.PutObjectInput{
+		Bucket:          &gc.bucket,
+		Key:             &key,
+		Body:            bytes.NewReader(d),
+		CacheControl:    aws.String("public, max-age=31536000"),
+		ContentType:     aws.String("application/octet-stream"),
+		ContentEncoding: aws.String("zstd"),
+	})
+	return err
+}
 
 func (gc *gc) run() error {
 	if err := gc.prune(); err != nil {

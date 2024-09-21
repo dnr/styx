@@ -103,8 +103,10 @@ const (
 	buildHeartbeat    = 1 * time.Minute
 	buildTimeout      = 2 * time.Hour
 	buildStartTimeout = 30 * time.Minute // if build hasn't started yet, abort
-	gcInterval        = 7 * 24 * time.Hour
-	gcMaxAge          = 90 * 24 * time.Hour
+
+	// gc
+	gcInterval = 7 * 24 * time.Hour
+	gcMaxAge   = 90 * 24 * time.Hour
 )
 
 var globalScaler atomic.Pointer[scaler]
@@ -672,8 +674,20 @@ func (a *heavyActivities) HeavyBuild(ctx context.Context, req *buildReq) (*build
 
 	// write root
 
-	stage.Store("write root")
 	btime := time.Now()
+	var gcSummary strings.Builder
+	gc := gc{
+		ctx:     ctx,
+		now:     btime,
+		stage:   stage.Store,
+		summary: &gcSummary,
+		zp:      a.zp,
+		s3:      a.s3cli,
+		bucket:  a.cfg.CSWCfg.ChunkBucket,
+		age:     gcMaxAge,
+	}
+
+	stage.Store("write root")
 	root := &pb.BuildRoot{
 		Meta: &pb.BuildRootMeta{
 			BuildTime:  btime.Unix(),
@@ -689,7 +703,7 @@ func (a *heavyActivities) HeavyBuild(ctx context.Context, req *buildReq) (*build
 		req.RelID,
 		req.StyxCommit[:12],
 	}, "@")
-	err = a.writeBuildRoot(ctx, root, brkey)
+	err = gc.writeBuildRoot(ctx, root, brkey)
 	if err != nil {
 		l.Error("write build root error", "error", err)
 		return nil, err
@@ -698,19 +712,8 @@ func (a *heavyActivities) HeavyBuild(ctx context.Context, req *buildReq) (*build
 	// gc
 
 	newLastGC := req.Args.LastGC
-	var gcSummary strings.Builder
 	if btime.Unix()-req.Args.LastGC > int64(gcInterval.Seconds()) {
 		newLastGC = btime.Unix()
-		gc := gc{
-			ctx:     ctx,
-			now:     btime,
-			stage:   stage.Store,
-			summary: &gcSummary,
-			zp:      a.zp,
-			s3:      a.s3cli,
-			bucket:  a.cfg.CSWCfg.ChunkBucket,
-			age:     gcMaxAge,
-		}
 		gc.run()
 	}
 
