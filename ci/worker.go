@@ -27,6 +27,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/ssm"
 	"github.com/nix-community/go-nix/pkg/narinfo/signature"
+	enumspb "go.temporal.io/api/enums/v1"
 	"go.temporal.io/api/workflowservice/v1"
 	"go.temporal.io/sdk/activity"
 	"go.temporal.io/sdk/client"
@@ -73,12 +74,13 @@ type (
 	}
 
 	scaler struct {
-		cfg      WorkerConfig
-		ns       string
-		c        client.Client
-		notifyCh chan struct{}
-		prev     int
-		asgcli   *autoscaling.Client
+		cfg       WorkerConfig
+		ns        string
+		c         client.Client
+		notifyCh  chan struct{}
+		prev      int
+		asgcli    *autoscaling.Client
+		startTime time.Time // non-zero when we scale up asg
 	}
 
 	pathInfoJson struct {
@@ -98,9 +100,10 @@ const (
 	repoPollInterval    = 10 * time.Minute // github unauthenticated limit = 60/hour/ip
 
 	// build
-	buildHeartbeat = 1 * time.Minute
-	buildTimeout   = 2 * time.Hour
-	gcInterval     = 7 * 24 * time.Hour
+	buildHeartbeat    = 1 * time.Minute
+	buildTimeout      = 2 * time.Hour
+	buildStartTimeout = 30 * time.Minute // if build hasn't started yet, abort
+	gcInterval        = 7 * 24 * time.Hour
 )
 
 var globalScaler atomic.Pointer[scaler]
@@ -334,15 +337,29 @@ func (s *scaler) run() {
 }
 
 func (s *scaler) iter() {
-	pending, err := s.getPending()
+	scheduled, started, err := s.getPending()
 	if err != nil {
 		log.Println("scaler getPending error:", err)
 		return
 	}
 
 	target := 0
-	if pending > 0 {
-		target = 1
+	if s.startTime.IsZero() {
+		if scheduled > 0 || started > 0 {
+			target = 1
+			s.startTime = time.Now()
+		}
+	} else {
+		if scheduled > 0 || started > 0 {
+			target = 1
+			if started == 0 && time.Since(s.startTime) > buildStartTimeout {
+				log.Printf("heavy worker did not pick up task in %v, aborting", buildStartTimeout)
+				target = 0
+			}
+		}
+		if target == 0 {
+			s.startTime = time.Time{}
+		}
 	}
 
 	if target != s.prev {
@@ -351,7 +368,7 @@ func (s *scaler) iter() {
 	}
 }
 
-func (s *scaler) getPending() (int, error) {
+func (s *scaler) getPending() (int, int, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
@@ -360,22 +377,27 @@ func (s *scaler) getPending() (int, error) {
 		Query:     fmt.Sprintf(`WorkflowType = "%s" and ExecutionStatus = "Running"`, workflowType),
 	})
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 
-	total := 0
+	var scheduled, started int
 	for _, ex := range res.Executions {
 		desc, err := s.c.DescribeWorkflowExecution(ctx, ex.Execution.WorkflowId, ex.Execution.RunId)
 		if err != nil {
-			return 0, err
+			return 0, 0, err
 		}
 		for _, act := range desc.PendingActivities {
 			if strings.Contains(strings.ToLower(act.ActivityType.Name), "heavy") {
-				total++
+				switch act.State {
+				case enumspb.PENDING_ACTIVITY_STATE_SCHEDULED:
+					scheduled++
+				case enumspb.PENDING_ACTIVITY_STATE_STARTED:
+					started++
+				}
 			}
 		}
 	}
-	return total, nil
+	return scheduled, started, nil
 }
 
 func (s *scaler) setSize(size int) {
