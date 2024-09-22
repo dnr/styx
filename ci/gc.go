@@ -108,6 +108,29 @@ func (gc *gc) readOne(ctx context.Context, key string, dst []byte) ([]byte, erro
 	return body, nil
 }
 
+func (gc *gc) listPrefix(ctx context.Context, prefix string, f func(s3types.Object) error) error {
+	var token *string
+	for {
+		res, err := gc.s3.ListObjectsV2(ctx, &s3.ListObjectsV2Input{
+			Bucket:            &gc.bucket,
+			Prefix:            aws.String(prefix),
+			ContinuationToken: token,
+		})
+		if err != nil {
+			return err
+		}
+		for _, c := range res.Contents {
+			if err := f(c); err != nil {
+				return err
+			}
+		}
+		if res.NextContinuationToken == nil {
+			return nil
+		}
+		token = res.NextContinuationToken
+	}
+}
+
 func (gc *gc) run(ctx context.Context) error {
 	if roots, err := gc.loadRoots(ctx); err != nil {
 		return err
@@ -130,39 +153,24 @@ func (gc *gc) del(path string, size int64) {
 func (gc *gc) loadRoots(ctx context.Context) ([]string, error) {
 	gc.stage("gc load roots")
 	var roots []string
-	var token *string
-	for {
-		res, err := gc.s3.ListObjectsV2(ctx, &s3.ListObjectsV2Input{
-			Bucket:            &gc.bucket,
-			Prefix:            aws.String(buildRootPrefix),
-			ContinuationToken: token,
-		})
-		if err != nil {
-			return nil, err
+	err := gc.listPrefix(ctx, buildRootPrefix, func(o s3types.Object) error {
+		key := aws.ToString(o.Key)
+		base := path.Base(key)
+		parts := strings.Split(base, "@") // "build", time, relid, styx commit
+		if len(parts) < 4 {
+			log.Println("bad buildroot key", base)
+		} else if tm, err := time.Parse(time.RFC3339, parts[1]); err != nil {
+			log.Println("bad buildroot key", base, "time parse error", err)
+		} else if gc.now.Sub(tm) > gc.age {
+			log.Println("build root", base, "too old, gcing")
+			gc.del(key, aws.ToInt64(o.Size))
+		} else {
+			log.Println("using build root", base)
+			roots = append(roots, base)
 		}
-
-		for _, c := range res.Contents {
-			base := path.Base(*c.Key)
-			parts := strings.Split(base, "@") // "build", time, relid, styx commit
-			if len(parts) < 4 {
-				log.Println("bad buildroot key", base)
-			} else if tm, err := time.Parse(time.RFC3339, parts[1]); err != nil {
-				log.Println("bad buildroot key", base, "time parse error", err)
-			} else if gc.now.Sub(tm) > gc.age {
-				log.Println("build root", base, "too old, gcing")
-				gc.del(*c.Key, *c.Size)
-			} else {
-				log.Println("using build root", base)
-				roots = append(roots, base)
-			}
-		}
-
-		if res.NextContinuationToken == nil {
-			break
-		}
-		token = res.NextContinuationToken
-	}
-	return roots, nil
+		return nil
+	})
+	return roots, err
 }
 
 func (gc *gc) trace(ctx context.Context, roots []string) error {
