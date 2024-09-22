@@ -677,7 +677,6 @@ func (a *heavyActivities) HeavyBuild(ctx context.Context, req *buildReq) (*build
 	btime := time.Now()
 	var gcSummary strings.Builder
 	gc := gc{
-		ctx:     ctx,
 		now:     btime,
 		stage:   stage.Store,
 		summary: &gcSummary,
@@ -714,7 +713,7 @@ func (a *heavyActivities) HeavyBuild(ctx context.Context, req *buildReq) (*build
 	newLastGC := req.Args.LastGC
 	if btime.Unix()-req.Args.LastGC > int64(gcInterval.Seconds()) {
 		newLastGC = btime.Unix()
-		gc.run()
+		gc.run(ctx)
 	}
 
 	slices.Sort(names)

@@ -213,6 +213,8 @@ func (s *urlChunkStoreRead) Get(ctx context.Context, key string, dst []byte) ([]
 			}
 			return dst[:len(dst)+n], nil
 		}
+	} else if dst == nil {
+		return b, nil
 	} else {
 		return append(dst, b...), nil
 	}
