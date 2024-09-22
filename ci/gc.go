@@ -3,6 +3,7 @@ package ci
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -234,6 +235,7 @@ func (gc *gc) traceManifest(eg *errgroup.Group, mc string) error {
 		}
 		return err
 	}
+	gc.goodManifest.Store(mc, struct{}{})
 	// don't verify signature, assume it's good
 	var sm pb.SignedMessage
 	err = proto.Unmarshal(b, &sm)
@@ -275,7 +277,55 @@ func (gc *gc) traceManifest(eg *errgroup.Group, mc string) error {
 
 func (gc *gc) list(ctx context.Context) error {
 	gc.stage("gc list")
-	return nil
+	eg := errgroup.WithContext(ctx)
+	eg.SetLimit(5)
+	eg.Go(func() error {
+		return gc.listPrefix(eg, "nixcache/", func(o s3types.Object) error {
+			key := aws.ToString(o.Key)
+			if rest, ok := strings.CutPrefix(key, "nixcache/nar/"); ok {
+				if _, ok := gc.goodNar.Load(rest); !ok {
+					gc.del(key, aws.ToInt64(o.Size))
+				}
+			} else if rest, ok := strings.CutSuffix(key, ".narinfo"); ok {
+				rest = strings.TrimPrefix(rest, "nixcache/")
+				if _, ok := gc.goodNi.Load(rest); !ok {
+					gc.del(key, aws.ToInt64(o.Size))
+				}
+			} else if key == "nixcache/nix-cache-info" {
+				// leave
+			} else {
+				log.Println("unexpected file in nix cache", key)
+				gc.del(key, aws.ToInt64(o.Size))
+			}
+			return nil
+		})
+	})
+	eg.Go(func() error {
+		return gc.listPrefix(eg, manifester.ManifestCachePath[1:], func(o s3types.Object) error {
+			key := aws.ToString(o.Key)
+			if _, ok := gc.goodManifest.Load(path.Base(key)); !ok {
+				gc.del(key, aws.ToInt64(o.Size))
+			}
+			return nil
+		})
+	})
+	for _, pchar := range "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_" {
+		pchar := pchar
+		eg.Go(func() error {
+			return gc.listPrefix(eg, manifester.ChunkReadPath[1:]+string(pchar), func(o s3types.Object) error {
+				key := aws.ToString(o.Key)
+				b, err := base64.RawURLEncoding.DecodeString(path.Base(key))
+				if err != nil {
+					log.Println("unexpected file in chunk store", key)
+					gc.del(key, aws.ToInt64(o.Size))
+				} else if _, ok := gc.goodChunk.Load(cdig.FromBytes(b)); !ok {
+					gc.del(key, aws.ToInt64(o.Size))
+				}
+				return nil
+			})
+		})
+	}
+	return eg.Wait()
 }
 
 func (gc *gc) remove(ctx context.Context) error {
