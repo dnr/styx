@@ -125,8 +125,7 @@ func (s *s3ChunkStoreWrite) PutIfNotExists(ctx context.Context, path, key string
 		Bucket: &s.bucket,
 		Key:    &key,
 	})
-	var notFound *s3types.NotFound
-	if err == nil || !errors.As(err, &notFound) {
+	if err == nil || !IsS3NotFound(err) {
 		return nil, err
 	}
 	z := s.zp.Get()
@@ -218,4 +217,11 @@ func (s *urlChunkStoreRead) Get(ctx context.Context, key string, dst []byte) ([]
 	} else {
 		return append(dst, b...), nil
 	}
+}
+
+func IsS3NotFound(err error) bool {
+	// the S3 sdk is inconsistent about these, just check both
+	var nsk *s3types.NoSuchKey
+	var nf *s3types.NotFound
+	return errors.As(err, &nsk) || errors.As(err, &nf)
 }

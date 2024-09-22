@@ -806,9 +806,7 @@ var getS3Cli = sync.OnceValues(func() (*s3.Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	return s3.NewFromConfig(awscfg, func(o *s3.Options) {
-		o.EndpointOptions.DisableHTTPS = true
-	}), nil
+	return s3.NewFromConfig(awscfg), nil
 })
 
 func (pi *pathInfoJson) fromPublicCache() bool {
