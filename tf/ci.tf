@@ -154,7 +154,7 @@ resource "aws_launch_template" "charon_worker" {
   block_device_mappings {
     device_name = "/dev/xvda"
     ebs {
-      volume_size = 40
+      volume_size = 60
       volume_type = "gp3"
     }
   }

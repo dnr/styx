@@ -294,7 +294,7 @@ func ciBuild(ctx workflow.Context, req *buildReq) (*buildRes, error) {
 		StartToCloseTimeout: buildTimeout,
 		RetryPolicy: &temporal.RetryPolicy{
 			// this activity is expensive, don't let it fail forever
-			MaximumAttempts: 3,
+			MaximumAttempts: 1,
 		},
 	})
 	var res buildRes
@@ -521,8 +521,8 @@ func (a *heavyActivities) HeavyBuild(ctx context.Context, req *buildReq) (retBui
 			return
 		}
 		// grab some logs
-		startLog, _ := exec.Command("journalctl", "-u", "charon", "-n", "+200").Output()
-		endLog, _ := exec.Command("journalctl", "-u", "charon", "-n", "200").Output()
+		startLog, _ := exec.Command("journalctl", "-u", "charon", "-n", "+10").Output()
+		endLog, _ := exec.Command("journalctl", "-u", "charon", "-n", "100").Output()
 		logs := string(startLog) + "\n...\n" + string(endLog)
 		details := &buildErrDetails{Logs: logs}
 		errType := fmt.Sprintf("%T", retErr)
@@ -563,9 +563,6 @@ func (a *heavyActivities) HeavyBuild(ctx context.Context, req *buildReq) (retBui
 	out, err := cmd.Output()
 	if err != nil {
 		l.Error("build error", "error", err)
-		// TODO: if this fails, look at log output to figure out if it's retryable or not, and
-		// return an appropriate error (with attached logs).
-		// note we can't rely on exit code: https://github.com/NixOS/nix/issues/4813
 		return nil, err
 	}
 
