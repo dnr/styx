@@ -172,6 +172,7 @@ func RunWorker(ctx context.Context, cfg WorkerConfig) error {
 func ci(ctx workflow.Context, args *CiArgs) error {
 	var a *activities
 	l := workflow.GetLogger(ctx)
+	forceCh := workflow.GetSignalChannel(ctx, "buildnow")
 	for !workflow.GetInfo(ctx).GetContinueAsNewSuggested() {
 		// poll nixos channels
 		cctx, cancel := workflow.WithCancel(ctx)
@@ -209,6 +210,9 @@ func ci(ctx workflow.Context, args *CiArgs) error {
 					args.LastStyxCommit = res.Commit
 				}
 			}).
+			AddReceive(forceCh, func(workflow.ReceiveChannel, bool) {
+				forceCh.ReceiveAsync(nil)
+			}).
 			Select(ctx)
 
 		cancel() // cancel other poller
@@ -234,9 +238,14 @@ func ci(ctx workflow.Context, args *CiArgs) error {
 		})
 		if err != nil {
 			l.Error("build error", "error", err)
+			var deets *buildErrDetails
+			if appErr, ok := err.(*temporal.ApplicationError); ok {
+				_ = appErr.Details(&deets)
+			}
 			ciNotify(ctx, &notifyReq{
-				Args:  args,
-				Error: err.Error(),
+				Args:         args,
+				Error:        err.Error(),
+				ErrorDetails: deets,
 			})
 			workflow.Sleep(ctx, time.Minute)
 			continue
@@ -503,24 +512,41 @@ func getLatestCommit(ctx context.Context, repo, branch string) (*ghLatestCommit,
 
 // heavy activities (all must have "heavy" in the name for scaler to work)
 
-func (a *heavyActivities) HeavyBuild(ctx context.Context, req *buildReq) (*buildRes, error) {
+func (a *heavyActivities) HeavyBuild(ctx context.Context, req *buildReq) (retBuildRes *buildRes, retErr error) {
 	l := activity.GetLogger(ctx)
 	info := activity.GetInfo(ctx)
 
-	var stage atomic.Value
-	stage.Store("init")
+	defer func() {
+		if retErr == nil {
+			return
+		}
+		// grab some logs
+		startLog, _ := exec.Command("journalctl", "-u", "charon", "-n", "+200").Output()
+		endLog, _ := exec.Command("journalctl", "-u", "charon", "-n", "200").Output()
+		logs := string(startLog) + "\n...\n" + string(endLog)
+		details := &buildErrDetails{Logs: logs}
+		errType := fmt.Sprintf("%T", retErr)
+		retErr = temporal.NewApplicationError(retErr.Error(), errType, details)
+	}()
+
+	var stageName atomic.Value
+	stage := func(s string) {
+		l.Info("====================== STAGE " + s)
+		stageName.Store(s)
+	}
+	stage("INIT")
 
 	go func() {
 		for ctx.Err() == nil {
 			time.Sleep(5 * time.Second)
-			activity.RecordHeartbeat(ctx, stage.Load())
+			activity.RecordHeartbeat(ctx, stageName.Load())
 		}
 	}()
 
 	// build
 
 	l.Info("building nixos...")
-	stage.Store("build")
+	stage("BUILD")
 	// Note: global nix config has our nix cache as substituter so we can pull stuff back
 	// from a previous run
 	cmd := exec.CommandContext(ctx,
@@ -546,7 +572,7 @@ func (a *heavyActivities) HeavyBuild(ctx context.Context, req *buildReq) (*build
 	// list
 
 	l.Info("getting package list from closure...")
-	stage.Store("list")
+	stage("LIST")
 	cmd = exec.CommandContext(ctx,
 		common.NixBin, "--extra-experimental-features", "nix-command",
 		"path-info",
@@ -604,7 +630,7 @@ func (a *heavyActivities) HeavyBuild(ctx context.Context, req *buildReq) (*build
 
 	if a.cfg.CacheSignKeySSM != "" {
 		l.Info("signing packages...")
-		stage.Store("sign")
+		stage("SIGN")
 		keyfile, err := getParamsAsFile(a.cfg.CacheSignKeySSM)
 		if err != nil {
 			return nil, err
@@ -631,7 +657,7 @@ func (a *heavyActivities) HeavyBuild(ctx context.Context, req *buildReq) (*build
 
 	if req.Args.CopyDest != "" {
 		l.Info("copying packages to dest store...")
-		stage.Store("copy")
+		stage("COPY")
 		cmd = exec.CommandContext(ctx,
 			common.NixBin, "--extra-experimental-features", "nix-command",
 			"copy",
@@ -651,7 +677,7 @@ func (a *heavyActivities) HeavyBuild(ctx context.Context, req *buildReq) (*build
 
 	// manifest
 
-	stage.Store("manifest")
+	stage("MANIFEST")
 	egCtx := errgroup.WithContext(ctx)
 	egCtx.SetLimit(runtime.NumCPU())
 	a.b.ClearStats()
@@ -678,7 +704,7 @@ func (a *heavyActivities) HeavyBuild(ctx context.Context, req *buildReq) (*build
 	var gcSummary strings.Builder
 	gc := gc{
 		now:     btime,
-		stage:   stage.Store,
+		stage:   stage,
 		summary: &gcSummary,
 		zp:      a.zp,
 		s3:      a.s3cli,
@@ -686,7 +712,7 @@ func (a *heavyActivities) HeavyBuild(ctx context.Context, req *buildReq) (*build
 		age:     gcMaxAge,
 	}
 
-	stage.Store("write root")
+	stage("WRITE ROOT")
 	root := &pb.BuildRoot{
 		Meta: &pb.BuildRootMeta{
 			BuildTime:  btime.Unix(),

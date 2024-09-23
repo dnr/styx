@@ -69,12 +69,16 @@ type (
 		NewLastGC     int64  `json:",omitempty"`
 		GCSummary     string `json:",omitempty"`
 	}
+	buildErrDetails struct {
+		Logs string
+	}
 
 	notifyReq struct {
 		Args                *CiArgs
 		RelID               string
 		StyxCommit          string
 		Error               string
+		ErrorDetails        *buildErrDetails
 		BuildElapsed        time.Duration
 		PrevNames, NewNames []string
 		ManifestStats       manifester.Stats

@@ -2,7 +2,7 @@
 set -euxo pipefail
 cd "$(dirname $(dirname "$0"))"
 
-store="s3://styx-1/nixcache/?region=us-east-1&compression=zstd&parallel-compression=true"
+store="s3://styx-1/nixcache/?region=us-east-1&compression=zstd"
 charon=$(nix-build --no-out-link -A charon)
 
 nix store sign -v --key-file keys/styx-nixcache-test-1.secret $(nix-store -qR "$charon")
@@ -10,3 +10,5 @@ nix copy -v --to "$store" "$charon"
 
 sed -i "s,charon_storepath\\s*=.*,charon_storepath = \"$charon\"," tf/terraform.tfvars
 terraform -chdir=tf apply
+
+orq run
