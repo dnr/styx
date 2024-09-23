@@ -35,7 +35,7 @@ const (
 type (
 	gc struct {
 		now     time.Time
-		stage   func(any)
+		stage   func(string)
 		summary *strings.Builder
 		zp      *common.ZstdCtxPool
 		s3      *s3.Client
@@ -67,12 +67,8 @@ func GCLocal(ctx context.Context, cfg GCConfig) error {
 		return err
 	}
 	gc := gc{
-		now: time.Now(),
-		stage: func(v any) {
-			log.Println("======================")
-			log.Println(v)
-			log.Println("======================")
-		},
+		now:     time.Now(),
+		stage:   func(s string) { log.Println("======================", "STAGE", s) },
 		summary: &sb,
 		zp:      common.GetZstdCtxPool(),
 		s3:      s3,
@@ -200,7 +196,7 @@ func (gc *gc) del(path string, size int64) {
 }
 
 func (gc *gc) loadRoots(ctx context.Context) ([]string, error) {
-	gc.stage("gc load roots")
+	gc.stage("GC LOAD ROOTS")
 	var roots []string
 	err := gc.listPrefix(ctx, buildRootPrefix, func(o s3types.Object) error {
 		key := aws.ToString(o.Key)
@@ -229,7 +225,7 @@ func (gc *gc) loadRoots(ctx context.Context) ([]string, error) {
 }
 
 func (gc *gc) trace(ctx context.Context, roots []string) error {
-	gc.stage("gc trace")
+	gc.stage("GC TRACE")
 
 	eg := errgroup.WithContext(ctx)
 	eg.SetLimit(cmp.Or(gc.lim.trace, 50))
@@ -337,7 +333,7 @@ func (gc *gc) traceManifest(eg *errgroup.Group, mc string) error {
 }
 
 func (gc *gc) list(ctx context.Context) error {
-	gc.stage("gc list")
+	gc.stage("GC LIST")
 	eg := errgroup.WithContext(ctx)
 	eg.SetLimit(cmp.Or(gc.lim.list, 5))
 	eg.Go(func() error {
@@ -410,7 +406,7 @@ func (gc *gc) list(ctx context.Context) error {
 }
 
 func (gc *gc) remove(ctx context.Context) error {
-	gc.stage("gc remove")
+	gc.stage("GC REMOVE")
 
 	gc.logf("total : %9d objects, %14d bytes", gc.totalCount.Load(), gc.totalSize.Load())
 	gc.logf("remove: %9d objects, %14d bytes", gc.delCount.Load(), gc.delSize.Load())

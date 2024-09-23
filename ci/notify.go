@@ -56,6 +56,12 @@ func (a *activities) Notify(ctx context.Context, req *notifyReq) error {
 Charon build error:
 
 {{.req.Error}}
+
+{{with .req.ErrorDetails}}
+Logs:
+{{.Logs}}
+{{end}}
+
 {{else}}
 Charon build complete!
 
