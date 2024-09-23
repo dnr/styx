@@ -176,17 +176,20 @@ func (gc *gc) listPrefix(ctx context.Context, prefix string, f func(s3types.Obje
 func (gc *gc) run(ctx context.Context) error {
 	start := time.Now()
 	if roots, err := gc.loadRoots(ctx); err != nil {
+		gc.logln("gc loadRoots error:", err)
 		return err
 	} else if err := gc.trace(ctx, roots); err != nil {
+		gc.logln("gc trace error:", err)
 		return err
 	} else if err := gc.list(ctx); err != nil {
+		gc.logln("gc list error:", err)
 		return err
 	} else if err := gc.remove(ctx); err != nil {
+		gc.logln("gc remove error:", err)
 		return err
-	} else {
-		gc.logf("elapsed time: %s", time.Since(start))
-		return nil
 	}
+	gc.logf("gc done in %s", time.Since(start))
+	return nil
 }
 
 func (gc *gc) del(path string, size int64) {
@@ -412,37 +415,44 @@ func (gc *gc) remove(ctx context.Context) error {
 	gc.logf("remove: %9d objects, %14d bytes", gc.delCount.Load(), gc.delSize.Load())
 	gc.logf("keep  : %9d objects, %14d bytes", gc.totalCount.Load()-gc.delCount.Load(), gc.totalSize.Load()-gc.delSize.Load())
 
+	gc.logln("(skipping actual delete)")
 	return nil // FIXME
 
+	delerrors := 0
 	eg := errgroup.WithContext(ctx)
 	eg.SetLimit(cmp.Or(gc.lim.del, 100))
 	bsize := cmp.Or(gc.lim.batch, 100)
 	var batch []string
-	gc.toDelete.Range(func(k, _ any) bool {
-		batch = append(batch, k.(string))
-		if len(batch) >= bsize {
-			del := makeBatchDelete(batch)
-			batch = batch[:0]
-			eg.Go(func() error {
-				_, err := gc.s3.DeleteObjects(eg, &s3.DeleteObjectsInput{
-					Bucket: &gc.bucket,
-					Delete: del,
-				})
-				return err
-			})
+	flush := func() {
+		if len(batch) == 0 {
+			return
 		}
-		return true
-	})
-	if len(batch) > 0 {
+		del := makeBatchDelete(batch)
+		batch = batch[:0]
 		eg.Go(func() error {
-			_, err := gc.s3.DeleteObjects(eg, &s3.DeleteObjectsInput{
+			res, err := gc.s3.DeleteObjects(eg, &s3.DeleteObjectsInput{
 				Bucket: &gc.bucket,
-				Delete: makeBatchDelete(batch),
+				Delete: del,
 			})
+			if res != nil {
+				delerrors += len(res.Errors)
+			}
 			return err
 		})
 	}
-	return eg.Wait()
+	gc.toDelete.Range(func(k, _ any) bool {
+		batch = append(batch, k.(string))
+		if len(batch) >= bsize {
+			flush()
+		}
+		return true
+	})
+	flush()
+	err := eg.Wait()
+	if delerrors > 0 {
+		gc.logf("delete errors: %d", delerrors)
+	}
+	return err
 }
 
 func makeBatchDelete(keys []string) *s3types.Delete {
