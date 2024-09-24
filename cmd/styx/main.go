@@ -270,6 +270,23 @@ func main() {
 		),
 		cmd(
 			&cobra.Command{
+				Use:   "materialize <upstream> <store path> <dest>",
+				Short: "downloads a nix package to a regular filesystem (client)",
+				Args:  cobra.ExactArgs(3),
+			},
+			withStyxClient,
+			func(c *cobra.Command, args []string) error {
+				return get[*client.StyxClient](c).CallAndPrint(
+					daemon.MaterializePath, &daemon.MaterializeReq{
+						Upstream:  args[0],
+						StorePath: args[1],
+						DestPath:  args[2],
+					},
+				)
+			},
+		),
+		cmd(
+			&cobra.Command{
 				Use:   "prefetch <path>",
 				Short: "prefetch the given file or directory (client)",
 				Args:  cobra.ExactArgs(1),

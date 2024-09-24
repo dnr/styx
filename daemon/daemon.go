@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -72,7 +73,7 @@ type (
 		stateLock    sync.Mutex
 		cacheState   map[uint32]*openFileState // object id -> state
 		stateBySlab  map[uint16]*openFileState // slab id -> state
-		readfdBySlab map[uint16]int            // slab id -> readfd
+		readfdBySlab map[uint16]slabFds        // slab id -> readfd, cachefd
 		// readfds are kept in a separate map because after a restore, we may load the slab
 		// image and readfd before the slab is loaded by erofs/cachefiles. this doesn't make
 		// sense but it seems to work that way.
@@ -112,10 +113,13 @@ type (
 
 		// for slabs, slab images, and manifest slabs
 		slabId uint16
-		// cacheFd uint32
 
 		// for store images
 		imageData []byte // data from manifester to be written
+	}
+
+	slabFds struct {
+		readFd, cacheFd int
 	}
 
 	mountContext struct {
@@ -142,6 +146,7 @@ type (
 
 var _ erofs.SlabManager = (*Server)(nil)
 var errAlreadyMounted = errors.New("already mounted")
+var errAlreadyMountedElsewhere = errors.New("already mounted on another mountpoint")
 
 // init stuff
 
@@ -154,7 +159,7 @@ func NewServer(cfg Config) *Server {
 		builder:      erofs.NewBuilder(erofs.BuilderConfig{BlockShift: cfg.ErofsBlockShift}),
 		cacheState:   make(map[uint32]*openFileState),
 		stateBySlab:  make(map[uint16]*openFileState),
-		readfdBySlab: make(map[uint16]int),
+		readfdBySlab: make(map[uint16]slabFds),
 		presentMap:   *common.NewSimpleSyncMap[erofs.SlabLoc, struct{}](),
 		readKnownMap: *common.NewSimpleSyncMap[erofs.SlabLoc, struct{}](),
 		mountCtxMap:  *common.NewSimpleSyncMap[string, context.Context](),
@@ -274,10 +279,9 @@ func (s *Server) setupManifestSlab() error {
 		writeFd: common.TruncU32(fd), // write and read to same fd
 		tp:      typeManifestSlab,
 		slabId:  id,
-		// cacheFd: fd,
 	}
 	s.stateBySlab[id] = state
-	s.readfdBySlab[id] = fd
+	s.readfdBySlab[id] = slabFds{fd, fd}
 	return nil
 }
 
@@ -359,6 +363,7 @@ func (s *Server) startSocketServer() (err error) {
 	mux.HandleFunc(InitPath, jsonmw(s.handleInitReq))
 	mux.HandleFunc(MountPath, jsonmw(s.handleMountReq))
 	mux.HandleFunc(UmountPath, jsonmw(s.handleUmountReq))
+	mux.HandleFunc(MaterializePath, jsonmw(s.handleMaterializeReq))
 	mux.HandleFunc(PrefetchPath, jsonmw(s.handlePrefetchReq))
 	mux.HandleFunc(GcPath, jsonmw(s.handleGcReq))
 	mux.HandleFunc(DebugPath, jsonmw(s.handleDebugReq))
@@ -517,8 +522,12 @@ func (s *Server) handleMountReq(ctx context.Context, r *MountReq) (*Status, erro
 	var haveIsBare bool
 	err := s.imageTx(cookie, func(img *pb.DbImage) error {
 		if img.MountState == pb.MountState_Mounted {
-			// nix thinks it's not mounted but it is. return success so nix can enter in db.
-			return errAlreadyMounted
+			if img.MountPoint == r.MountPoint {
+				// nix thinks it's not mounted but it is. return success so nix can enter in db.
+				return errAlreadyMounted
+			} else {
+				return errAlreadyMountedElsewhere
+			}
 		}
 		img.StorePath = r.StorePath
 		img.Upstream = r.Upstream
@@ -557,7 +566,7 @@ func (s *Server) tryMount(ctx context.Context, req *MountReq, haveImageSize int6
 		mountCtx.isBare = haveIsBare
 	} else {
 		// if no image yet, get the manifest and build it
-		image, err := s.getManifestAndBuildImage(ctx, req)
+		_, image, err := s.getManifestAndBuildImage(ctx, req)
 		if err != nil {
 			return err
 		}
@@ -637,6 +646,7 @@ func (s *Server) handleUmountReq(ctx context.Context, r *UmountReq) (*Status, er
 	var mp string
 	err := s.imageTx(sph, func(img *pb.DbImage) error {
 		if img.MountState != pb.MountState_Mounted {
+			// TODO: check if erofs is actually mounted anyway and unmount
 			return mwErr(http.StatusNotFound, "not mounted")
 		} else if mp = img.MountPoint; mp == "" {
 			return mwErr(http.StatusInternalServerError, "mount point not set")
@@ -774,13 +784,12 @@ func (s *Server) closeAllFds() {
 	s.stateLock.Lock()
 	defer s.stateLock.Unlock()
 	for _, state := range s.cacheState {
-		var readFd int
+		var fds slabFds
 		switch state.tp {
 		case typeSlab, typeManifestSlab:
-			readFd = s.readfdBySlab[state.slabId]
+			fds = s.readfdBySlab[state.slabId]
 		}
-
-		s.closeState(state, readFd)
+		s.closeState(state, fds)
 	}
 }
 
@@ -1013,26 +1022,29 @@ func (s *Server) handleClose(msgId, objectId uint32) error {
 	if state.tp == typeSlab {
 		delete(s.stateBySlab, state.slabId)
 	}
-	var readFd int
+	var fds slabFds
 	switch state.tp {
 	case typeSlab, typeManifestSlab:
-		readFd = s.readfdBySlab[state.slabId]
+		fds = s.readfdBySlab[state.slabId]
 		delete(s.readfdBySlab, state.slabId)
 	}
 	delete(s.cacheState, objectId)
 	s.stateLock.Unlock()
 
 	// do rest of cleanup outside lock
-	s.closeState(state, readFd)
+	s.closeState(state, fds)
 	return nil
 }
 
-func (s *Server) closeState(state *openFileState, readFd int) {
-	if state.writeFd > 0 {
-		_ = unix.Close(int(state.writeFd))
+func (s *Server) closeState(state *openFileState, slabFds slabFds) {
+	fds := []int{int(state.writeFd), slabFds.readFd, slabFds.cacheFd}
+	slices.Sort(fds)
+	fds = slices.Compact(fds)
+	if fds[0] == 0 {
+		fds = fds[1:]
 	}
-	if readFd > 0 && readFd != int(state.writeFd) {
-		_ = unix.Close(readFd)
+	for _, fd := range fds {
+		_ = unix.Close(fd)
 	}
 	if state.tp == typeSlab {
 		mp := filepath.Join(s.cfg.CachePath, slabImagePrefix+strconv.Itoa(int(state.slabId)))
@@ -1154,8 +1166,8 @@ func (s *Server) handleReadSlab(state *openFileState, ln, off uint64) (retErr er
 	return s.requestChunk(ctx, erofs.SlabLoc{slabId, addr}, digest, sphps)
 }
 
-func (s *Server) mountSlabImage(slabId int) error {
-	fsid := slabImagePrefix + strconv.Itoa(slabId)
+func (s *Server) mountSlabImage(slabId uint16) error {
+	fsid := slabImagePrefix + strconv.Itoa(int(slabId))
 	mountPoint := filepath.Join(s.cfg.CachePath, fsid)
 	logMsg := "opened slab image file for"
 
@@ -1185,8 +1197,15 @@ func (s *Server) mountSlabImage(slabId int) error {
 		return fmt.Errorf("error opening slab image file %s: %w", mountPoint, err)
 	}
 
+	cacheFd, err := s.openSlabBackingFile(slabId)
+	if err != nil {
+		_ = unix.Close(slabFd)
+		_ = unix.Unmount(mountPoint, 0)
+		return fmt.Errorf("error opening slab backing file %s: %w", mountPoint, err)
+	}
+
 	s.stateLock.Lock()
-	s.readfdBySlab[common.TruncU16(slabId)] = slabFd
+	s.readfdBySlab[common.TruncU16(slabId)] = slabFds{slabFd, cacheFd}
 	s.stateLock.Unlock()
 
 	log.Println(logMsg, fsid, "on", mountPoint)
@@ -1207,6 +1226,12 @@ func (s *Server) openSlabImageFile(mountPoint string) (int, error) {
 	}
 
 	return slabFd, nil
+}
+
+func (s *Server) openSlabBackingFile(slabId uint16) (int, error) {
+	tag, _ := s.SlabInfo(slabId)
+	backingPath := filepath.Join(s.cfg.CachePath, fscachePath(s.cfg.CacheDomain, tag))
+	return unix.Open(backingPath, unix.O_RDWR, 0)
 }
 
 // slab manager

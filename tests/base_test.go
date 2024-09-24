@@ -251,6 +251,22 @@ func (tb *testBase) umount(storePath string) {
 	require.True(tb.t, res.Success, "error:", res.Error)
 }
 
+func (tb *testBase) materialize(storePath string) string {
+	mp := filepath.Join(tb.t.TempDir(), "mp")
+	sock := filepath.Join(tb.cachedir, "styx.sock")
+	c := client.NewClient(sock)
+	var res daemon.Status
+	code, err := c.Call(daemon.MaterializePath, daemon.MaterializeReq{
+		Upstream:  tb.upstreamUrl,
+		StorePath: storePath,
+		DestPath:  mp,
+	}, &res)
+	require.NoError(tb.t, err)
+	require.Equal(tb.t, code, http.StatusOK)
+	require.True(tb.t, res.Success, "error:", res.Error)
+	return mp
+}
+
 func (tb *testBase) nixHash(path string) string {
 	b, err := exec.Command("nix-hash", "--type", "sha256", "--base32", path).Output()
 	require.NoErrorf(tb.t, err, "output: %q %v", b, err)

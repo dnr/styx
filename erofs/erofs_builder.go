@@ -112,12 +112,17 @@ func (b *Builder) BuildFromManifestWithSlab(
 		isBare = true
 		e1 := proto.Clone(e0).(*pb.Entry)
 		e1.Path = BarePath
-		m.Entries = []*pb.Entry{
-			&pb.Entry{
-				Path: "/",
-				Type: pb.EntryType_DIRECTORY,
+		m = &pb.Manifest{
+			Params: m.Params,
+			Entries: []*pb.Entry{
+				&pb.Entry{
+					Path: "/",
+					Type: pb.EntryType_DIRECTORY,
+				},
+				e1,
 			},
-			e1,
+			SmallFileCutoff: m.SmallFileCutoff,
+			Meta:            m.Meta,
 		}
 	}
 
@@ -233,10 +238,7 @@ func (b *Builder) BuildFromManifestWithSlab(
 
 		case pb.EntryType_REGULAR:
 			fstype = EROFS_FT_REG_FILE
-			i.i.IMode = unix.S_IFREG | 0644
-			if e.Executable {
-				i.i.IMode = unix.S_IFREG | 0755
-			}
+			i.i.IMode = unix.S_IFREG | uint16(e.FileMode())
 			if len(e.InlineData) > 0 {
 				if int64(len(e.InlineData)) != e.Size {
 					return fmt.Errorf("tail data size mismatch")
