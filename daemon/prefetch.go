@@ -43,7 +43,7 @@ func (s *Server) handlePrefetchReq(ctx context.Context, r *PrefetchReq) (*Status
 		if n, err := nixbase32.Decode(sph[:], []byte(sphStr)); err != nil || n != len(sph) {
 			return mwErr(http.StatusBadRequest, "path is not a valid store path")
 		}
-		ents, err := s.getDigestsFromImage(ctx, tx, sph, false)
+		ents, err := s.getDigestsFromImage(tx, sph, false)
 		if err != nil {
 			return mwErr(http.StatusInternalServerError, "can't read manifest")
 		}

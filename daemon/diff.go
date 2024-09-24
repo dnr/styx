@@ -113,12 +113,9 @@ func (s *Server) requestChunk(ctx context.Context, loc erofs.SlabLoc, digest cdi
 		log.Print("missing sph references")
 	} else {
 		set := newOpSet(s)
-		tx, err := s.db.Begin(false)
-		if err != nil {
-			return err
-		}
-		err = set.buildDiff(tx, digest, sphps, true)
-		tx.Rollback()
+		err := s.db.View(func(tx *bbolt.Tx) error {
+			return set.buildDiff(tx, digest, sphps, true)
+		})
 		if err != nil {
 			log.Printf("buildDiff failed: %v", err)
 		} else if op = s.diffMap[loc]; op == nil {
@@ -233,7 +230,7 @@ func (s *Server) buildAndStartPrefetch(ctx context.Context, reqs []cdig.CDig) ([
 
 // currently this is only used to read manifest chunks
 func (s *Server) readChunks(
-	ctx context.Context,
+	ctx context.Context, // can be nil if allowMissing is true
 	useTx *bbolt.Tx, // optional
 	totalSize int64,
 	locs []erofs.SlabLoc,
@@ -573,7 +570,7 @@ func (s *Server) getChunkDiff(ctx context.Context, bases, reqs []cdig.CDig, reco
 }
 
 // note: called with read-only tx
-func (s *Server) getDigestsFromImage(ctx context.Context, tx *bbolt.Tx, sph Sph, isManifest bool) ([]*pb.Entry, error) {
+func (s *Server) getDigestsFromImage(tx *bbolt.Tx, sph Sph, isManifest bool) ([]*pb.Entry, error) {
 	if isManifest {
 		// get the image sph back. makeManifestSph is its own inverse.
 		sph = makeManifestSph(sph)
@@ -601,7 +598,7 @@ func (s *Server) getDigestsFromImage(ctx context.Context, tx *bbolt.Tx, sph Sph,
 		if err != nil {
 			return nil, err
 		}
-		data, err = s.readChunks(ctx, tx, entry.Size, locs, nil, nil, false)
+		data, err = s.readChunks(nil, tx, entry.Size, locs, nil, nil, false)
 		if err != nil {
 			return nil, err
 		}
@@ -614,7 +611,7 @@ func (s *Server) getDigestsFromImage(ctx context.Context, tx *bbolt.Tx, sph Sph,
 }
 
 // simplified form of getDigestsFromImage (TODO: consolidate)
-func (s *Server) getManifestLocal(ctx context.Context, tx *bbolt.Tx, key []byte) (*pb.Manifest, error) {
+func (s *Server) getManifestLocal(tx *bbolt.Tx, key []byte) (*pb.Manifest, error) {
 	v := tx.Bucket(manifestBucket).Get(key)
 	if v == nil {
 		return nil, errors.New("manifest not found")
@@ -633,7 +630,7 @@ func (s *Server) getManifestLocal(ctx context.Context, tx *bbolt.Tx, key []byte)
 		if err != nil {
 			return nil, err
 		}
-		data, err = s.readChunks(ctx, tx, entry.Size, locs, nil, nil, false)
+		data, err = s.readChunks(nil, tx, entry.Size, locs, nil, nil, false)
 		if err != nil {
 			return nil, err
 		}
@@ -884,14 +881,14 @@ func (set *opSet) buildExtendDiff(
 
 	var baseIter digestIterator
 	if res.usingBase() {
-		baseEntries, err := set.s.getDigestsFromImage(nil, tx, res.baseHash, isManifest)
+		baseEntries, err := set.s.getDigestsFromImage(tx, res.baseHash, isManifest)
 		if err != nil {
 			log.Println("failed to get digests for", res.baseHash, res.baseName)
 			return
 		}
 		baseIter = newDigestIterator(baseEntries)
 	}
-	reqEntries, err := set.s.getDigestsFromImage(nil, tx, res.reqHash, isManifest)
+	reqEntries, err := set.s.getDigestsFromImage(tx, res.reqHash, isManifest)
 	if err != nil {
 		log.Println("failed to get digests for", res.reqHash, res.reqName)
 		return

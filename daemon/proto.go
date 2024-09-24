@@ -10,14 +10,15 @@ var (
 	// protocol is json over http over unix socket
 	// socket is path.Join(CachePath, Socket)
 	// accessible to root only!
-	Socket       = "styx.sock"
-	InitPath     = "/init"
-	MountPath    = "/mount"
-	UmountPath   = "/umount"
-	PrefetchPath = "/prefetch"
-	GcPath       = "/gc"
-	DebugPath    = "/debug"
-	RepairPath   = "/repair"
+	Socket          = "styx.sock"
+	InitPath        = "/init"
+	MountPath       = "/mount"
+	UmountPath      = "/umount"
+	MaterializePath = "/materialize"
+	PrefetchPath    = "/prefetch"
+	GcPath          = "/gc"
+	DebugPath       = "/debug"
+	RepairPath      = "/repair"
 )
 
 type (
@@ -37,6 +38,14 @@ type (
 
 	UmountReq struct {
 		StorePath string
+	}
+	// returns Status
+
+	MaterializeReq struct {
+		Upstream  string
+		StorePath string
+		DestPath  string
+		NarSize   int64 `json:",omitempty"` // optional
 	}
 	// returns Status
 

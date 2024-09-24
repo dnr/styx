@@ -142,6 +142,7 @@ type (
 
 var _ erofs.SlabManager = (*Server)(nil)
 var errAlreadyMounted = errors.New("already mounted")
+var errAlreadyMountedElsewhere = errors.New("already mounted on another mountpoint")
 
 // init stuff
 
@@ -359,6 +360,7 @@ func (s *Server) startSocketServer() (err error) {
 	mux.HandleFunc(InitPath, jsonmw(s.handleInitReq))
 	mux.HandleFunc(MountPath, jsonmw(s.handleMountReq))
 	mux.HandleFunc(UmountPath, jsonmw(s.handleUmountReq))
+	mux.HandleFunc(MaterializePath, jsonmw(s.handleMaterializeReq))
 	mux.HandleFunc(PrefetchPath, jsonmw(s.handlePrefetchReq))
 	mux.HandleFunc(GcPath, jsonmw(s.handleGcReq))
 	mux.HandleFunc(DebugPath, jsonmw(s.handleDebugReq))
@@ -517,8 +519,12 @@ func (s *Server) handleMountReq(ctx context.Context, r *MountReq) (*Status, erro
 	var haveIsBare bool
 	err := s.imageTx(cookie, func(img *pb.DbImage) error {
 		if img.MountState == pb.MountState_Mounted {
-			// nix thinks it's not mounted but it is. return success so nix can enter in db.
-			return errAlreadyMounted
+			if img.MountPoint == r.MountPoint {
+				// nix thinks it's not mounted but it is. return success so nix can enter in db.
+				return errAlreadyMounted
+			} else {
+				return errAlreadyMountedElsewhere
+			}
 		}
 		img.StorePath = r.StorePath
 		img.Upstream = r.Upstream
@@ -637,6 +643,7 @@ func (s *Server) handleUmountReq(ctx context.Context, r *UmountReq) (*Status, er
 	var mp string
 	err := s.imageTx(sph, func(img *pb.DbImage) error {
 		if img.MountState != pb.MountState_Mounted {
+			// TODO: check if erofs is actually mounted anyway and unmount
 			return mwErr(http.StatusNotFound, "not mounted")
 		} else if mp = img.MountPoint; mp == "" {
 			return mwErr(http.StatusInternalServerError, "mount point not set")
