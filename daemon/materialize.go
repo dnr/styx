@@ -1,18 +1,21 @@
 package daemon
 
 import (
-	"cmp"
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 
-	"github.com/dnr/styx/pb"
 	"github.com/nix-community/go-nix/pkg/nixbase32"
+	"go.etcd.io/bbolt"
+
+	"github.com/dnr/styx/common"
+	"github.com/dnr/styx/common/cdig"
+	"github.com/dnr/styx/erofs"
+	"github.com/dnr/styx/pb"
 )
 
 func (s *Server) handleMaterializeReq(ctx context.Context, r *MaterializeReq) (*Status, error) {
@@ -65,20 +68,39 @@ func (s *Server) handleMaterializeReq(ctx context.Context, r *MaterializeReq) (*
 }
 
 func (s *Server) materialize(dest string, sph Sph, mp string) error {
-	tx, err := s.db.Begin(false)
+	var ents []*pb.Entry
+	locs := make(map[cdig.CDig]erofs.SlabLoc)
+
+	err := s.db.View(func(tx *bbolt.Tx) error {
+		cb := tx.Bucket(chunkBucket)
+
+		var err error
+		ents, err = s.getDigestsFromImage(tx, sph, false)
+		if err != nil {
+			return fmt.Errorf("can't read manifest: %w", err)
+		}
+
+		for it := newDigestIterator(ents); it.ent() != nil; it.next(1) {
+			dig := it.digest()
+			if _, ok := locs[dig]; ok {
+				continue
+			}
+			loc := cb.Get(dig[:])
+			if loc == nil {
+				return fmt.Errorf("missing reference for chunk %s", dig)
+			}
+			locs[dig] = loadLoc(loc)
+		}
+		return nil
+	})
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
-
-	ents, err := s.getDigestsFromImage(tx, sph, false)
-	if err != nil {
-		return fmt.Errorf("can't read manifest: %w", err)
-	}
 
 	tryCloneRange := true
-	copyBuf := make([]byte, 1<<20)
 
+	// TODO: parallelize some of this, at least the reading?
+	buf := make([]byte, common.ChunkShift.Size())
 	for _, ent := range ents {
 		p := filepath.Join(dest, ent.Path)
 
@@ -102,9 +124,19 @@ func (s *Server) materialize(dest string, sph Sph, mp string) error {
 			} else if tryCloneRange {
 				panic("FIXME")
 			} else {
-				src := filepath.Join(mp, ent.Path)
-				if err = plainCopy(p, src, mode, copyBuf); err != nil {
+				dst, err := os.OpenFile(p, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, mode)
+				if err != nil {
 					return err
+				}
+				digs := cdig.FromSliceAlias(ent.Digests)
+				for i, dig := range digs {
+					size := common.ChunkShift.FileChunkSize(ent.Size, i == len(digs)-1)
+					b := buf[:size]
+					if err = s.getKnownChunk(locs[dig], b); err != nil {
+						return err
+					} else if _, err := dst.Write(b); err != nil {
+						return err
+					}
 				}
 			}
 		case pb.EntryType_SYMLINK:
@@ -118,30 +150,3 @@ func (s *Server) materialize(dest string, sph Sph, mp string) error {
 
 	return nil
 }
-
-func plainCopy(dstp, srcp string, mode os.FileMode, buf []byte) (retErr error) {
-	dst, err := os.OpenFile(dstp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, mode)
-	if err != nil {
-		return err
-	}
-	defer func() { retErr = cmp.Or(retErr, dst.Close()) }()
-	src, err := os.Open(srcp)
-	if err != nil {
-		return err
-	}
-	defer func() { retErr = cmp.Or(retErr, src.Close()) }()
-	// we can't use copy_file_range or splice or anything here, but Go will try and
-	// then fall back to a tiny buffer, unless we mask ReadFrom/WriteTo first.
-	_, err = io.CopyBuffer(fileWithoutMethods{File: dst}, fileWithoutMethods{File: src}, buf)
-	return err
-}
-
-// inspired by Go stdlib:
-type fileWithoutMethods struct {
-	maskMethods
-	*os.File
-}
-type maskMethods struct{}
-
-func (maskMethods) WriteTo(io.Writer) (int64, error)  { panic(nil) }
-func (maskMethods) ReadFrom(io.Reader) (int64, error) { panic(nil) }
