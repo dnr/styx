@@ -4,6 +4,7 @@
     ./vm-base.nix
     ./module
     <nixpkgs/nixos/modules/virtualisation/qemu-vm.nix>
+    # ./qemu-vm-btrfs.nix
   ];
 
   # enable all options

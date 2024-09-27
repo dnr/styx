@@ -644,7 +644,7 @@ func (s *Server) getManifestLocal(tx *bbolt.Tx, key []byte) (*pb.Manifest, error
 
 func (s *Server) getKnownChunk(loc erofs.SlabLoc, buf []byte) error {
 	s.stateLock.Lock()
-	readFd := s.readfdBySlab[loc.SlabId]
+	readFd := s.readfdBySlab[loc.SlabId].readFd
 	s.stateLock.Unlock()
 	if readFd == 0 {
 		return errors.New("slab not loaded or missing read fd")

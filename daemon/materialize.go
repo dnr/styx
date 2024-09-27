@@ -1,22 +1,30 @@
 package daemon
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"log"
+	"maps"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 
 	"github.com/nix-community/go-nix/pkg/nixbase32"
 	"go.etcd.io/bbolt"
+	"golang.org/x/sys/unix"
 
 	"github.com/dnr/styx/common"
 	"github.com/dnr/styx/common/cdig"
 	"github.com/dnr/styx/erofs"
 	"github.com/dnr/styx/pb"
 )
+
+var errCachefdNotFound = errors.New("cache fd not found for slab")
 
 func (s *Server) handleMaterializeReq(ctx context.Context, r *MaterializeReq) (*Status, error) {
 	if s.p() == nil {
@@ -97,9 +105,12 @@ func (s *Server) materialize(dest string, sph Sph, mp string) error {
 		return err
 	}
 
-	tryCloneRange := true
+	tryClone := true
+	s.stateLock.Lock()
+	readFds := maps.Clone(s.readfdBySlab)
+	s.stateLock.Unlock()
 
-	// TODO: parallelize some of this, at least the reading?
+	// TODO: parallelize some of this?
 	buf := make([]byte, common.ChunkShift.Size())
 	for _, ent := range ents {
 		p := filepath.Join(dest, ent.Path)
@@ -110,34 +121,70 @@ func (s *Server) materialize(dest string, sph Sph, mp string) error {
 				return err
 			}
 		case pb.EntryType_REGULAR:
-			// notes: btrfs max inline is 2048?!
-			// notes: ext4 inline is: 60 bytes
 			mode := os.FileMode(0o644)
 			if ent.Executable {
 				mode = 0o755
 			}
-			if len(ent.Digests) == 0 {
-				// empty or inline file
-				if err = os.WriteFile(p, ent.InlineData, mode); err != nil {
-					return err
+		tryAgain:
+			dst, err := os.OpenFile(p, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, mode)
+			if err != nil {
+				return err
+			}
+			if len(ent.InlineData) > 0 {
+				if _, err = dst.Write(ent.InlineData); err != nil {
+					return cmp.Or(err, dst.Close())
 				}
-			} else if tryCloneRange {
-				panic("FIXME")
-			} else {
-				dst, err := os.OpenFile(p, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, mode)
-				if err != nil {
-					return err
-				}
-				digs := cdig.FromSliceAlias(ent.Digests)
-				for i, dig := range digs {
-					size := common.ChunkShift.FileChunkSize(ent.Size, i == len(digs)-1)
+			}
+			digs := cdig.FromSliceAlias(ent.Digests)
+			for i, dig := range digs {
+				size := common.ChunkShift.FileChunkSize(ent.Size, i == len(digs)-1)
+				if tryClone {
+					loc := locs[dig]
+					err := errCachefdNotFound
+					if cfd := readFds[loc.SlabId].cacheFd; cfd > 0 {
+						sizeUp := int(s.blockShift.Roundup(size))
+						roff := int64(loc.Addr) << s.blockShift
+						woff := int64(i) << common.ChunkShift
+						var rsize int
+						rsize, err = unix.CopyFileRange(cfd, &roff, int(dst.Fd()), &woff, sizeUp, 0)
+						if err == nil && rsize != sizeUp {
+							err = io.ErrShortWrite
+						}
+						// err = unix.IoctlFileCloneRange(
+						// 	int(dst.Fd()),
+						// 	&unix.FileCloneRange{
+						// 		Src_fd:      int64(cfd),
+						// 		Src_offset:  uint64(loc.Addr) << s.blockShift,
+						// 		Src_length:  uint64(sizeUp),
+						// 		Dest_offset: uint64(i) << common.ChunkShift,
+						// 	})
+					}
+					if err != nil {
+						switch err {
+						case syscall.EINVAL, syscall.EOPNOTSUPP, syscall.EXDEV, io.ErrShortWrite, errCachefdNotFound:
+							log.Println("error from CopyFileRange, falling back to plain copy:", err)
+							tryClone = false
+							dst.Close()
+							goto tryAgain
+						default:
+							return err
+						}
+					}
+				} else {
 					b := buf[:size]
 					if err = s.getKnownChunk(locs[dig], b); err != nil {
-						return err
+						return cmp.Or(err, dst.Close())
 					} else if _, err := dst.Write(b); err != nil {
-						return err
+						return cmp.Or(err, dst.Close())
 					}
 				}
+			}
+			if tryClone {
+				// we have to round up blocks when using CopyFileRange, so truncate the last one
+				unix.Ftruncate(int(dst.Fd()), ent.Size)
+			}
+			if err = dst.Close(); err != nil {
+				return err
 			}
 		case pb.EntryType_SYMLINK:
 			if err := os.Symlink(string(ent.InlineData), p); err != nil {
