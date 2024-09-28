@@ -3,6 +3,7 @@ package daemon
 import (
 	"bytes"
 	"errors"
+	"net/http"
 	"strings"
 
 	"github.com/nix-community/go-nix/pkg/nixbase32"
@@ -27,6 +28,16 @@ type (
 		reqHash  Sph
 	}
 )
+
+func ParseSph(s string) (sph Sph, sphStr string, err error) {
+	sphStr, _, _ = strings.Cut(s, "-")
+	var n int
+	n, err = nixbase32.Decode(sph[:], []byte(sphStr))
+	if err != nil || n != len(sph) {
+		err = mwErr(http.StatusBadRequest, "path is not a valid store path")
+	}
+	return
+}
 
 func (res *catalogResult) usingBase() bool {
 	return res.baseName != ""

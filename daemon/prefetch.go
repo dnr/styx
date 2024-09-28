@@ -6,7 +6,6 @@ import (
 	"strings"
 
 	"github.com/dnr/styx/common/cdig"
-	"github.com/nix-community/go-nix/pkg/nixbase32"
 	"github.com/nix-community/go-nix/pkg/storepath"
 	"go.etcd.io/bbolt"
 )
@@ -30,7 +29,7 @@ func (s *Server) handlePrefetchReq(ctx context.Context, r *PrefetchReq) (*Status
 			}
 			p = p[len(storepath.StoreDir)+1:] // p starts with store path now
 			storePath, _, _ := strings.Cut(p, "/")
-			sphStr, _, _ = strings.Cut(storePath, "-")
+			sphStr = storePath
 			// strip off mountpoint. p should now have an initial /
 			p = p[len(storePath):]
 			if len(p) == 0 {
@@ -39,9 +38,9 @@ func (s *Server) handlePrefetchReq(ctx context.Context, r *PrefetchReq) (*Status
 		} else {
 			sphStr = r.StorePath
 		}
-		var sph Sph
-		if n, err := nixbase32.Decode(sph[:], []byte(sphStr)); err != nil || n != len(sph) {
-			return mwErr(http.StatusBadRequest, "path is not a valid store path")
+		sph, sphStr, err := ParseSph(sphStr)
+		if err != nil {
+			return err
 		}
 		ents, err := s.getDigestsFromImage(tx, sph, false)
 		if err != nil {
