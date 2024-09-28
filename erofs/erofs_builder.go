@@ -238,10 +238,7 @@ func (b *Builder) BuildFromManifestWithSlab(
 
 		case pb.EntryType_REGULAR:
 			fstype = EROFS_FT_REG_FILE
-			i.i.IMode = unix.S_IFREG | 0644
-			if e.Executable {
-				i.i.IMode = unix.S_IFREG | 0755
-			}
+			i.i.IMode = unix.S_IFREG | uint16(e.FileMode())
 			if len(e.InlineData) > 0 {
 				if int64(len(e.InlineData)) != e.Size {
 					return fmt.Errorf("tail data size mismatch")

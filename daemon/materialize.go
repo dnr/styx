@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log"
 	"maps"
 	"net/http"
@@ -151,7 +152,6 @@ func (s *Server) materialize(dest string, m *pb.Manifest) error {
 	s.stateLock.Unlock()
 
 	// TODO: parallelize some of this?
-	buf := make([]byte, common.ChunkShift.Size())
 	wasBare := false
 	for i, ent := range ents {
 		p := filepath.Join(dest, ent.Path)
@@ -165,80 +165,18 @@ func (s *Server) materialize(dest string, m *pb.Manifest) error {
 
 		switch ent.Type {
 		case pb.EntryType_DIRECTORY:
-			if err := os.MkdirAll(p, 0o755); err != nil {
+			if err = os.MkdirAll(p, 0o755); err != nil {
 				return err
 			}
 		case pb.EntryType_REGULAR:
-			mode := os.FileMode(0o644)
-			if ent.Executable {
-				mode = 0o755
-			}
-		tryAgain:
-			dst, err := os.OpenFile(p, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, mode)
-			if err != nil {
-				return err
-			}
-			if len(ent.InlineData) > 0 {
-				if _, err = dst.Write(ent.InlineData); err != nil {
-					return cmp.Or(err, dst.Close())
-				}
-			}
-			digs := cdig.FromSliceAlias(ent.Digests)
-			for i, dig := range digs {
-				size := common.ChunkShift.FileChunkSize(ent.Size, i == len(digs)-1)
-				if tryClone {
-					loc := locs[dig]
-					err := errCachefdNotFound
-					if cfd := readFds[loc.SlabId].cacheFd; cfd > 0 {
-						sizeUp := int(s.blockShift.Roundup(size))
-						roff := int64(loc.Addr) << s.blockShift
-						woff := int64(i) << common.ChunkShift
-						var rsize int
-						rsize, err = unix.CopyFileRange(cfd, &roff, int(dst.Fd()), &woff, sizeUp, 0)
-						if err == nil && rsize != sizeUp {
-							err = io.ErrShortWrite
-						}
-						// err = unix.IoctlFileCloneRange(
-						// 	int(dst.Fd()),
-						// 	&unix.FileCloneRange{
-						// 		Src_fd:      int64(cfd),
-						// 		Src_offset:  uint64(loc.Addr) << s.blockShift,
-						// 		Src_length:  uint64(sizeUp),
-						// 		Dest_offset: uint64(i) << common.ChunkShift,
-						// 	})
-					}
-					if err != nil {
-						switch err {
-						case syscall.EINVAL, syscall.EOPNOTSUPP, syscall.EXDEV, io.ErrShortWrite, errCachefdNotFound:
-							log.Println("error from CopyFileRange, falling back to plain copy:", err)
-							tryClone = false
-							dst.Close()
-							goto tryAgain
-						default:
-							return err
-						}
-					}
-				} else {
-					b := buf[:size]
-					if err = s.getKnownChunk(locs[dig], b); err != nil {
-						return cmp.Or(err, dst.Close())
-					} else if _, err := dst.Write(b); err != nil {
-						return cmp.Or(err, dst.Close())
-					}
-				}
-			}
-			if tryClone {
-				// we have to round up blocks when using CopyFileRange, so truncate the last one
-				unix.Ftruncate(int(dst.Fd()), ent.Size)
-			}
-			if err = dst.Close(); err != nil {
+			if err = s.materializeFile(p, ent, locs, readFds, &tryClone); err != nil {
 				return err
 			}
 		case pb.EntryType_SYMLINK:
 			if i == 0 {
 				return errors.New("bare file can't be symlink")
 			}
-			if err := os.Symlink(string(ent.InlineData), p); err != nil {
+			if err = os.Symlink(string(ent.InlineData), p); err != nil {
 				return err
 			}
 		default:
@@ -246,5 +184,91 @@ func (s *Server) materialize(dest string, m *pb.Manifest) error {
 		}
 	}
 
+	return nil
+}
+
+func (s *Server) materializeFile(
+	path string,
+	ent *pb.Entry,
+	locs map[cdig.CDig]erofs.SlabLoc,
+	readFds map[uint16]slabFds,
+	tryClone *bool,
+) (retErr error) {
+	var dst *os.File
+	defer func() {
+		if dst != nil {
+			retErr = cmp.Or(retErr, dst.Close())
+		}
+	}()
+tryAgain:
+	var err error
+	dst, err = os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, fs.FileMode(ent.FileMode()))
+	if err != nil {
+		return err
+	}
+
+	if len(ent.InlineData) > 0 {
+		_, err = dst.Write(ent.InlineData)
+		return err
+	}
+
+	var buf []byte
+	digs := cdig.FromSliceAlias(ent.Digests)
+	roundedUp := false
+	for i, dig := range digs {
+		loc := locs[dig]
+		size := common.ChunkShift.FileChunkSize(ent.Size, i == len(digs)-1)
+		if *tryClone {
+			if cfd := readFds[loc.SlabId].cacheFd; cfd > 0 {
+				sizeUp := int(s.blockShift.Roundup(size))
+				roundedUp = sizeUp != int(size)
+				roff := int64(loc.Addr) << s.blockShift
+				woff := int64(i) << common.ChunkShift
+				var rsize int
+				rsize, err = unix.CopyFileRange(cfd, &roff, int(dst.Fd()), &woff, sizeUp, 0)
+				if err == nil && rsize != sizeUp {
+					// we rounded size up to our erofs block size (4k for now), but it's possible
+					// the target fs is using larger blocks. in that case this may fail.
+					err = io.ErrShortWrite
+				}
+				// err = unix.IoctlFileCloneRange(
+				// 	int(dst.Fd()),
+				// 	&unix.FileCloneRange{
+				// 		Src_fd:      int64(cfd),
+				// 		Src_offset:  uint64(loc.Addr) << s.blockShift,
+				// 		Src_length:  uint64(sizeUp),
+				// 		Dest_offset: uint64(i) << common.ChunkShift,
+				// 	})
+			} else {
+				err = errCachefdNotFound
+			}
+			if err != nil {
+				switch err {
+				case syscall.EINVAL, syscall.EOPNOTSUPP, syscall.EXDEV, io.ErrShortWrite, errCachefdNotFound:
+					log.Println("error from CopyFileRange, falling back to plain copy:", err)
+					*tryClone = false
+					dst.Close()
+					goto tryAgain
+				default:
+					return err
+				}
+			}
+		} else {
+			if buf == nil {
+				buf = s.chunkPool.Get(int(common.ChunkShift.Size()))
+				defer s.chunkPool.Put(buf)
+			}
+			b := buf[:size]
+			if err = s.getKnownChunk(loc, b); err != nil {
+				return err
+			} else if _, err := dst.Write(b); err != nil {
+				return err
+			}
+		}
+	}
+	if roundedUp {
+		// we have to round up blocks when using CopyFileRange, so truncate the last one
+		return unix.Ftruncate(int(dst.Fd()), ent.Size)
+	}
 	return nil
 }
