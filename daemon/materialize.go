@@ -37,16 +37,53 @@ func (s *Server) handleMaterializeReq(ctx context.Context, r *MaterializeReq) (*
 		return nil, mwErr(http.StatusBadRequest, "dest must be absolute path")
 	}
 
-	// TODO: handle bare files
+	_, sphStr, err := ParseSph(r.StorePath)
+	if err != nil {
+		return nil, err
+	}
 
-	// TODO: check if we have it already
+	shouldHaveManifest := false
+	_ = s.imageTx(sphStr, func(img *pb.DbImage) error {
+		switch img.MountState {
+		case pb.MountState_Unknown:
+			// we have no record of this, set it up
+			img.StorePath = r.StorePath
+			img.Upstream = r.Upstream
+			img.MountState = pb.MountState_Requested
+			return nil
 
-	// get manifest and allocate
-	m, _, err := s.getManifestAndBuildImage(ctx, &MountReq{
-		Upstream:  r.Upstream,
-		StorePath: r.StorePath,
-		NarSize:   r.NarSize,
+		case pb.MountState_Mounted, pb.MountState_Unmounted, pb.MountState_Materialized:
+			// we should already have a manifest locally. leave img alone.
+			shouldHaveManifest = true
+			return errors.New("rollback")
+
+		default:
+			// other states are errors/races, leave img alone.
+			return errors.New("rollback")
+		}
 	})
+
+	var m *pb.Manifest
+	if shouldHaveManifest {
+		// read locally
+		err = s.db.View(func(tx *bbolt.Tx) error {
+			m, err = s.getManifestLocal(tx, []byte(sphStr))
+			return err
+		})
+		if err != nil {
+			// fall back to remote manifest
+			log.Print("error getting manifest locally, trying remote")
+			shouldHaveManifest = false
+		}
+	}
+	if !shouldHaveManifest {
+		// get manifest and allocate
+		m, _, err = s.getManifestAndBuildImage(ctx, &MountReq{
+			Upstream:  r.Upstream,
+			StorePath: r.StorePath,
+			NarSize:   r.NarSize,
+		})
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -69,7 +106,21 @@ func (s *Server) handleMaterializeReq(ctx context.Context, r *MaterializeReq) (*
 	}
 
 	// copy to dest
-	return nil, s.materialize(r.DestPath, m)
+	err = s.materialize(r.DestPath, m)
+	if err != nil {
+		return nil, err
+	}
+
+	// record as materialized/error, unless in some other state
+	_ = s.imageTx(sphStr, func(img *pb.DbImage) error {
+		if img.MountState != pb.MountState_Requested {
+			return errors.New("rollback")
+		}
+		img.MountState = pb.MountState_Materialized
+		return nil
+	})
+
+	return nil, nil
 }
 
 func (s *Server) materialize(dest string, m *pb.Manifest) error {
@@ -101,8 +152,16 @@ func (s *Server) materialize(dest string, m *pb.Manifest) error {
 
 	// TODO: parallelize some of this?
 	buf := make([]byte, common.ChunkShift.Size())
-	for _, ent := range ents {
+	wasBare := false
+	for i, ent := range ents {
 		p := filepath.Join(dest, ent.Path)
+
+		if wasBare {
+			return errors.New("bare file must be only entry")
+		} else if i == 0 {
+			p = dest
+			wasBare = ent.Type == pb.EntryType_REGULAR
+		}
 
 		switch ent.Type {
 		case pb.EntryType_DIRECTORY:
@@ -176,6 +235,9 @@ func (s *Server) materialize(dest string, m *pb.Manifest) error {
 				return err
 			}
 		case pb.EntryType_SYMLINK:
+			if i == 0 {
+				return errors.New("bare file can't be symlink")
+			}
 			if err := os.Symlink(string(ent.InlineData), p); err != nil {
 				return err
 			}

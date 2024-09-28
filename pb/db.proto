@@ -13,6 +13,7 @@ enum MountState {
   UnmountRequested = 4;  // was mounted then requested unmount
   Unmounted        = 5;  // unmounted
   Deleted          = 6;  // deleted (not used now)
+  Materialized     = 7;  // not mounted but copied out to fs
 }
 
 // key: "slab" / <u16 BE slabid> / <u32 BE block address>

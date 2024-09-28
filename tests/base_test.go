@@ -252,7 +252,7 @@ func (tb *testBase) umount(storePath string) {
 }
 
 func (tb *testBase) materialize(storePath string) string {
-	mp := tb.t.TempDir()
+	mp := filepath.Join(tb.t.TempDir(), "mp")
 	sock := filepath.Join(tb.cachedir, "styx.sock")
 	c := client.NewClient(sock)
 	var res daemon.Status

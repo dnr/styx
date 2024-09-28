@@ -112,12 +112,17 @@ func (b *Builder) BuildFromManifestWithSlab(
 		isBare = true
 		e1 := proto.Clone(e0).(*pb.Entry)
 		e1.Path = BarePath
-		m.Entries = []*pb.Entry{
-			&pb.Entry{
-				Path: "/",
-				Type: pb.EntryType_DIRECTORY,
+		m = &pb.Manifest{
+			Params: m.Params,
+			Entries: []*pb.Entry{
+				&pb.Entry{
+					Path: "/",
+					Type: pb.EntryType_DIRECTORY,
+				},
+				e1,
 			},
-			e1,
+			SmallFileCutoff: m.SmallFileCutoff,
+			Meta:            m.Meta,
 		}
 	}
 

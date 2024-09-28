@@ -59,7 +59,7 @@ type (
 	// parser.)
 	ChunkDiffStats struct {
 		BaseChunks int   `json:"baseC"`
-		BaseBytes  int   `json:"baseB`
+		BaseBytes  int   `json:"baseB"`
 		ReqChunks  int   `json:"reqC"`
 		ReqBytes   int   `json:"reqB"`
 		DiffBytes  int   `json:"diffB"`

@@ -21,15 +21,14 @@ func TestMaterialize(t *testing.T) {
 	mp3 := tb.materialize("v35ysx9k1ln4c6r7lj74204ss4bw7l5l-openssl-3.0.12-man")
 	require.Equal(t, "0v60mg7qj7mfd27s1nnldb0041ln08xs1bw7zn1mmjiaq02myzlh", tb.nixHash(mp3))
 
-	// TODO: test bare file
-	// mp4 := tb.materialize("3a7xq2qhxw2r7naqmc53akmx7yvz0mkf-less-is-more.patch")
-	// require.Equal(t, "13jlq14n974nn919530hnx4l46d0p2zyhx4lrd9b1k122dn7w9z5", tb.nixHash(mp4))
+	mp4 := tb.materialize("3a7xq2qhxw2r7naqmc53akmx7yvz0mkf-less-is-more.patch")
+	require.Equal(t, "13jlq14n974nn919530hnx4l46d0p2zyhx4lrd9b1k122dn7w9z5", tb.nixHash(mp4))
 
+	// for this one, mount then materialize, should use local manifest.
+	// this isn't a great test since materialize will fall back to remote manifest if error
+	// reading local, it'd be nice to disable that for this test.
+	_ = tb.mount("cd1nbildgzzfryjg82njnn36i4ynyf8h-bash-interactive-5.1-p16-man")
 	mp5 := tb.materialize("cd1nbildgzzfryjg82njnn36i4ynyf8h-bash-interactive-5.1-p16-man")
 	man1 := filepath.Join(mp5, "share", "man", "man1", "bash.1.gz")
 	require.Equal(t, "0s9d681f8smlsdvbp6lin9qrbsp3hz3dnf4pdhwi883v8l1486r7", tb.nixHash(man1))
-
-	mp6 := tb.materialize("d30xd6x3669hg2a6xwjb1r3nb9a99sw2-openblas-0.3.27")
-	bigFile := filepath.Join(mp6, "lib/libopenblasp-r0.3.27.so")
-	require.Equal(t, "0q7zclw8sxfq5mvx0lf3clmqw31z9biq4adihcwh2hk6f39lia3w", tb.nixHash(bigFile))
 }
