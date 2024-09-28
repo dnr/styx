@@ -24,13 +24,13 @@ import (
 	"github.com/dnr/styx/pb"
 )
 
-func (s *Server) getManifestAndBuildImage(ctx context.Context, req *MountReq) ([]byte, error) {
+func (s *Server) getManifestAndBuildImage(ctx context.Context, req *MountReq) (*pb.Manifest, []byte, error) {
 	cookie, _, _ := strings.Cut(req.StorePath, "-")
 
 	// convert to binary
 	var sph Sph
 	if n, err := nixbase32.Decode(sph[:], []byte(cookie)); err != nil || n != len(sph) {
-		return nil, fmt.Errorf("cookie is not a valid nix store path hash")
+		return nil, nil, fmt.Errorf("cookie is not a valid nix store path hash")
 	}
 	// use a separate "sph" for the manifest itself (a single entry). only used if manifest is chunked.
 	manifestSph := makeManifestSph(sph)
@@ -41,31 +41,31 @@ func (s *Server) getManifestAndBuildImage(ctx context.Context, req *MountReq) ([
 	// get manifest
 	envelopeBytes, err := s.getManifestFromManifester(ctx, req.Upstream, cookie, req.NarSize)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	// verify signature and params
 	entry, smParams, err := common.VerifyMessageAsEntry(s.p().keys, common.ManifestContext, envelopeBytes)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if smParams != nil {
 		match := smParams.ChunkShift == int32(common.ChunkShift) &&
 			smParams.DigestBits == cdig.Bits &&
 			smParams.DigestAlgo == common.DigestAlgo
 		if !match {
-			return nil, fmt.Errorf("chunked manifest global params mismatch")
+			return nil, nil, fmt.Errorf("chunked manifest global params mismatch")
 		}
 	}
 
 	// check entry path to get storepath
 	storePath := strings.TrimPrefix(entry.Path, common.ManifestContext+"/")
 	if storePath != req.StorePath {
-		return nil, fmt.Errorf("envelope storepath != requested storepath: %q != %q", storePath, req.StorePath)
+		return nil, nil, fmt.Errorf("envelope storepath != requested storepath: %q != %q", storePath, req.StorePath)
 	}
 	spHash, spName, _ := strings.Cut(storePath, "-")
 	if spHash != cookie || len(spName) == 0 {
-		return nil, fmt.Errorf("invalid or mismatched name in manifest %q", storePath)
+		return nil, nil, fmt.Errorf("invalid or mismatched name in manifest %q", storePath)
 	}
 
 	// record signed manifest message in db and add names to catalog
@@ -94,7 +94,7 @@ func (s *Server) getManifestAndBuildImage(ctx context.Context, req *MountReq) ([
 		}
 		return nil
 	}); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	// get payload or load from chunks
@@ -110,13 +110,13 @@ func (s *Server) getManifestAndBuildImage(ctx context.Context, req *MountReq) ([
 		ctxForManifestChunks := context.WithValue(ctx, "sph", manifestSph)
 		locs, err := s.AllocateBatch(ctxForManifestChunks, blocks, digests, true)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 
 		// read them out
 		data, err = s.readChunks(ctx, nil, entry.Size, locs, digests, []SphPrefix{manifestSphPrefix}, true)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 	}
 
@@ -124,23 +124,23 @@ func (s *Server) getManifestAndBuildImage(ctx context.Context, req *MountReq) ([
 	var m pb.Manifest
 	err = proto.Unmarshal(data, &m)
 	if err != nil {
-		return nil, fmt.Errorf("manifest unmarshal error: %w", err)
+		return nil, nil, fmt.Errorf("manifest unmarshal error: %w", err)
 	}
 
 	// make sure this matches the name in the envelope and original request
 	if niStorePath := path.Base(m.Meta.GetNarinfo().GetStorePath()); niStorePath != storePath {
-		return nil, fmt.Errorf("narinfo storepath != envelope storepath: %q != %q", niStorePath, storePath)
+		return nil, nil, fmt.Errorf("narinfo storepath != envelope storepath: %q != %q", niStorePath, storePath)
 	}
 
 	// transform manifest into image (allocate chunks)
 	var image bytes.Buffer
 	err = s.builder.BuildFromManifestWithSlab(ctx, &m, &image, s)
 	if err != nil {
-		return nil, fmt.Errorf("build image error: %w", err)
+		return nil, nil, fmt.Errorf("build image error: %w", err)
 	}
 
 	log.Printf("new image %s: %d envelope, %d manifest, %d erofs", storePath, len(envelopeBytes), entry.Size, image.Len())
-	return image.Bytes(), nil
+	return &m, image.Bytes(), nil
 }
 
 func (s *Server) getManifestFromManifester(ctx context.Context, upstream, sph string, narSize int64) ([]byte, error) {

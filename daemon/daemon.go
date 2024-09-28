@@ -565,7 +565,7 @@ func (s *Server) tryMount(ctx context.Context, req *MountReq, haveImageSize int6
 		mountCtx.isBare = haveIsBare
 	} else {
 		// if no image yet, get the manifest and build it
-		image, err := s.getManifestAndBuildImage(ctx, req)
+		_, image, err := s.getManifestAndBuildImage(ctx, req)
 		if err != nil {
 			return err
 		}

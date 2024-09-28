@@ -14,7 +14,6 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/nix-community/go-nix/pkg/nixbase32"
 	"go.etcd.io/bbolt"
 	"golang.org/x/sys/unix"
 
@@ -37,57 +36,47 @@ func (s *Server) handleMaterializeReq(ctx context.Context, r *MaterializeReq) (*
 	} else if !strings.HasPrefix(r.DestPath, "/") {
 		return nil, mwErr(http.StatusBadRequest, "dest must be absolute path")
 	}
-	cookie, _, _ := strings.Cut(r.StorePath, "-")
-	var sph Sph
-	if n, err := nixbase32.Decode(sph[:], []byte(cookie)); err != nil || n != len(sph) {
-		return nil, mwErr(http.StatusBadRequest, "path is not a valid store path")
-	}
-	mp := filepath.Join(s.cfg.CachePath, "materialize", cookie)
 
 	// TODO: handle bare files
-	// TODO: we don't actually need to mount it, we can just get as far as allocating chunks in
-	// the slab. don't even need erofs image. but we do need entries in catalog for diffing.
 
-	// clean up
-	defer s.handleUmountReq(ctx, &UmountReq{StorePath: cookie})
+	// TODO: check if we have it already
 
-	// mount internally
-	_, err := s.handleMountReq(ctx, &MountReq{
-		Upstream:   r.Upstream,
-		StorePath:  r.StorePath,
-		MountPoint: mp,
-		NarSize:    r.NarSize,
+	// get manifest and allocate
+	m, _, err := s.getManifestAndBuildImage(ctx, &MountReq{
+		Upstream:  r.Upstream,
+		StorePath: r.StorePath,
+		NarSize:   r.NarSize,
 	})
 	if err != nil {
 		return nil, err
 	}
 
 	// prefetch all
-	_, err = s.handlePrefetchReq(ctx, &PrefetchReq{
-		Path:      "/",
-		StorePath: cookie,
-	})
-	if err != nil {
-		return nil, err
+	haveReq := make(map[cdig.CDig]struct{})
+	var reqs []cdig.CDig
+	for _, e := range m.Entries {
+		for _, d := range cdig.FromSliceAlias(e.Digests) {
+			if _, ok := haveReq[d]; !ok {
+				haveReq[d] = struct{}{}
+				reqs = append(reqs, d)
+			}
+		}
+	}
+	if len(reqs) > 0 {
+		if err = s.requestPrefetch(ctx, reqs); err != nil {
+			return nil, err
+		}
 	}
 
 	// copy to dest
-	return nil, s.materialize(r.DestPath, sph, mp)
+	return nil, s.materialize(r.DestPath, m)
 }
 
-func (s *Server) materialize(dest string, sph Sph, mp string) error {
-	var ents []*pb.Entry
+func (s *Server) materialize(dest string, m *pb.Manifest) error {
+	ents := m.Entries
 	locs := make(map[cdig.CDig]erofs.SlabLoc)
-
 	err := s.db.View(func(tx *bbolt.Tx) error {
 		cb := tx.Bucket(chunkBucket)
-
-		var err error
-		ents, err = s.getDigestsFromImage(tx, sph, false)
-		if err != nil {
-			return fmt.Errorf("can't read manifest: %w", err)
-		}
-
 		for it := newDigestIterator(ents); it.ent() != nil; it.next(1) {
 			dig := it.digest()
 			if _, ok := locs[dig]; ok {
