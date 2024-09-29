@@ -1199,9 +1199,9 @@ func (s *Server) mountSlabImage(slabId uint16) error {
 
 	cacheFd, err := s.openSlabBackingFile(slabId)
 	if err != nil {
-		unix.Close(slabFd)
+		_ = unix.Close(slabFd)
 		_ = unix.Unmount(mountPoint, 0)
-		return fmt.Errorf("error opening slab image file %s: %w", mountPoint, err)
+		return fmt.Errorf("error opening slab backing file %s: %w", mountPoint, err)
 	}
 
 	s.stateLock.Lock()
