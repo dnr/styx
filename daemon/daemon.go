@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -1036,14 +1037,14 @@ func (s *Server) handleClose(msgId, objectId uint32) error {
 }
 
 func (s *Server) closeState(state *openFileState, slabFds slabFds) {
-	if state.writeFd > 0 {
-		_ = unix.Close(int(state.writeFd))
+	fds := []int{int(state.writeFd), slabFds.readFd, slabFds.cacheFd}
+	slices.Sort(fds)
+	fds = slices.Compact(fds)
+	if fds[0] == 0 {
+		fds = fds[1:]
 	}
-	if slabFds.readFd > 0 && slabFds.readFd != int(state.writeFd) {
-		_ = unix.Close(slabFds.readFd)
-	}
-	if slabFds.cacheFd > 0 && slabFds.cacheFd != int(state.writeFd) && slabFds.cacheFd != slabFds.readFd {
-		_ = unix.Close(slabFds.cacheFd)
+	for _, fd := range fds {
+		_ = unix.Close(fd)
 	}
 	if state.tp == typeSlab {
 		mp := filepath.Join(s.cfg.CachePath, slabImagePrefix+strconv.Itoa(int(state.slabId)))
