@@ -157,6 +157,16 @@ func withStyxClient(c *cobra.Command) runE {
 	}
 }
 
+func withVaporizeReq(c *cobra.Command) runE {
+	var req daemon.VaporizeReq
+	c.Flags().StringVar(&req.Name, "name", "", "store name, if not same as path basename")
+	return func(c *cobra.Command, args []string) error {
+		req.Path = args[0]
+		store(c, &req)
+		return nil
+	}
+}
+
 func withDebugReq(c *cobra.Command) runE {
 	var req daemon.DebugReq
 	c.Flags().BoolVar(&req.IncludeAllImages, "all-images", false, "include all images")
@@ -282,6 +292,20 @@ func main() {
 						StorePath: args[1],
 						DestPath:  args[2],
 					},
+				)
+			},
+		),
+		cmd(
+			&cobra.Command{
+				Use:   "vaporize [--name] <path>",
+				Short: "imports data from the local filesystem into styx (client)",
+				Args:  cobra.ExactArgs(1),
+			},
+			withStyxClient,
+			withVaporizeReq,
+			func(c *cobra.Command, args []string) error {
+				return get[*client.StyxClient](c).CallAndPrint(
+					daemon.VaporizePath, get[*daemon.VaporizeReq](c),
 				)
 			},
 		),

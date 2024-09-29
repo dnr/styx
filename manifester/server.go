@@ -29,10 +29,10 @@ import (
 )
 
 const (
-	defaultSmallFileCutoff = 224
+	DefaultSmallFileCutoff = 224
 	// maxSmallFileCutoff = 480
 
-	smallManifestCutoff = 32 * 1024
+	SmallManifestCutoff = 32 * 1024
 )
 
 var (

@@ -364,6 +364,7 @@ func (s *Server) startSocketServer() (err error) {
 	mux.HandleFunc(MountPath, jsonmw(s.handleMountReq))
 	mux.HandleFunc(UmountPath, jsonmw(s.handleUmountReq))
 	mux.HandleFunc(MaterializePath, jsonmw(s.handleMaterializeReq))
+	mux.HandleFunc(VaporizePath, jsonmw(s.handleVaporizeReq))
 	mux.HandleFunc(PrefetchPath, jsonmw(s.handlePrefetchReq))
 	mux.HandleFunc(GcPath, jsonmw(s.handleGcReq))
 	mux.HandleFunc(DebugPath, jsonmw(s.handleDebugReq))
