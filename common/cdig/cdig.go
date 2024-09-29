@@ -3,6 +3,7 @@ package cdig
 import (
 	"crypto/sha256"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"unsafe"
 )
@@ -18,6 +19,8 @@ type (
 )
 
 var Zero CDig
+
+var ErrInvalid = errors.New("invalid base64 digest")
 
 func (dig CDig) String() string {
 	return base64.RawURLEncoding.EncodeToString(dig[:])
@@ -51,4 +54,14 @@ func ToSliceAlias(digests []CDig) []byte {
 	p := unsafe.SliceData(digests)
 	bp := (*byte)(unsafe.Pointer(p))
 	return unsafe.Slice(bp, len(digests)*Bytes)
+}
+
+func FromBase64(s string) (dig CDig, err error) {
+	src := unsafe.Slice(unsafe.StringData(s), len(s))
+	var dst []byte
+	dst, err = base64.RawURLEncoding.AppendDecode(dig[:0:Bytes], src)
+	if err == nil && (&dst[0] != &dig[0] || len(dst) != Bytes) {
+		err = ErrInvalid
+	}
+	return
 }

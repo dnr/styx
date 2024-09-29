@@ -241,7 +241,7 @@ func (b *ManifestBuilder) Build(
 
 	// TODO: make args configurable again (hashed in manifest cache key)
 	args := &BuildArgs{
-		SmallFileCutoff: defaultSmallFileCutoff,
+		SmallFileCutoff: DefaultSmallFileCutoff,
 		ShardTotal:      shardTotal,
 		ShardIndex:      shardIndex,
 	}
@@ -311,7 +311,7 @@ func (b *ManifestBuilder) Build(
 
 	// turn into entry (maybe chunk)
 
-	manifestArgs := BuildArgs{SmallFileCutoff: smallManifestCutoff}
+	manifestArgs := BuildArgs{SmallFileCutoff: SmallManifestCutoff}
 	path := common.ManifestContext + "/" + path.Base(ni.StorePath)
 	entry, err := b.ManifestAsEntry(ctx, &manifestArgs, path, manifest)
 	if err != nil {
