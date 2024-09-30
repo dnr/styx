@@ -40,7 +40,7 @@ func (s *Server) handleVaporizeReq(ctx context.Context, r *VaporizeReq) (*Status
 
 	// set up manifest builder
 	mbcfg := manifester.ManifestBuilderConfig{}
-	memcs := memChunkStore{make(map[cdig.CDig][]byte)}
+	memcs := memChunkStore{m: make(map[cdig.CDig][]byte), blkshift: s.blockShift}
 	mb, err := manifester.NewManifestBuilder(mbcfg, &memcs)
 	if err != nil {
 		return nil, err
@@ -98,7 +98,8 @@ func (s *Server) handleVaporizeReq(ctx context.Context, r *VaporizeReq) (*Status
 
 	// allocate data chunks in slab. this just calls erofs.Builder. this is doing too much
 	// work, we really only need the s.AllocateBatch calls. can optimize it later.
-	err = s.builder.BuildFromManifestWithSlab(ctx, manifest, io.Discard, s)
+	ctxForChunks := context.WithValue(ctx, "sph", sph)
+	err = s.builder.BuildFromManifestWithSlab(ctxForChunks, manifest, io.Discard, s)
 	if err != nil {
 		return nil, fmt.Errorf("build image error: %w", err)
 	}
@@ -142,7 +143,8 @@ func (s *Server) handleVaporizeReq(ctx context.Context, r *VaporizeReq) (*Status
 }
 
 type memChunkStore struct {
-	m map[cdig.CDig][]byte
+	m        map[cdig.CDig][]byte
+	blkshift common.BlkShift
 }
 
 func (m *memChunkStore) PutIfNotExists(ctx context.Context, path string, key string, data []byte) ([]byte, error) {
@@ -151,7 +153,11 @@ func (m *memChunkStore) PutIfNotExists(ctx context.Context, path string, key str
 		if err != nil {
 			return nil, err
 		}
-		m.m[dig] = data
+		// data is from a chunk pool, we shouldn't hold on to it. make a copy. but leave extra
+		// room so we don't have to copy again when we write.
+		d := make([]byte, len(data), m.blkshift.Roundup(int64(len(data))))
+		copy(d, data)
+		m.m[dig] = d
 	}
 	return nil, nil
 }
