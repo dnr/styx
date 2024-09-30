@@ -38,6 +38,9 @@ func (s *Server) handleVaporizeReq(ctx context.Context, r *VaporizeReq) (*Status
 	}
 	manifestSph := makeManifestSph(sph)
 
+	// FIXME: actually do this without nar dump and manifest builder and erofs builder
+	// so we can copyfilerange into the slab.
+
 	// set up manifest builder
 	mbcfg := manifester.ManifestBuilderConfig{}
 	memcs := memChunkStore{m: make(map[cdig.CDig][]byte), blkshift: s.blockShift}
