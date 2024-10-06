@@ -9,6 +9,8 @@ charon=$(nix-build --no-out-link -A charon)
 nix store sign -v --key-file keys/styx-nixcache-test-1.secret $(nix-store -qR "$charon")
 nix copy -v --to "$store" "$charon"
 
+# TODO: create buildroot file for charon itself
+
 sed -i "s,charon_storepath\\s*=.*,charon_storepath = \"$charon\"," tf/terraform.tfvars
 terraform -chdir=tf apply
 

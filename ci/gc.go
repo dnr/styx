@@ -10,6 +10,7 @@ import (
 	"io"
 	"log"
 	"path"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -415,12 +416,9 @@ func (gc *gc) remove(ctx context.Context) error {
 	gc.logf("remove: %9d objects, %14d bytes", gc.delCount.Load(), gc.delSize.Load())
 	gc.logf("keep  : %9d objects, %14d bytes", gc.totalCount.Load()-gc.delCount.Load(), gc.totalSize.Load()-gc.delSize.Load())
 
-	gc.logln("(skipping actual delete)")
-	return nil // FIXME
-
 	delerrors := 0
 	eg := errgroup.WithContext(ctx)
-	eg.SetLimit(cmp.Or(gc.lim.del, 100))
+	eg.SetLimit(cmp.Or(gc.lim.del, 20))
 	bsize := cmp.Or(gc.lim.batch, 100)
 	var batch []string
 	flush := func() {
@@ -456,6 +454,7 @@ func (gc *gc) remove(ctx context.Context) error {
 }
 
 func makeBatchDelete(keys []string) *s3types.Delete {
+	keys = slices.Clone(keys)
 	objs := make([]s3types.ObjectIdentifier, len(keys))
 	for i := range keys {
 		objs[i].Key = &keys[i]
