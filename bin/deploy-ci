@@ -9,7 +9,14 @@ charon=$(nix-build --no-out-link -A charon)
 nix store sign -v --key-file keys/styx-nixcache-test-1.secret $(nix-store -qR "$charon")
 nix copy -v --to "$store" "$charon"
 
-# TODO: create buildroot file for charon itself
+# write buildroot so this doesn't get collected
+{
+  echo "meta { build_time: $(date +%s) charon_build: \"$(basename $charon)\" }"
+  nix-store -qR "$charon" | sed 's,.*/\([^-]*\)-.*,store_path_hash: "\1",'
+} |
+  protoc --encode=pb.BuildRoot -Ipb pb/buildroot.proto |
+  zstd -c |
+  aws s3 cp - "s3://styx-1/buildroot/charon@$(date -u +%FT%TZ)@c@c" --content-encoding zstd
 
 sed -i "s,charon_storepath\\s*=.*,charon_storepath = \"$charon\"," tf/terraform.tfvars
 terraform -chdir=tf apply

@@ -15,4 +15,5 @@ message BuildRootMeta {
   int64 build_time = 1;
   string nix_rel_id = 2;
   string styx_commit = 3;
+  string charon_build = 4;
 }
