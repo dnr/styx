@@ -47,8 +47,8 @@ func (s *Server) handleVaporizeReq(ctx context.Context, r *VaporizeReq) (*Status
 		return nil, err
 	}
 	manifestSph := makeManifestSph(sph)
-	ctxForChunks := context.WithValue(ctx, "sph", sph)
-	ctxForManifestChunks := context.WithValue(ctx, "sph", manifestSph)
+	ctxForChunks := withAllocateCtx(ctx, sph, false)
+	ctxForManifestChunks := withAllocateCtx(ctx, manifestSph, true)
 
 	m := &pb.Manifest{
 		Params: &pb.GlobalParams{
@@ -148,7 +148,7 @@ func (s *Server) handleVaporizeReq(ctx context.Context, r *VaporizeReq) (*Status
 		digests := cdig.FromSliceAlias(entry.Digests)
 		blocks := make([]uint16, 0, len(digests))
 		blocks = common.AppendBlocksList(blocks, entry.Size, s.blockShift)
-		_, err := s.AllocateBatch(ctxForManifestChunks, blocks, digests, true)
+		_, err := s.AllocateBatch(ctxForManifestChunks, blocks, digests)
 		if err != nil {
 			return nil, err
 		}
@@ -194,7 +194,7 @@ func (s *Server) vaporizeFile(
 	blocks = common.AppendBlocksList(blocks, size, s.blockShift)
 	// FIXME: allocate without mapping, then assign to digests after verifying, to
 	// protect against toctou
-	locs, err := s.AllocateBatch(ctx, blocks, digests, false)
+	locs, err := s.AllocateBatch(ctx, blocks, digests)
 	if err != nil {
 		return nil, err
 	}

@@ -107,8 +107,8 @@ func (s *Server) getManifestAndBuildImage(ctx context.Context, req *MountReq) (*
 		blocks := make([]uint16, 0, len(digests))
 		blocks = common.AppendBlocksList(blocks, entry.Size, s.blockShift)
 
-		ctxForManifestChunks := context.WithValue(ctx, "sph", manifestSph)
-		locs, err := s.AllocateBatch(ctxForManifestChunks, blocks, digests, true)
+		ctxForManifestChunks := withAllocateCtx(ctx, manifestSph, true)
+		locs, err := s.AllocateBatch(ctxForManifestChunks, blocks, digests)
 		if err != nil {
 			return nil, nil, err
 		}
