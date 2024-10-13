@@ -18,6 +18,7 @@ import (
 
 	"github.com/dnr/styx/common"
 	"github.com/dnr/styx/common/cdig"
+	"github.com/dnr/styx/erofs"
 	"github.com/dnr/styx/manifester"
 	"github.com/dnr/styx/pb"
 	"github.com/nix-community/go-nix/pkg/storepath"
@@ -255,6 +256,128 @@ func (s *Server) vaporizeFile(
 	}
 
 	return digests, f.Close()
+}
+
+// two-phase allocate to support vaporize
+// first reserve space but don't assocate with chunks
+// next (after caller has written/cloned), associate with chunks
+func (s *Server) preallocate(ctx context.Context, blocks []uint16, digests []cdig.CDig) ([]erofs.SlabLoc, []bool, error) {
+	_, forManifest, ok := fromAllocateCtx(ctx)
+	if !ok {
+		return nil, nil, errors.New("missing allocate context")
+	}
+
+	n := len(blocks)
+	if n != len(digests) {
+		return nil, nil, errors.New("mismatched lengths")
+	}
+	out := make([]erofs.SlabLoc, n)
+	wasPresent := make([]bool, n)
+	err := s.db.Update(func(tx *bbolt.Tx) error {
+		cb, slabroot := tx.Bucket(chunkBucket), tx.Bucket(slabBucket)
+		var slabId uint16 = 0
+		if forManifest {
+			slabId = manifestSlabOffset
+		}
+		sb, err := slabroot.CreateBucketIfNotExists(slabKey(slabId))
+		if err != nil {
+			return err
+		}
+		// reserve some blocks for future purposes
+		seq := max(sb.Sequence(), reservedBlocks)
+
+		for i := range out {
+			digest := digests[i][:]
+			if loc := cb.Get(digest); loc == nil {
+				// allocate
+				if seq >= slabBytes>>s.blockShift {
+					slabId++
+					if sb, err = slabroot.CreateBucketIfNotExists(slabKey(slabId)); err != nil {
+						return err
+					}
+					seq = max(sb.Sequence(), reservedBlocks)
+				}
+				addr := common.TruncU32(seq)
+				seq += uint64(blocks[i])
+				out[i] = erofs.SlabLoc{slabId, addr}
+			} else {
+				out[i] = loadLoc(loc)
+				wasPresent[i] = true
+			}
+		}
+
+		return sb.SetSequence(seq)
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+	return out, wasPresent, nil
+}
+
+func (s *Server) commitPreallocated(ctx context.Context, blocks []uint16, digests []cdig.CDig, locs []erofs.SlabLoc, wasPresent []bool) error {
+	sph, forManifest, ok := fromAllocateCtx(ctx)
+	if !ok {
+		return errors.New("missing allocate context")
+	}
+
+	if len(blocks) != len(digests) || len(blocks) != len(locs) || len(blocks) != len(wasPresent) {
+		return errors.New("mismatched lengths")
+	}
+	return s.db.Update(func(tx *bbolt.Tx) error {
+		cb, slabroot := tx.Bucket(chunkBucket), tx.Bucket(slabBucket)
+		var slabId uint16 = 0
+		if forManifest {
+			slabId = manifestSlabOffset
+		}
+		sb, err := slabroot.CreateBucketIfNotExists(slabKey(slabId))
+		if err != nil {
+			return err
+		}
+
+		for i, loc := range locs {
+			digest := digests[i][:]
+			wasP := wasPresent[i]
+			locRec := cb.Get(digest)
+			actuallyP := locRec != nil
+
+			if !wasP {
+				// we reserved space for a new digest in a slab before, and the caller did
+				// clone or write into the space.
+				if !actuallyP {
+					// there's still no link from the digest to this space. create it, and mark
+					// it present also.
+					if err := cb.Put(digest, locValue(loc.SlabId, loc.Addr, sph)); err != nil {
+						return err
+					} else if err = sb.Put(addrKey(loc.Addr), digest); err != nil {
+						return err
+					} else if err = sb.Put(addrKey(loc.Addr|presentMask), []byte{}); err != nil {
+						return err
+					}
+				} else {
+					// we reserved space for a new digest before, but now it's associated
+					// somewhere else. just forget about it.
+					log.Printf("dropping vaporized data for new chunk %s at %d/%d", digests[i], loc.SlabId, loc.Addr)
+				}
+			} else {
+				// we had data for a digest that was already mapped.
+				if actuallyP {
+					// it's still mapped. we can now link it to the new sph and mark it present.
+					if newLoc := appendSph(locRec, sph); newLoc != nil {
+						if err := cb.Put(digest, newLoc); err != nil {
+							return err
+						}
+					}
+					if err = sb.Put(addrKey(loc.Addr|presentMask), []byte{}); err != nil {
+						return err
+					}
+				} else {
+					// it's not mapped anymore, it got gc'd?
+					log.Printf("dropping vaporized data for old chunk %s at %d/%d", digests[i], loc.SlabId, loc.Addr)
+				}
+			}
+		}
+		return nil
+	})
 }
 
 type memChunkStore struct {
