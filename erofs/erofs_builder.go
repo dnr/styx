@@ -172,7 +172,7 @@ func (b *Builder) BuildFromManifestWithSlab(
 	batchInodes := make([]*inodebuilder, 0, batchSize/10)
 
 	flushBlocks := func() error {
-		allLocs, err := sm.AllocateBatch(ctx, batchBlocks, batchDigests, false)
+		allLocs, err := sm.AllocateBatch(ctx, batchBlocks, batchDigests)
 		if err != nil {
 			return err
 		}
