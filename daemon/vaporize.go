@@ -7,7 +7,6 @@ import (
 	"io"
 	"io/fs"
 	"log"
-	"maps"
 	"net/http"
 	"os"
 	"path"
@@ -70,9 +69,6 @@ func (s *Server) handleVaporizeReq(ctx context.Context, r *VaporizeReq) (*Status
 	}
 
 	tryClone := true
-	s.stateLock.Lock()
-	readFds := maps.Clone(s.readfdBySlab)
-	s.stateLock.Unlock()
 
 	// The order we get from WalkDir may not match the order used by nar files, but it doesn't
 	// really matter as long as the files are present in the manifest with the right names and
@@ -103,7 +99,7 @@ func (s *Server) handleVaporizeReq(ctx context.Context, r *VaporizeReq) (*Status
 					return err
 				}
 			} else {
-				digests, err := s.vaporizeFile(ctxForChunks, fullPath, ent.Size, readFds, &tryClone)
+				digests, err := s.vaporizeFile(ctxForChunks, fullPath, ent.Size, &tryClone)
 				if err != nil {
 					return err
 				}
@@ -168,7 +164,6 @@ func (s *Server) vaporizeFile(
 	ctx context.Context,
 	fullPath string,
 	size int64,
-	readFds map[uint16]slabFds,
 	tryClone *bool,
 ) ([]cdig.CDig, error) {
 	buf := s.chunkPool.Get(int(common.ChunkShift.Size()))
@@ -178,6 +173,7 @@ func (s *Server) vaporizeFile(
 	if err != nil {
 		return nil, err
 	}
+	defer f.Close()
 
 	// first just read and hash whole file
 	var digests []cdig.CDig
@@ -193,9 +189,7 @@ func (s *Server) vaporizeFile(
 
 	blocks := make([]uint16, 0, len(digests))
 	blocks = common.AppendBlocksList(blocks, size, s.blockShift)
-	// FIXME: allocate without mapping, then assign to digests after verifying, to
-	// protect against toctou
-	locs, err := s.AllocateBatch(ctx, blocks, digests)
+	locs, wasAllocated, err := s.preallocateBatch(ctx, blocks, digests)
 	if err != nil {
 		return nil, err
 	}
@@ -203,7 +197,7 @@ func (s *Server) vaporizeFile(
 	present := make([]bool, len(locs))
 	s.db.View(func(tx *bbolt.Tx) error {
 		for i, loc := range locs {
-			present[i] = s.locPresent(tx, loc)
+			present[i] = wasAllocated[i] && s.locPresent(tx, loc)
 		}
 		return nil
 	})
@@ -212,56 +206,75 @@ func (s *Server) vaporizeFile(
 		if present[i] {
 			continue
 		}
-		cfd := readFds[loc.SlabId].cacheFd
-		if cfd == 0 {
-			return nil, errCachefdNotFound
-		}
 
 		size := common.ChunkShift.FileChunkSize(size, i == len(locs)-1)
 		rounded := s.blockShift.Roundup(size)
 		roff := int64(i) << common.ChunkShift
-		woff := int64(loc.Addr) << s.blockShift
-		// since the slab file extends beyond the end of our copy, even if it's
-		// sparse, CopyFileRange can only be used to copy whole blocks.
-		if *tryClone && size == rounded {
-			var rsize int
-			rsize, err = unix.CopyFileRange(int(f.Fd()), &roff, cfd, &woff, int(size), 0)
+		// since the slab file extends beyond the end of our copy, even if it's sparse,
+		// CopyFileRange can only be used to copy whole blocks.
+		// also, if the loc was already allocated (but not present), then it's already linked
+		// to a digest. we can't take the risk of TOCTOU, so we have to read and write.
+		if !wasAllocated[i] && size == rounded && *tryClone {
+			s.stateLock.Lock()
+			cfd := s.readfdBySlab[loc.SlabId].cacheFd
+			s.stateLock.Unlock()
+			if cfd == 0 {
+				return nil, errCachefdNotFound
+			}
+			woff := int64(loc.Addr) << s.blockShift
+			rsize, err := unix.CopyFileRange(int(f.Fd()), &roff, cfd, &woff, int(size), 0)
 			if err == nil && rsize != int(size) {
 				err = io.ErrShortWrite
 			}
 			switch err {
 			case nil:
-				// nothing
+				continue
 			case syscall.EINVAL, syscall.EOPNOTSUPP, syscall.EXDEV, io.ErrShortWrite:
 				log.Println("error from CopyFileRange, falling back to plain copy:", err)
 				*tryClone = false
+				// fall back to plain copy
 			default:
 				return nil, err
 			}
 		}
-		if !*tryClone || size != rounded {
-			// plain copy
-			b := buf[:size]
-			if _, err := f.ReadAt(b, roff); err != nil {
-				return nil, err
-			}
-			// round up to block size
-			for len(b) < int(rounded) {
-				b = append(b, 0)
-			}
-			if _, err = unix.Pwrite(cfd, b, woff); err != nil {
-				return nil, err
-			}
+
+		// plain copy. note we write through the writefd instead for consistency.
+		b := buf[:size]
+		if _, err := f.ReadAt(b, roff); err != nil {
+			return nil, err
+		}
+		err := s.gotNewChunk(loc, digests[i], b)
+		if err != nil {
+			return nil, err
 		}
 	}
 
-	return digests, f.Close()
+	// before we commit, verify all chunks that we wrote:
+	for i, loc := range locs {
+		if present[i] {
+			continue // don't bother if it was there before we started
+		}
+
+		size := common.ChunkShift.FileChunkSize(size, i == len(locs)-1)
+		b := buf[:size]
+		err := s.getKnownChunk(loc, b)
+		if err != nil {
+			return nil, err
+		}
+		got := cdig.Sum(buf)
+		if got != digests[i] {
+			err := fmt.Errorf("digest mismatch after vaporize: %x != %x at %d/%d", got, digests[i], loc.SlabId, loc.Addr)
+			log.Print(err.Error())
+			return nil, err
+		}
+	}
+
+	return common.ValOrErr(digests, s.commitPreallocated(ctx, blocks, digests, locs, wasAllocated))
 }
 
 // two-phase allocate to support vaporize
 // first reserve space but don't assocate with chunks
-// next (after caller has written/cloned), associate with chunks
-func (s *Server) preallocate(ctx context.Context, blocks []uint16, digests []cdig.CDig) ([]erofs.SlabLoc, []bool, error) {
+func (s *Server) preallocateBatch(ctx context.Context, blocks []uint16, digests []cdig.CDig) ([]erofs.SlabLoc, []bool, error) {
 	_, forManifest, ok := fromAllocateCtx(ctx)
 	if !ok {
 		return nil, nil, errors.New("missing allocate context")
@@ -272,7 +285,7 @@ func (s *Server) preallocate(ctx context.Context, blocks []uint16, digests []cdi
 		return nil, nil, errors.New("mismatched lengths")
 	}
 	out := make([]erofs.SlabLoc, n)
-	wasPresent := make([]bool, n)
+	wasAllocated := make([]bool, n)
 	err := s.db.Update(func(tx *bbolt.Tx) error {
 		cb, slabroot := tx.Bucket(chunkBucket), tx.Bucket(slabBucket)
 		var slabId uint16 = 0
@@ -302,7 +315,7 @@ func (s *Server) preallocate(ctx context.Context, blocks []uint16, digests []cdi
 				out[i] = erofs.SlabLoc{slabId, addr}
 			} else {
 				out[i] = loadLoc(loc)
-				wasPresent[i] = true
+				wasAllocated[i] = true
 			}
 		}
 
@@ -311,16 +324,17 @@ func (s *Server) preallocate(ctx context.Context, blocks []uint16, digests []cdi
 	if err != nil {
 		return nil, nil, err
 	}
-	return out, wasPresent, nil
+	return out, wasAllocated, nil
 }
 
-func (s *Server) commitPreallocated(ctx context.Context, blocks []uint16, digests []cdig.CDig, locs []erofs.SlabLoc, wasPresent []bool) error {
+// next (after caller has written/cloned), associate with chunks
+func (s *Server) commitPreallocated(ctx context.Context, blocks []uint16, digests []cdig.CDig, locs []erofs.SlabLoc, wasAllocated []bool) error {
 	sph, forManifest, ok := fromAllocateCtx(ctx)
 	if !ok {
 		return errors.New("missing allocate context")
 	}
 
-	if len(blocks) != len(digests) || len(blocks) != len(locs) || len(blocks) != len(wasPresent) {
+	if len(blocks) != len(digests) || len(blocks) != len(locs) || len(blocks) != len(wasAllocated) {
 		return errors.New("mismatched lengths")
 	}
 	return s.db.Update(func(tx *bbolt.Tx) error {
@@ -336,14 +350,14 @@ func (s *Server) commitPreallocated(ctx context.Context, blocks []uint16, digest
 
 		for i, loc := range locs {
 			digest := digests[i][:]
-			wasP := wasPresent[i]
+			wasAlloc := wasAllocated[i]
 			locRec := cb.Get(digest)
-			actuallyP := locRec != nil
+			isAlloc := locRec != nil
 
-			if !wasP {
+			if !wasAlloc {
 				// we reserved space for a new digest in a slab before, and the caller did
 				// clone or write into the space.
-				if !actuallyP {
+				if !isAlloc {
 					// there's still no link from the digest to this space. create it, and mark
 					// it present also.
 					if err := cb.Put(digest, locValue(loc.SlabId, loc.Addr, sph)); err != nil {
@@ -360,16 +374,17 @@ func (s *Server) commitPreallocated(ctx context.Context, blocks []uint16, digest
 				}
 			} else {
 				// we had data for a digest that was already mapped.
-				if actuallyP {
+				if isAlloc {
 					// it's still mapped. we can now link it to the new sph and mark it present.
 					if newLoc := appendSph(locRec, sph); newLoc != nil {
 						if err := cb.Put(digest, newLoc); err != nil {
 							return err
 						}
 					}
-					if err = sb.Put(addrKey(loc.Addr|presentMask), []byte{}); err != nil {
-						return err
-					}
+					// actually we don't need to do this since we called gotNewChunk that updates presence:
+					// if err = sb.Put(addrKey(loc.Addr|presentMask), []byte{}); err != nil {
+					// 	return err
+					// }
 				} else {
 					// it's not mapped anymore, it got gc'd?
 					log.Printf("dropping vaporized data for old chunk %s at %d/%d", digests[i], loc.SlabId, loc.Addr)
