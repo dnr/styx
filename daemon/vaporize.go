@@ -73,9 +73,6 @@ func (s *Server) handleVaporizeReq(ctx context.Context, r *VaporizeReq) (*Status
 	readFds := maps.Clone(s.readfdBySlab)
 	s.stateLock.Unlock()
 
-	buf := s.chunkPool.Get(int(common.ChunkShift.Size()))
-	defer s.chunkPool.Put(buf)
-
 	// The order we get from WalkDir may not match the order used by nar files, but it doesn't
 	// really matter as long as the files are present in the manifest with the right names and
 	// digests.
@@ -105,87 +102,11 @@ func (s *Server) handleVaporizeReq(ctx context.Context, r *VaporizeReq) (*Status
 					return err
 				}
 			} else {
-				f, err := os.Open(fullPath)
+				digests, err := s.vaporizeFile(ctxForChunks, fullPath, ent.Size, readFds, &tryClone)
 				if err != nil {
 					return err
 				}
-
-				var digests []cdig.CDig
-				for {
-					n, err := f.Read(buf)
-					if err == io.EOF {
-						break
-					} else if err != nil {
-						return err
-					}
-					digests = append(digests, cdig.Sum(buf[:n]))
-				}
-
-				blocks := make([]uint16, 0, len(digests))
-				blocks = common.AppendBlocksList(blocks, ent.Size, s.blockShift)
-				// FIXME: allocate without mapping, then assign to digests after verifying, to
-				// protect against toctou
-				locs, err := s.AllocateBatch(ctxForChunks, blocks, digests, false)
-				if err != nil {
-					return err
-				}
-
-				present := make([]bool, len(locs))
-				s.db.View(func(tx *bbolt.Tx) error {
-					for i, loc := range locs {
-						present[i] = s.locPresent(tx, loc)
-					}
-					return nil
-				})
-
-				for i, loc := range locs {
-					if present[i] {
-						continue
-					}
-					cfd := readFds[loc.SlabId].cacheFd
-					if cfd == 0 {
-						return errCachefdNotFound
-					}
-
-					size := common.ChunkShift.FileChunkSize(ent.Size, i == len(locs)-1)
-					rounded := s.blockShift.Roundup(size)
-					roff := int64(i) << common.ChunkShift
-					woff := int64(loc.Addr) << s.blockShift
-					// since the slab file extends beyond the end of our copy, even if it's
-					// sparse, CopyFileRange can only be used to copy whole blocks.
-					if tryClone && size == rounded {
-						var rsize int
-						rsize, err = unix.CopyFileRange(int(f.Fd()), &roff, cfd, &woff, int(size), 0)
-						if err == nil && rsize != int(size) {
-							err = io.ErrShortWrite
-						}
-						switch err {
-						case nil:
-							// nothing
-						case syscall.EINVAL, syscall.EOPNOTSUPP, syscall.EXDEV, io.ErrShortWrite:
-							log.Println("error from CopyFileRange, falling back to plain copy:", err)
-							tryClone = false
-						default:
-							return err
-						}
-					}
-					if !tryClone || size != rounded {
-						// plain copy
-						b := buf[:size]
-						if _, err := f.ReadAt(b, roff); err != nil {
-							return err
-						}
-						// round up to block size
-						for len(b) < int(rounded) {
-							b = append(b, 0)
-						}
-						if _, err = unix.Pwrite(cfd, b, woff); err != nil {
-							return err
-						}
-					}
-				}
-
-				f.Close()
+				ent.Digests = cdig.ToSliceAlias(digests)
 			}
 
 		case fs.ModeDir:
@@ -240,6 +161,100 @@ func (s *Server) handleVaporizeReq(ctx context.Context, r *VaporizeReq) (*Status
 	// FIXME: write to forwards/backwards catalog
 
 	return nil, nil
+}
+
+func (s *Server) vaporizeFile(
+	ctx context.Context,
+	fullPath string,
+	size int64,
+	readFds map[uint16]slabFds,
+	tryClone *bool,
+) ([]cdig.CDig, error) {
+	buf := s.chunkPool.Get(int(common.ChunkShift.Size()))
+	defer s.chunkPool.Put(buf)
+
+	f, err := os.Open(fullPath)
+	if err != nil {
+		return nil, err
+	}
+
+	// first just read and hash whole file
+	var digests []cdig.CDig
+	for {
+		n, err := f.Read(buf)
+		if err == io.EOF {
+			break
+		} else if err != nil {
+			return nil, err
+		}
+		digests = append(digests, cdig.Sum(buf[:n]))
+	}
+
+	blocks := make([]uint16, 0, len(digests))
+	blocks = common.AppendBlocksList(blocks, size, s.blockShift)
+	// FIXME: allocate without mapping, then assign to digests after verifying, to
+	// protect against toctou
+	locs, err := s.AllocateBatch(ctx, blocks, digests, false)
+	if err != nil {
+		return nil, err
+	}
+
+	present := make([]bool, len(locs))
+	s.db.View(func(tx *bbolt.Tx) error {
+		for i, loc := range locs {
+			present[i] = s.locPresent(tx, loc)
+		}
+		return nil
+	})
+
+	for i, loc := range locs {
+		if present[i] {
+			continue
+		}
+		cfd := readFds[loc.SlabId].cacheFd
+		if cfd == 0 {
+			return nil, errCachefdNotFound
+		}
+
+		size := common.ChunkShift.FileChunkSize(size, i == len(locs)-1)
+		rounded := s.blockShift.Roundup(size)
+		roff := int64(i) << common.ChunkShift
+		woff := int64(loc.Addr) << s.blockShift
+		// since the slab file extends beyond the end of our copy, even if it's
+		// sparse, CopyFileRange can only be used to copy whole blocks.
+		if *tryClone && size == rounded {
+			var rsize int
+			rsize, err = unix.CopyFileRange(int(f.Fd()), &roff, cfd, &woff, int(size), 0)
+			if err == nil && rsize != int(size) {
+				err = io.ErrShortWrite
+			}
+			switch err {
+			case nil:
+				// nothing
+			case syscall.EINVAL, syscall.EOPNOTSUPP, syscall.EXDEV, io.ErrShortWrite:
+				log.Println("error from CopyFileRange, falling back to plain copy:", err)
+				*tryClone = false
+			default:
+				return nil, err
+			}
+		}
+		if !*tryClone || size != rounded {
+			// plain copy
+			b := buf[:size]
+			if _, err := f.ReadAt(b, roff); err != nil {
+				return nil, err
+			}
+			// round up to block size
+			for len(b) < int(rounded) {
+				b = append(b, 0)
+			}
+			if _, err = unix.Pwrite(cfd, b, woff); err != nil {
+				return nil, err
+			}
+		}
+	}
+
+	return digests, f.Close()
 }
 
 type memChunkStore struct {
