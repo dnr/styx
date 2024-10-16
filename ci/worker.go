@@ -183,29 +183,25 @@ func ci(ctx workflow.Context, args *CiArgs) error {
 		})
 
 		// poll github repo
-		// TODO: clean up GetVersion when we restart this workflow
-		if workflow.GetVersion(ctx, "oops1", workflow.DefaultVersion, 1) >= 1 {
-			actx = withPollActivity(cctx, repoPollInterval, time.Minute)
-		} else {
-			actx = withPollActivity(ctx, repoPollInterval, time.Minute)
-		}
+		actx = withPollActivity(cctx, repoPollInterval, time.Minute)
 		styxRepoF := workflow.ExecuteActivity(actx, a.PollRepo, &pollRepoReq{
 			Config:     args.StyxRepo,
 			LastCommit: args.LastStyxCommit,
 		})
 
-		var err error
-		workflow.NewSelector(ctx).
+		var err1, err2 error
+		sel := workflow.NewSelector(ctx)
+		sel.
 			AddFuture(chanF, func(f workflow.Future) {
 				var res pollChannelRes
-				if err = f.Get(ctx, &res); err == nil {
+				if err1 = f.Get(ctx, &res); err1 == nil {
 					l.Info("poll got new nix channel release", "relid", res.RelID)
 					args.LastRelID = res.RelID
 				}
 			}).
 			AddFuture(styxRepoF, func(f workflow.Future) {
 				var res pollRepoRes
-				if err = f.Get(ctx, &res); err == nil {
+				if err2 = f.Get(ctx, &res); err2 == nil {
 					l.Info("poll got new styx commit", "commit", res.Commit)
 					args.LastStyxCommit = res.Commit
 				}
@@ -215,11 +211,15 @@ func ci(ctx workflow.Context, args *CiArgs) error {
 			}).
 			Select(ctx)
 
+		for sel.HasPending() {
+			sel.Select(ctx)
+		}
+
 		cancel() // cancel other poller
 
-		if err != nil {
+		if err1 != nil || err2 != nil {
 			// only non-retryable errors end up here
-			l.Error("poll error", "error", err)
+			l.Error("poll error", "err1", err1, "err2", err2)
 			workflow.Sleep(ctx, time.Hour)
 			continue
 		}

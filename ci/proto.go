@@ -27,10 +27,10 @@ type (
 		PublicCacheUpstream string
 
 		// state
-		LastRelID      string // "nixos-23.11.7609.5c2ec3a5c2ee"
-		LastStyxCommit string
-		PrevNames      []string
-		LastGC         int64 // unix seconds
+		LastRelID      string   `json:",omitempty"` // "nixos-23.11.7609.5c2ec3a5c2ee"
+		LastStyxCommit string   `json:",omitempty"`
+		PrevNames      []string `json:",omitempty"`
+		LastGC         int64    `json:",omitempty"` // unix seconds
 	}
 
 	RepoConfig struct {
