@@ -49,6 +49,7 @@ type (
 		delSize      atomic.Int64
 		totalCount   atomic.Int64
 		totalSize    atomic.Int64
+		traced       sync.Map
 		goodNi       sync.Map
 		goodNar      sync.Map
 		goodManifest sync.Map
@@ -249,9 +250,15 @@ func (gc *gc) traceRoot(eg *errgroup.Group, key string) error {
 	}
 	log.Printf("tracing root %s, %d sph, %d manifest", key, len(root.StorePathHash), len(root.Manifest))
 	for _, sph := range root.StorePathHash {
+		if _, loaded := gc.traced.LoadOrStore(sph, true); loaded {
+			continue
+		}
 		eg.Go(func() error { return gc.traceSph(eg, sph) })
 	}
 	for _, mc := range root.Manifest {
+		if _, loaded := gc.traced.LoadOrStore(mc, true); loaded {
+			continue
+		}
 		eg.Go(func() error { return gc.traceManifest(eg, mc) })
 	}
 	return nil
