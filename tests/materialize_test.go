@@ -13,7 +13,7 @@ func TestMaterialize(t *testing.T) {
 
 	mp1 := tb.materialize("qa22bifihaxyvn6q2a6w9m0nklqrk9wh-opusfile-0.12")
 	require.Equal(t, "1rswindywkyq2jmfpxd6n772jii3z5xz6ypfbb63c17k5il39hfm", tb.nixHash(mp1))
-	// TODO: check btrfs fi du
+	// TODO: check btrfs fi du to check that extents are shared
 
 	mp2 := tb.materialize("kbi7qf642gsxiv51yqank8bnx39w3crd-calf-0.90.3")
 	require.Equal(t, "1bhyfn2k8w41cx7ddarmjmwscas0946n6gw5mralx9lg0vbbcx6d", tb.nixHash(mp2))
