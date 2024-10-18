@@ -140,18 +140,33 @@ func (s *Server) handleVaporizeReq(ctx context.Context, r *VaporizeReq) (*Status
 		return nil, err
 	}
 
-	// allocate space for manifest chunks in slab
 	if len(entry.InlineData) == 0 {
+		// allocate space for manifest chunks in slab
 		digests := cdig.FromSliceAlias(entry.Digests)
 		blocks := make([]uint16, 0, len(digests))
 		blocks = common.AppendBlocksList(blocks, entry.Size, s.blockShift)
-		_, err := s.AllocateBatch(ctxForManifestChunks, blocks, digests)
+		locs, err := s.AllocateBatch(ctxForManifestChunks, blocks, digests)
 		if err != nil {
 			return nil, err
 		}
-	}
 
-	// FIXME: write manifest chunks to slab
+		// write manifest new chunks to slab
+		toWrite := make([]int, 0, len(digests))
+		_ = s.db.View(func(tx *bbolt.Tx) error {
+			for i, loc := range locs {
+				if !s.locPresent(tx, loc) {
+					toWrite = append(toWrite, i)
+				}
+			}
+			return nil
+		})
+		for _, i := range toWrite {
+			err = s.gotNewChunk(locs[i], digests[i], memcs.m[digests[i]])
+			if err != nil {
+				return nil, err
+			}
+		}
+	}
 
 	// FIXME: write entry to manifest bucket
 
