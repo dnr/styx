@@ -51,8 +51,8 @@ type (
 	// returns Status
 
 	VaporizeReq struct {
-		Path string
-		Name string
+		Path string // absolute path to data to vaporize into store (required)
+		Name string // store path name, defaults to basename of Path
 	}
 	// returns Status
 
