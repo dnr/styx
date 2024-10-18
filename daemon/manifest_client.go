@@ -36,8 +36,6 @@ func (s *Server) getManifestAndBuildImage(ctx context.Context, req *MountReq) (*
 	manifestSph := makeManifestSph(sph)
 	manifestSphPrefix := SphPrefixFromBytes(manifestSph[:sphPrefixBytes])
 
-	ctx = context.WithValue(ctx, "sph", sph)
-
 	// get manifest
 	envelopeBytes, err := s.getManifestFromManifester(ctx, req.Upstream, cookie, req.NarSize)
 	if err != nil {
@@ -134,7 +132,8 @@ func (s *Server) getManifestAndBuildImage(ctx context.Context, req *MountReq) (*
 
 	// transform manifest into image (allocate chunks)
 	var image bytes.Buffer
-	err = s.builder.BuildFromManifestWithSlab(ctx, &m, &image, s)
+	ctxForChunks := withAllocateCtx(ctx, sph, false)
+	err = s.builder.BuildFromManifestWithSlab(ctxForChunks, &m, &image, s)
 	if err != nil {
 		return nil, nil, fmt.Errorf("build image error: %w", err)
 	}

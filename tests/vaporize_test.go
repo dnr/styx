@@ -14,34 +14,62 @@ func TestVaporize(t *testing.T) {
 	tb.startAll()
 
 	tmp := tb.t.TempDir()
-	src1 := filepath.Join(tmp, "qa22bifihaxyvn6q2a6w9m0nklqrk9wh-opusfile-0.12")
 
-	err := exec.Command("sh", "-c", fmt.Sprintf(`
-	xz -cd %s/nar/0h336qzb63kdqxwc5yjrxq61cjraz8jrav0m5rkrcvsb6w55rbll.nar.xz | nix-store --restore %s
-`, TestdataDir, src1)).Run()
-	require.NoError(t, err)
+	testVaporize := func(name, filehash, datahash string, expected int64, doMount bool) {
+		d1 := tb.debug()
+		src := filepath.Join(tmp, name)
+		cmd := fmt.Sprintf(` xz -cd %s/nar/%s.nar.xz | nix-store --restore %s `, TestdataDir, filehash, src)
+		require.NoError(t, exec.Command("sh", "-c", cmd).Run())
+		// vaporize into slab
+		tb.vaporize(src)
+		// now try to materialize out of slab
+		var dst string
+		if doMount {
+			dst = tb.mount(name)
+		} else {
+			dst = tb.materialize(name)
+		}
+		require.Equal(t, datahash, tb.nixHash(dst))
+		// should be requests for manifest chunks only, all data is in slab
+		d2 := tb.debug()
+		require.Equal(t, expected,
+			(d2.Stats.SingleReqs+d2.Stats.BatchReqs+d2.Stats.DiffReqs)-
+				(d1.Stats.SingleReqs+d1.Stats.BatchReqs+d1.Stats.DiffReqs))
+		// TODO: btrfs fi du to check that extents are shared
+	}
 
-	tb.vaporize(src1)
+	testVaporize(
+		"qa22bifihaxyvn6q2a6w9m0nklqrk9wh-opusfile-0.12",
+		"0h336qzb63kdqxwc5yjrxq61cjraz8jrav0m5rkrcvsb6w55rbll",
+		"1rswindywkyq2jmfpxd6n772jii3z5xz6ypfbb63c17k5il39hfm",
+		0,
+		false)
 
-	dst1 := tb.materialize("qa22bifihaxyvn6q2a6w9m0nklqrk9wh-opusfile-0.12")
-	require.Equal(t, "1rswindywkyq2jmfpxd6n772jii3z5xz6ypfbb63c17k5il39hfm", tb.nixHash(dst1))
-	d1 := tb.debug()
-	require.Zero(t, d1.Stats.SingleReqs+d1.Stats.BatchReqs+d1.Stats.DiffReqs)
+	testVaporize(
+		"kbi7qf642gsxiv51yqank8bnx39w3crd-calf-0.90.3",
+		"11r77sgdyqqfi8z36p104098g16cvvq6jvhypv0xw79jrqq33j7n",
+		"1bhyfn2k8w41cx7ddarmjmwscas0946n6gw5mralx9lg0vbbcx6d",
+		1, // 1 manifest chunk
+		false)
 
-	// mp2 := tb.materialize("kbi7qf642gsxiv51yqank8bnx39w3crd-calf-0.90.3")
-	// require.Equal(t, "1bhyfn2k8w41cx7ddarmjmwscas0946n6gw5mralx9lg0vbbcx6d", tb.nixHash(mp2))
+	testVaporize(
+		"v35ysx9k1ln4c6r7lj74204ss4bw7l5l-openssl-3.0.12-man",
+		"1mv76iwv027rxgdb0i04www6nkx8hy5bxh8v8vjihr9pl5a37hpy",
+		"0v60mg7qj7mfd27s1nnldb0041ln08xs1bw7zn1mmjiaq02myzlh",
+		1, // 1 manifest chunk
+		true)
 
-	// mp3 := tb.materialize("v35ysx9k1ln4c6r7lj74204ss4bw7l5l-openssl-3.0.12-man")
-	// require.Equal(t, "0v60mg7qj7mfd27s1nnldb0041ln08xs1bw7zn1mmjiaq02myzlh", tb.nixHash(mp3))
+	testVaporize(
+		"3a7xq2qhxw2r7naqmc53akmx7yvz0mkf-less-is-more.patch",
+		"0a2jm36lynlaw4vxr4xnflxz93jadr4xw03ab2hgardshqij3y7c",
+		"13jlq14n974nn919530hnx4l46d0p2zyhx4lrd9b1k122dn7w9z5",
+		0,
+		false)
 
-	// mp4 := tb.materialize("3a7xq2qhxw2r7naqmc53akmx7yvz0mkf-less-is-more.patch")
-	// require.Equal(t, "13jlq14n974nn919530hnx4l46d0p2zyhx4lrd9b1k122dn7w9z5", tb.nixHash(mp4))
-
-	// // for this one, mount then materialize, should use local manifest.
-	// // this isn't a great test since materialize will fall back to remote manifest if error
-	// // reading local, it'd be nice to disable that for this test.
-	// _ = tb.mount("cd1nbildgzzfryjg82njnn36i4ynyf8h-bash-interactive-5.1-p16-man")
-	// mp5 := tb.materialize("cd1nbildgzzfryjg82njnn36i4ynyf8h-bash-interactive-5.1-p16-man")
-	// man1 := filepath.Join(mp5, "share", "man", "man1", "bash.1.gz")
-	// require.Equal(t, "0s9d681f8smlsdvbp6lin9qrbsp3hz3dnf4pdhwi883v8l1486r7", tb.nixHash(man1))
+	testVaporize(
+		"cd1nbildgzzfryjg82njnn36i4ynyf8h-bash-interactive-5.1-p16-man",
+		"0r02jy5bmdl5gvflmm9yq3aqa12zbv4hkkv1lqhm6ps49xnxlq6c",
+		"0anwmd9q85lyn4aid5glvzf5ikwr113zbrrpym1nf377r0ap298s",
+		0,
+		true)
 }

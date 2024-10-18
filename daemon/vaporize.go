@@ -320,7 +320,7 @@ func (s *Server) vaporizeFile(
 		if err != nil {
 			return nil, err
 		}
-		got := cdig.Sum(buf)
+		got := cdig.Sum(b)
 		if got != digests[i] {
 			err := fmt.Errorf("digest mismatch after vaporize: %x != %x at %d/%d", got, digests[i], loc.SlabId, loc.Addr)
 			log.Print(err.Error())
