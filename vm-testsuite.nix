@@ -1,4 +1,4 @@
-{ config, lib, pkgs, ... }:
+{ config, lib, pkgs, fstype, ... }:
 let
   styxtest = (import ./. { inherit pkgs; }).styx-test;
   runstyxtest = pkgs.writeShellScriptBin "runstyxtest" ''
@@ -12,8 +12,18 @@ in {
     ./module
   ];
 
-  # test suite needs only kernel options (and internet access)
+  # test suite needs only kernel options
   services.styx.enableKernelOptions = true;
+
+  # set up configurable fs type
+  assertions = [ {
+    assertion = config.virtualisation.diskImage != null;
+    message = "must use disk image";
+  } ];
+  # set fstype of root fs
+  virtualisation.fileSystems."/".fsType = lib.mkForce fstype;
+  # ensure btrfs enabled
+  system.requiredKernelConfig = with config.lib.kernelConfig; [ (isEnabled "BTRFS_FS") ];
 
   environment.systemPackages = with pkgs; [
     psmisc # for fuser

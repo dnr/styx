@@ -1,4 +1,12 @@
 #!/bin/sh
+
+fstype=ext4
+# don't use getopt so we can support -test.* flags
+if [[ $1 = -t ]]; then
+  fstype=$2
+  shift 2
+fi
+
 set -eux
 # Note: test flags need to be in form "-test.run", not just "-run"
-nix-build --no-out-link --argstr testflags "$*" testvm.nix
+nix-build --no-out-link --argstr fstype "$fstype" --argstr testflags "$*" testvm.nix
