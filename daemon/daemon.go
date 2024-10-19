@@ -122,12 +122,6 @@ type (
 		readFd, cacheFd int
 	}
 
-	mountContext struct {
-		imageSize int64
-		isBare    bool
-		imageData []byte
-	}
-
 	Config struct {
 		DevPath     string
 		CachePath   string
@@ -364,6 +358,7 @@ func (s *Server) startSocketServer() (err error) {
 	mux.HandleFunc(MountPath, jsonmw(s.handleMountReq))
 	mux.HandleFunc(UmountPath, jsonmw(s.handleUmountReq))
 	mux.HandleFunc(MaterializePath, jsonmw(s.handleMaterializeReq))
+	mux.HandleFunc(VaporizePath, jsonmw(s.handleVaporizeReq))
 	mux.HandleFunc(PrefetchPath, jsonmw(s.handlePrefetchReq))
 	mux.HandleFunc(GcPath, jsonmw(s.handleGcReq))
 	mux.HandleFunc(DebugPath, jsonmw(s.handleDebugReq))
@@ -552,7 +547,7 @@ func (s *Server) tryMount(ctx context.Context, req *MountReq, haveImageSize int6
 	cookie, _, _ := strings.Cut(req.StorePath, "-")
 
 	mountCtx := &mountContext{}
-	ctx = context.WithValue(ctx, "mountCtx", mountCtx)
+	ctx = withMountContext(ctx, mountCtx)
 
 	ok := s.mountCtxMap.PutIfNotPresent(cookie, ctx)
 	if !ok {
@@ -994,7 +989,7 @@ func (s *Server) handleOpenImage(msgId, objectId, fd, flags uint32, cookie strin
 	if ctx == nil {
 		return 0, fmt.Errorf("missing context in handleOpenImage for %s", cookie)
 	}
-	mountCtx, _ := ctx.Value("mountCtx").(*mountContext)
+	mountCtx, _ := fromMountCtx(ctx)
 	if mountCtx == nil {
 		return 0, fmt.Errorf("missing context in handleOpenImage for %s", cookie)
 	}
@@ -1290,9 +1285,11 @@ func (s *Server) VerifyParams(blockShift common.BlkShift) error {
 	return nil
 }
 
-func (s *Server) AllocateBatch(ctx context.Context, blocks []uint16, digests []cdig.CDig, forManifest bool) ([]erofs.SlabLoc, error) {
-	// TODO: pass this through regular arg?
-	sph := ctx.Value("sph").(Sph)
+func (s *Server) AllocateBatch(ctx context.Context, blocks []uint16, digests []cdig.CDig) ([]erofs.SlabLoc, error) {
+	sph, forManifest, ok := fromAllocateCtx(ctx)
+	if !ok {
+		return nil, errors.New("missing allocate context")
+	}
 
 	n := len(blocks)
 	if n != len(digests) {

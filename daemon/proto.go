@@ -15,6 +15,7 @@ var (
 	MountPath       = "/mount"
 	UmountPath      = "/umount"
 	MaterializePath = "/materialize"
+	VaporizePath    = "/vaporize"
 	PrefetchPath    = "/prefetch"
 	GcPath          = "/gc"
 	DebugPath       = "/debug"
@@ -46,6 +47,12 @@ type (
 		StorePath string
 		DestPath  string
 		NarSize   int64 `json:",omitempty"` // optional
+	}
+	// returns Status
+
+	VaporizeReq struct {
+		Path string // absolute path to data to vaporize into store (required)
+		Name string // store path name, defaults to basename of Path
 	}
 	// returns Status
 

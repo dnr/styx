@@ -242,16 +242,16 @@ tryAgain:
 			} else {
 				err = errCachefdNotFound
 			}
-			if err != nil {
-				switch err {
-				case syscall.EINVAL, syscall.EOPNOTSUPP, syscall.EXDEV, io.ErrShortWrite, errCachefdNotFound:
-					log.Println("error from CopyFileRange, falling back to plain copy:", err)
-					*tryClone = false
-					dst.Close()
-					goto tryAgain
-				default:
-					return err
-				}
+			switch err {
+			case nil:
+				// nothing
+			case syscall.EINVAL, syscall.EOPNOTSUPP, syscall.EXDEV, io.ErrShortWrite, errCachefdNotFound:
+				log.Println("error from CopyFileRange, falling back to plain copy:", err)
+				*tryClone = false
+				dst.Close()
+				goto tryAgain
+			default:
+				return err
 			}
 		} else {
 			if buf == nil {
