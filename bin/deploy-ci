@@ -18,6 +18,7 @@ nix copy -v --to "$store" "$charon"
   zstd -c |
   aws s3 cp - "s3://styx-1/buildroot/charon@$(date -u +%FT%TZ)@c@c" --content-encoding zstd
 
+export TF_VAR_charon_logdest=$(jq -r <<<$CHARON_SYSLOG_DEST | sed 's|^.*://||;s|:| |')
 sed -i "s,charon_storepath\\s*=.*,charon_storepath = \"$charon\"," tf/terraform.tfvars
 terraform -chdir=tf apply
 
