@@ -132,6 +132,7 @@ data "aws_ami" "nixos_x86_64" {
 }
 
 variable "charon_storepath" {}
+variable "charon_logdest" {}
 
 resource "aws_launch_template" "charon_worker" {
   name_prefix          = "charon-worker"
@@ -150,6 +151,7 @@ resource "aws_launch_template" "charon_worker" {
     bucket   = aws_s3_bucket.styx.id
     styxssm  = aws_ssm_parameter.manifester_signkey.name
     nixoskey = "cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY="
+    logdest  = var.charon_logdest
   }))
   block_device_mappings {
     device_name = "/dev/xvda"

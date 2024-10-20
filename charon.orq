@@ -17,6 +17,10 @@
       "AWS_SHARED_CREDENTIALS_FILE": "/secrets/charon-asg-scaler-creds.secret",
       "AWS_REGION": "us-east-1"
     },
+    "syslog": {
+      "syslog-address": ^^^CHARON_SYSLOG_DEST,
+      "tag": "{{.Name}}"
+    },
     "host": "dd5"
   }
 ]

@@ -18,5 +18,20 @@
       Restart = "always";
     };
   };
+
+  systemd.services.remotelog = {
+    description = "log to remote syslog";
+    after = [ "systemd-journald.service" ];
+    requires = [ "systemd-journald.service" ];
+    wantedBy = [ "multi-user.target" ];
+    serviceConfig = {
+      # this is kind of gross, but it was the suggested approach
+      ExecStart = ''/bin/sh -c "journalctl -f | $${pkgs.nmap}/bin/ncat --ssl ${logdest}"'';
+      TimeoutStartSec = "0";
+      Restart = "on-failure";
+      RestartSec = "5s";
+    };
+  };
+
   system.stateVersion = "24.05";
 }
