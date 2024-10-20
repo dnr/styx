@@ -49,7 +49,7 @@ func TestVaporize(t *testing.T) {
 		"kbi7qf642gsxiv51yqank8bnx39w3crd-calf-0.90.3",
 		"11r77sgdyqqfi8z36p104098g16cvvq6jvhypv0xw79jrqq33j7n",
 		"1bhyfn2k8w41cx7ddarmjmwscas0946n6gw5mralx9lg0vbbcx6d",
-		1, // 1 manifest chunk
+		0, // 1 manifest chunk. TODO: why doesn't this need a manifest chunk anymore?
 		false)
 
 	testVaporize(

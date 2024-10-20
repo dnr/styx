@@ -211,6 +211,28 @@ func (s *Server) handleVaporizeReq(ctx context.Context, r *VaporizeReq) (*Status
 				return err
 			}
 		}
+
+		// write image if not present
+		ib := tx.Bucket(imageBucket)
+		var img pb.DbImage
+		if buf := ib.Get([]byte(sphStr)); buf != nil {
+			if err = proto.Unmarshal(buf, &img); err != nil {
+				return err
+			}
+		}
+		if img.MountState == pb.MountState_Unknown {
+			// we have no record of this, set it up as materialized
+			img.StorePath = storePath
+			img.Upstream = "vaporize://" + r.Path
+			img.MountState = pb.MountState_Materialized
+
+			if buf, err := proto.Marshal(&img); err != nil {
+				return err
+			} else {
+				ib.Put([]byte(sphStr), buf)
+			}
+		}
+
 		return nil
 	}); err != nil {
 		return nil, err
