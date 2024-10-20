@@ -30,6 +30,15 @@ func (s *Server) handleRepairReq(ctx context.Context, r *RepairReq) (*Status, er
 		}
 	}
 
+	if remreq := r.Remanifest; remreq != nil {
+		_, sphStr, err := ParseSph(remreq.StorePath)
+		if err != nil {
+			return nil, err
+		}
+		_, err = s.getManifestFromManifester(ctx, remreq.Upstream, sphStr, remreq.NarSize, false)
+		return nil, err
+	}
+
 	return nil, nil
 }
 

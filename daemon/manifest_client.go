@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/DataDog/zstd"
-	"github.com/nix-community/go-nix/pkg/nixbase32"
 	"go.etcd.io/bbolt"
 	"google.golang.org/protobuf/proto"
 
@@ -25,19 +24,18 @@ import (
 )
 
 func (s *Server) getManifestAndBuildImage(ctx context.Context, req *MountReq) (*pb.Manifest, []byte, error) {
-	cookie, _, _ := strings.Cut(req.StorePath, "-")
-
 	// convert to binary
-	var sph Sph
-	if n, err := nixbase32.Decode(sph[:], []byte(cookie)); err != nil || n != len(sph) {
-		return nil, nil, fmt.Errorf("cookie is not a valid nix store path hash")
+	sph, sphStr, err := ParseSph(req.StorePath)
+	if err != nil {
+		return nil, nil, err
 	}
+
 	// use a separate "sph" for the manifest itself (a single entry). only used if manifest is chunked.
 	manifestSph := makeManifestSph(sph)
 	manifestSphPrefix := SphPrefixFromBytes(manifestSph[:sphPrefixBytes])
 
 	// get manifest
-	envelopeBytes, err := s.getManifestFromManifester(ctx, req.Upstream, cookie, req.NarSize)
+	envelopeBytes, err := s.getManifestFromManifester(ctx, req.Upstream, sphStr, req.NarSize, true)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -62,14 +60,14 @@ func (s *Server) getManifestAndBuildImage(ctx context.Context, req *MountReq) (*
 		return nil, nil, fmt.Errorf("envelope storepath != requested storepath: %q != %q", storePath, req.StorePath)
 	}
 	spHash, spName, _ := strings.Cut(storePath, "-")
-	if spHash != cookie || len(spName) == 0 {
+	if spHash != sphStr || len(spName) == 0 {
 		return nil, nil, fmt.Errorf("invalid or mismatched name in manifest %q", storePath)
 	}
 
 	// record signed manifest message in db and add names to catalog
 	if err = s.db.Update(func(tx *bbolt.Tx) error {
 		mb := tx.Bucket(manifestBucket)
-		if err := mb.Put([]byte(cookie), envelopeBytes); err != nil {
+		if err := mb.Put([]byte(sphStr), envelopeBytes); err != nil {
 			return err
 		}
 
@@ -142,8 +140,7 @@ func (s *Server) getManifestAndBuildImage(ctx context.Context, req *MountReq) (*
 	return &m, image.Bytes(), nil
 }
 
-func (s *Server) getManifestFromManifester(ctx context.Context, upstream, sph string, narSize int64) ([]byte, error) {
-	// check cached first
+func (s *Server) getManifestFromManifester(ctx context.Context, upstream, sph string, narSize int64, tryCache bool) ([]byte, error) {
 	mReq := manifester.ManifestReq{
 		Upstream:      upstream,
 		StorePathHash: sph,
@@ -153,14 +150,16 @@ func (s *Server) getManifestFromManifester(ctx context.Context, upstream, sph st
 		// SmallFileCutoff: s.cfg.SmallFileCutoff,
 	}
 
-	// check cache
-	s.stats.manifestCacheReqs.Add(1)
-	if b, err := s.p().mcread.Get(ctx, mReq.CacheKey(), nil); err == nil {
-		log.Printf("got manifest for %s from cache", sph)
-		s.stats.manifestCacheHits.Add(1)
-		return b, nil
-	} else if common.IsContextError(err) {
-		return nil, err
+	if tryCache {
+		// check cache
+		s.stats.manifestCacheReqs.Add(1)
+		if b, err := s.p().mcread.Get(ctx, mReq.CacheKey(), nil); err == nil {
+			log.Printf("got manifest for %s from cache", sph)
+			s.stats.manifestCacheHits.Add(1)
+			return b, nil
+		} else if common.IsContextError(err) {
+			return nil, err
+		}
 	}
 
 	// not found cached, request it

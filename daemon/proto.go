@@ -69,7 +69,8 @@ type (
 	// returns Status
 
 	RepairReq struct {
-		Presence bool `json:",omitempty"`
+		Presence   bool      `json:",omitempty"`
+		Remanifest *MountReq `json:",omitempty"`
 	}
 	// returns Status
 
