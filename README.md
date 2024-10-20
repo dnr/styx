@@ -375,6 +375,68 @@ It turns out that in the most common cases, it is possible:
   settings, which are deterministic and seem stable from version to version.
 
 
+### Prefetch
+
+Sometimes you know that you're going to need to download almost all the data in
+a package and want to just ensure it's there, instead of fetching it on-demand.
+Essentially, you just want the differential compression features of Styx without
+the on-demand. Use:
+
+```sh
+styx prefetch /nix/store/...-mypackage/
+```
+
+This is slightly more efficient than just reading all the files (it uses
+different parameters for fetching).
+
+### Materialize
+
+Sometimes you might want only differential compression and not on-demand
+fetching, but furthermore you need the files to be present on a "real"
+filesystem, e.g. because you're using Styx to download your kernel or firmware
+or something that has to be present in early boot.
+
+In that case you can use `materialize`: This is similar to mounting a package as
+EROFS and then copying into a plain filesystem, but more efficient:
+
+1. If you're using a filesystem with extent sharing like btrfs and materializing
+   on the root fs, the destination will share extents with the Styx slab file,
+meaning it will use no extra space.
+2. If you're using a filesystem without extent sharing, the copy will still be
+   done with `copy_file_range`, which is a little more efficient.
+
+TODO: Soon there'll be an option to have nix do this instead of mount. In the
+meantime you can do it manually:
+
+```sh
+styx materialize https://cache.nixos.org hash-mypackage /some/mount/point
+```
+
+### Vaporize
+
+The opposite of "materialize" is "vaporize": this copies data from a local
+filesystem into the Styx slab file (on btrfs it will attempt to share extents
+where possible).
+
+Why would you want to do this? When transitioning a system to use Styx for more
+packages, it would be nice to be able to do diffs from existing packages, even
+if they weren't installed with Styx. This lets you do that: you can vaporize all
+or most of your Nix store (without consuming any extra disk space), then install
+(either mount or materialize) new packages with Styx and take advantage of diffs
+from the existing ones.
+
+In some sense, vaporize + materialize is a fancy de-duplication mechanism for
+btrfs and similar filesystems, that also integrates with Styx' on-demand and
+compression features.
+
+```sh
+find /nix/store -maxdepth 1 -type d | xargs -n 1 styx vaporize
+```
+
+Note that vaporize is not optimized and is pretty slow right now, but you only
+have to do it once.
+
+
 ### GC
 
 So far we've only written data. How do we clean things up? There's enough
@@ -430,17 +492,26 @@ binary cache.
 
 #### Run the test suite in a VM
 
-`testvm`
+```sh
+testvm
+testvm -t btrfs  # run with btrfs root fs
+```
 
 #### Run the test suite on this machine (requires custom kernel build)
 
-`testlocal`
+```sh
+testlocal
+```
 
 #### Start a VM with Styx running and available
 
 **This will use services in my AWS account. I may turn it off or break it at any time.**
 
-`runvm`, log in with `test`/`test`
+```sh
+runvm
+# log in with test/test
+# then run "sudo StyxInitTest1" to set up parameters
+```
 
 The VM will be set up with `<nixpkgs>` shared on `/tmp/nixpkgs` and set on
 `NIX_PATH`. Styx will be configured to substitute all packages ≥ 32KiB. So start
@@ -448,7 +519,7 @@ with `nix-shell -p ...` and see what happens.
 
 #### Use it in your system configuration
 
-**Don't do this yet, this is still pretty experimental**
+**Don't do this if you're not willing to break your system, this is still pretty experimental**
 
 ```
    imports = [
@@ -472,11 +543,8 @@ with `nix-shell -p ...` and see what happens.
     - Improving base selection
         - Getting a 'system" for each package and only using same system as base
         - Using multiple bases
-    - Better selection of base chunks (currently using offset in nar)
-    - Better readahead heuristics (whole file at a time)
     - Exploring other approaches like simhash
     - Consider how to make diffs more cacheable
-- Prefetch {file, package} command
 - Combine multiple store paths into images to reduce overhead
 - GC
 - Respond to cachefiles culling requests
