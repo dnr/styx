@@ -106,7 +106,7 @@ const (
 
 	// gc
 	gcInterval = 7 * 24 * time.Hour
-	gcMaxAge   = 90 * 24 * time.Hour
+	gcMaxAge   = 210 * 24 * time.Hour
 )
 
 var globalScaler atomic.Pointer[scaler]
@@ -683,7 +683,7 @@ func (a *heavyActivities) HeavyBuild(ctx context.Context, req *buildReq) (retBui
 		m := m
 		egCtx.Go(func() error {
 			sph := m.storePath[11:43]
-			mres, err := a.b.Build(egCtx, m.upstream, sph, 0, 0, m.storePath)
+			mres, err := a.b.Build(egCtx, m.upstream, sph, 0, 0, m.storePath, false)
 			if mres != nil {
 				mcacheForRoot[i] = mres.CacheKey
 			}

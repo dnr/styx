@@ -29,10 +29,6 @@ import (
 	"github.com/dnr/styx/pb"
 )
 
-const (
-	buildRootPrefix = "buildroot/"
-)
-
 type (
 	gc struct {
 		now     time.Time
@@ -102,7 +98,7 @@ func (gc *gc) writeBuildRoot(ctx context.Context, br *pb.BuildRoot, key string) 
 		return err
 	}
 
-	key = buildRootPrefix + key
+	key = manifester.BuildRootPath[1:] + key
 	z := gc.zp.Get()
 	defer gc.zp.Put(z)
 	d, err := z.Compress(nil, data)
@@ -203,7 +199,7 @@ func (gc *gc) del(path string, size int64) {
 func (gc *gc) loadRoots(ctx context.Context) ([]string, error) {
 	gc.stage("GC LOAD ROOTS")
 	var roots []string
-	err := gc.listPrefix(ctx, buildRootPrefix, func(o s3types.Object) error {
+	err := gc.listPrefix(ctx, manifester.BuildRootPath[1:], func(o s3types.Object) error {
 		key := aws.ToString(o.Key)
 		gc.totalCount.Add(1)
 		gc.totalSize.Add(aws.ToInt64(o.Size))
@@ -243,7 +239,7 @@ func (gc *gc) trace(ctx context.Context, roots []string) error {
 
 func (gc *gc) traceRoot(eg *errgroup.Group, key string) error {
 	var root pb.BuildRoot
-	if b, err := gc.readOne(eg, buildRootPrefix+key, nil); err != nil {
+	if b, err := gc.readOne(eg, manifester.BuildRootPath[1:]+key, nil); err != nil {
 		return err
 	} else if err = proto.Unmarshal(b, &root); err != nil {
 		return err

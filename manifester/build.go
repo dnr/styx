@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -135,6 +136,7 @@ func (b *ManifestBuilder) Build(
 	upstream, storePathHash string,
 	shardTotal, shardIndex int,
 	useLocalStoreDump string,
+	writeBuildRoot bool,
 ) (*ManifestBuildRes, error) {
 	// get narinfo
 
@@ -348,8 +350,28 @@ func (b *ManifestBuilder) Build(
 			return nil, fmt.Errorf("%w: manifest compress error: %w", ErrInternal, err)
 		}
 	}
+
+	if writeBuildRoot {
+		btime := time.Now()
+		broot := &pb.BuildRoot{
+			Meta: &pb.BuildRootMeta{
+				BuildTime:        btime.Unix(),
+				ManifestUpstream: upstream,
+				ManifestSph:      storePathHash,
+			},
+			Manifest: []string{cacheKey},
+		}
+		if brdata, err := proto.Marshal(broot); err == nil {
+			brkey := strings.Join([]string{"manifest", btime.Format(time.RFC3339), "m", "m"}, "@")
+			if _, err = b.cs.PutIfNotExists(ctx, BuildRootPath, brkey, brdata); err != nil {
+				return nil, fmt.Errorf("%w: build root write error: %w", ErrInternal, err)
+			}
+		}
+	}
+
 	log.Println("manifest", storePathHash, "added to cache")
 	b.stats.Manifests.Add(1)
+
 	return &ManifestBuildRes{
 		CacheKey: cacheKey,
 		Bytes:    cmpSb,

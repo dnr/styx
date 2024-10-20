@@ -19,6 +19,8 @@ var (
 	ChunkReadPath     = "/chunk/"    // digest as final path component
 	ManifestCachePath = "/manifest/" // cache key as final path component
 
+	BuildRootPath = "/buildroot/" // written by manifester, read only by gc
+
 	ExpandGz = "gz"
 	ExpandXz = "xz"
 )

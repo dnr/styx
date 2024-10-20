@@ -117,7 +117,7 @@ func newS3ChunkStoreWrite(bucket string, zlevel int) (*s3ChunkStoreWrite, error)
 }
 
 func (s *s3ChunkStoreWrite) PutIfNotExists(ctx context.Context, path, key string, data []byte) ([]byte, error) {
-	if path != ChunkReadPath && path != ManifestCachePath {
+	if path != ChunkReadPath && path != ManifestCachePath && path != BuildRootPath {
 		panic("path must be ChunkReadPath or ManifestCachePath")
 	}
 	key = path[1:] + key

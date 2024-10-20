@@ -13,7 +13,9 @@ message BuildRoot {
 
 message BuildRootMeta {
   int64 build_time = 1;
-  string nix_rel_id = 2;
-  string styx_commit = 3;
-  string charon_build = 4;
+  string nix_rel_id = 2;         // for ci build
+  string styx_commit = 3;        // for ci build
+  string charon_build = 4;       // for build of charon itself
+  string manifest_upstream = 5;  // for on-demand manifest
+  string manifest_sph = 6;       // for on-demand manifest
 }
