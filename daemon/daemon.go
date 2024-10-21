@@ -190,7 +190,33 @@ func (s *Server) openDb() (err error) {
 		NoFreelistSync: true,
 		FreelistType:   bbolt.FreelistMapType,
 	}
-	s.db, err = bbolt.Open(filepath.Join(s.cfg.CachePath, dbFilename), 0644, &opts)
+
+	dbPath := filepath.Join(s.cfg.CachePath, dbFilename)
+
+	if os.Remove(filepath.Join(s.cfg.CachePath, compactFile)) == nil {
+		// request to compact db
+		ctime := time.Now().UTC().Format(time.RFC3339)
+		newPath := dbPath + ".new." + ctime
+		cmpPath := dbPath + ".compacted." + ctime
+		if newDb, err := bbolt.Open(newPath, 0644, &opts); err == nil {
+			if oldDb, err := bbolt.Open(dbPath, 0644, &opts); err == nil {
+				if err := bbolt.Compact(newDb, oldDb, 4<<20); err == nil {
+					oldDb.Close()
+					newDb.Close()
+					if os.Rename(dbPath, cmpPath) == nil {
+						os.Rename(newPath, dbPath)
+						log.Println("compacted db, old file in", cmpPath)
+					}
+				} else {
+					log.Println("bolt compact error:", err)
+				}
+				oldDb.Close()
+			}
+			newDb.Close()
+		}
+	}
+
+	s.db, err = bbolt.Open(dbPath, 0644, &opts)
 	if err != nil {
 		return err
 	}
