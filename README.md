@@ -342,6 +342,14 @@ for storage, notably it reduces the metadata overhead of keeping track of what
 we have and what we're missing, and makes building manifests simpler. But it's
 not strictly required.
 
+One additional benefit of aligned fixed-size chunking is that we can support
+materializing data on regular filesystems using the same chunks, without using
+any extra disk space: if you wanted to have a local CDC content-addressed chunk
+store, but also a usable Nix store, you'd have to duplicate all your data. With
+aligned fixed-sized chunks plus a filesystem that supports extent sharing, like
+btrfs or XFS, the materialized store can share the same underlying blocks as the
+slab file, using no extra space. See "Materialize" and "Vaporize" below.
+
 
 ### Diffing compressed files
 
@@ -421,7 +429,7 @@ where possible).
 Why would you want to do this? When transitioning a system to use Styx for more
 packages, it would be nice to be able to do diffs from existing packages, even
 if they weren't installed with Styx. This lets you do that: you can vaporize all
-or most of your Nix store (without consuming any extra disk space), then install
+or most of your Nix store (without consuming much extra disk space), then install
 (either mount or materialize) new packages with Styx and take advantage of diffs
 from the existing ones.
 
@@ -430,7 +438,9 @@ btrfs and similar filesystems, that also integrates with Styx' on-demand and
 compression features.
 
 ```sh
-find /nix/store -maxdepth 1 -type d | xargs -n 1 styx vaporize
+nix-store -qR /run/current-system |
+  xargs stat -f -c '%n %T' | grep -v erofs | cut -d ' ' -f 1 |
+  xargs -n 1 styx vaporize
 ```
 
 Note that vaporize is not optimized and is pretty slow right now, but you only
@@ -505,7 +515,7 @@ testlocal
 
 #### Start a VM with Styx running and available
 
-**This will use services in my AWS account. I may turn it off or break it at any time.**
+*This will use services in my AWS account. I may turn it off or break it at any time.*
 
 ```sh
 runvm
@@ -519,9 +529,9 @@ with `nix-shell -p ...` and see what happens.
 
 #### Use it in your system configuration
 
-**Don't do this if you're not willing to break your system, this is still pretty experimental**
+*Don't do this on a production system, this stuff is still pretty experimental*
 
-```
+```nix
    imports = [
      "${fetchTarball "https://github.com/dnr/styx/archive/release.tar.gz"}/module"
      # or use your preferred pinning method
@@ -531,6 +541,15 @@ with `nix-shell -p ...` and see what happens.
    services.styx.enable = true;
    # This sets a list of regexes to consider using Styx.
    nix.settings.styx-include = [ "list" "of" "package" "name" "regexp-.*" ];
+```
+
+After the daemon is running, you have to initialize it by running:
+
+```sh
+StyxInitTest1
+
+# or manually, run a command line:
+styx init --params=https://styx-1.s3.amazonaws.com/params/test-1 --styx_pubkey=styx-test-1:bmMrKgN5yF3dGgOI67TZSfLts5IQHwdrOCZ7XHcaN+w=
 ```
 
 

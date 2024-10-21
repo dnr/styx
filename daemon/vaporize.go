@@ -268,6 +268,9 @@ func (s *Server) vaporizeFile(
 		digests = append(digests, cdig.Sum(buf[:n]))
 	}
 
+	// TODO: we could deduplicate chunks within this file.
+	// it's rare for a file to have repeated chunks though, so don't worry about it for now.
+
 	blocks := make([]uint16, 0, len(digests))
 	blocks = common.AppendBlocksList(blocks, size, s.blockShift)
 	locs, wasAllocated, err := s.preallocateBatch(ctx, blocks, digests)
@@ -450,7 +453,8 @@ func (s *Server) commitPreallocated(ctx context.Context, blocks []uint16, digest
 					}
 				} else {
 					// we reserved space for a new digest before, but now it's associated
-					// somewhere else. just forget about it.
+					// somewhere else. just forget about it. this could happen if a file
+					// contains a repeated chunk.
 					log.Printf("dropping vaporized data for new chunk %s at %d/%d", digests[i], loc.SlabId, loc.Addr)
 				}
 			} else {
