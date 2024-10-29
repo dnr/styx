@@ -82,7 +82,10 @@ in with lib; {
           RequiresMountsFor = [ "/var/cache/styx" "/nix/store" ];
         };
         serviceConfig = {
-          ExecStart = "${cfg.package}/bin/styx daemon";
+          # Use unshare directly instead of PrivateMounts so that our new mounts
+          # are propagated normally, but we can remount /nix/store rw.
+          ExecStart = "${pkgs.util-linux}/bin/unshare -m --propagation unchanged ${cfg.package}/bin/styx daemon";
+          SyslogIdentifier = "styx";
           Type = "notify";
           NotifyAccess = "all";
           FileDescriptorStoreMax = "1";

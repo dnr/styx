@@ -284,6 +284,14 @@ func (s *Server) setupEnv() error {
 	return exec.Command(common.ModprobeBin, "cachefiles").Run()
 }
 
+func (s *Server) setupMounts() error {
+	// TODO: check if /nix/store is actually mounted ro and if we are in a private mount ns
+	_ = unix.MountSetattr(unix.AT_FDCWD, "/nix/store", 0, &unix.MountAttr{
+		Attr_clr: unix.MOUNT_ATTR_RDONLY,
+	})
+	return nil
+}
+
 func (s *Server) setupManifestSlab() error {
 	var id uint16 = manifestSlabOffset
 	mfSlabPath := filepath.Join(s.cfg.CachePath, manifestSlabPrefix+strconv.Itoa(int(id)))
@@ -751,6 +759,9 @@ func (s *Server) restoreMounts() {
 
 func (s *Server) Start() error {
 	if err := s.setupEnv(); err != nil {
+		return err
+	}
+	if err := s.setupMounts(); err != nil {
 		return err
 	}
 	if err := s.openDb(); err != nil {
