@@ -70,7 +70,7 @@ func (s *Server) handleMaterializeReq(ctx context.Context, r *MaterializeReq) (*
 	if shouldHaveManifest {
 		// read locally
 		err = s.db.View(func(tx *bbolt.Tx) error {
-			m, err = s.getManifestLocal(tx, []byte(sphStr))
+			m, _, err = s.getManifestLocal(tx, sphStr)
 			return err
 		})
 		if err != nil {

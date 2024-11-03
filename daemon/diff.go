@@ -633,35 +633,38 @@ func (s *Server) getDigestsFromImage(tx *bbolt.Tx, sph Sph, isManifest bool) ([]
 }
 
 // simplified form of getDigestsFromImage (TODO: consolidate)
-func (s *Server) getManifestLocal(tx *bbolt.Tx, key []byte) (*pb.Manifest, error) {
-	v := tx.Bucket(manifestBucket).Get(key)
+func (s *Server) getManifestLocal(tx *bbolt.Tx, sphStr string) (*pb.Manifest, []cdig.CDig, error) {
+	v := tx.Bucket(manifestBucket).Get([]byte(sphStr))
 	if v == nil {
-		return nil, errors.New("manifest not found")
+		return nil, nil, errors.New("manifest not found")
 	}
 	var sm pb.SignedMessage
 	err := proto.Unmarshal(v, &sm)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	// read chunks if needed
 	entry := sm.Msg
 	data := entry.InlineData
+	mdigs := cdig.FromSliceAlias(entry.Digests)
 	if len(data) == 0 {
-		locs, err := s.lookupLocs(tx, cdig.FromSliceAlias(entry.Digests))
+		locs, err := s.lookupLocs(tx, mdigs)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		data, err = s.readChunks(nil, tx, entry.Size, locs, nil, nil, false)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 	}
 
 	// unmarshal
 	var m pb.Manifest
-	err = proto.Unmarshal(data, &m)
-	return common.ValOrErr(&m, err)
+	if err := proto.Unmarshal(data, &m); err != nil {
+		return nil, nil, err
+	}
+	return &m, mdigs, nil
 }
 
 func (s *Server) getKnownChunk(loc erofs.SlabLoc, buf []byte) error {

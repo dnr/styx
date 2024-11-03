@@ -65,8 +65,17 @@ type (
 	// returns Status
 
 	GcReq struct {
+		DryRun    bool
+		GcByState map[pb.MountState]bool
 	}
-	// returns Status
+	GcResp struct {
+		DeletedByState   map[pb.MountState]int
+		RemainingByState map[pb.MountState]int
+		DeletedChunks    int
+		RemainingChunks  int
+		DeletedBlocks    int
+		RemainingBlocks  int
+	}
 
 	RepairReq struct {
 		Presence   bool      `json:",omitempty"`
