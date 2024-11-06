@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"log"
 	"net/http"
 	"slices"
 
@@ -21,8 +22,14 @@ type (
 
 		ib, cb, mb *bbolt.Bucket
 
-		keepImage map[string]struct{} // sph string // FIXME: needed?
+		keepImage map[string]struct{}    // sph string
+		keepSphps map[SphPrefix]struct{} // sph prefix
 		keepDig   map[cdig.CDig]struct{}
+	}
+
+	rewriteChunk struct {
+		d cdig.CDig
+		v []byte
 	}
 )
 
@@ -50,6 +57,7 @@ func (s *Server) handleGcReq(ctx context.Context, r *GcReq) (*GcResp, error) {
 		cb:        tx.Bucket(chunkBucket),
 		mb:        tx.Bucket(manifestBucket),
 		keepImage: make(map[string]struct{}, 1000),
+		keepSphps: make(map[SphPrefix]struct{}, 1000),
 		keepDig:   make(map[cdig.CDig]struct{}, 100000),
 	}
 
@@ -58,40 +66,67 @@ func (s *Server) handleGcReq(ctx context.Context, r *GcReq) (*GcResp, error) {
 	for k, v := ibcur.First(); k != nil; k, v = ibcur.Next() {
 		var img pb.DbImage
 		if proto.Unmarshal(v, &img) == nil {
-			s.gcTraceImage(g, string(v), &img)
+			err := s.gcTraceImage(g, string(v), &img)
+			if err != nil {
+				return nil, err
+			}
 		}
 	}
 
 	// find images to delete
 	var delImages [][]byte
 	for k, _ := ibcur.First(); k != nil; k, _ = ibcur.Next() {
-		if _, ok := s.keepImage(string(k)); ok {
-			continue
+		if _, ok := g.keepImage[string(k)]; !ok {
+			delImages = append(delImages, k)
 		}
-		delImages = append(delImages, k)
 	}
 
 	// find manifests to delete
 	var delManifests [][]byte
+	mbcur := g.mb.Cursor()
 	for k, _ := mbcur.First(); k != nil; k, _ = mbcur.Next() {
-		if _, ok := s.keepImage(string(k)); ok {
-			continue
+		if _, ok := g.keepImage[string(k)]; !ok {
+			delManifests = append(delManifests, k)
 		}
-		delManifests = append(delManifests, k)
 	}
 
 	// find all chunks to delete
-	cbcur := g.cb.Cursor()
+	var delBlocks, remainBlocks, remainChunks int64
 	var delChunks []cdig.CDig
 	var delLocs []erofs.SlabLoc
+	var rewriteChunks []rewriteChunk
+	cbcur := g.cb.Cursor()
 	for k, v := cbcur.First(); k != nil; k, v = cbcur.Next() {
 		d := cdig.FromBytes(k)
-		if _, ok := g.keepDig[d]; ok {
+		if _, ok := g.keepDig[d]; !ok {
+			delChunks = append(delChunks, d)
+			delLocs = append(delLocs, loadLoc(v))
 			continue
 		}
-		delChunks = append(delChunks, d)
-		delLocs = append(delLocs, loadLoc(v))
+		remainChunks++
+		sphps := splitSphs(v[6:])
+		if g.keepAllSphps(sphps) {
+			continue
+		}
+		newv := make([]byte, 6, len(v))
+		copy(newv, v)
+		for _, sphp := range sphps {
+			if _, ok := g.keepSphps[sphp]; ok {
+				newv = append(newv, sphp[:]...)
+			}
+		}
+		rewriteChunks = append(rewriteChunks, rewriteChunk{d: d, v: newv})
 	}
+
+	log.Printf("gc: will delete:")
+	log.Printf("gc:   %d images / %d manifests", len(delImages), len(delManifests))
+	log.Printf("gc:   %d chunks", len(delChunks))
+	log.Printf("gc:   %d bytes", delBlocks<<s.blockShift)
+	log.Printf("gc: remaining:")
+	log.Printf("gc:   %d images", len(g.keepImage))
+	log.Printf("gc:   %d chunks (%d)", len(g.keepDig), remainChunks)
+	log.Printf("gc:   %d bytes", remainBlocks<<s.blockShift)
+	log.Printf("gc: rewrite %d chunks", len(rewriteChunks))
 
 	// dry run
 	if r.DryRun {
@@ -125,12 +160,19 @@ func (s *Server) handleGcReq(ctx context.Context, r *GcReq) (*GcResp, error) {
 }
 
 func (s *Server) gcTraceImage(g *gcCtx, sphStr string, img *pb.DbImage) error {
+	sph, _, err := ParseSph(sphStr)
+	if err != nil {
+		return err
+	}
+	sphPrefix := SphPrefixFromBytes(sph[:sphPrefixBytes])
+
 	if g.GcByState[img.MountState] {
 		g.DeletedByState[img.MountState]++
 		return nil
 	}
 
 	g.keepImage[sphStr] = struct{}{}
+	g.keepSphps[sphPrefix] = struct{}{}
 	g.RemainingByState[img.MountState]++
 
 	m, mdigs, err := s.getManifestLocal(g.tx, sphStr)
@@ -148,4 +190,13 @@ func (s *Server) gcTraceImage(g *gcCtx, sphStr string, img *pb.DbImage) error {
 	}
 
 	return nil
+}
+
+func (g *gcCtx) keepAllSphps(sphps []SphPrefix) bool {
+	for _, sphp := range sphps {
+		if _, ok := g.keepSphps[sphp]; !ok {
+			return false
+		}
+	}
+	return true
 }
