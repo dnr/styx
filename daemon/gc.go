@@ -3,6 +3,7 @@ package daemon
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"errors"
 	"log"
 	"maps"
@@ -19,6 +20,8 @@ import (
 	"golang.org/x/sys/unix"
 	"google.golang.org/protobuf/proto"
 )
+
+const gcrecPunch = 0
 
 type (
 	gcCtx struct {
@@ -38,9 +41,10 @@ type (
 		d cdig.CDig
 		v []byte
 	}
-	locAndSize struct {
+	locWithEnd struct {
 		erofs.SlabLoc
-		blocks uint32
+		end uint32
+		ok  bool
 	}
 )
 
@@ -216,12 +220,16 @@ func (s *Server) handleGcReq(ctx context.Context, r *GcReq) (*GcResp, error) {
 	}
 
 	// after all locs have been deleted, find ranges to punch out
-	var punchLocs []locAndSize
+	gcb, err := tx.CreateBucketIfNotExists(gcstateBucket)
+	if err != nil {
+		return nil, err
+	}
+	var lastEnd uint32
 	for _, l := range delLocs {
 		lsb := lastBucket
 		if l.SlabId != lastKey {
 			lsb = sb.Bucket(slabKey(l.SlabId))
-			lastBucket, lastKey = lsb, l.SlabId
+			lastBucket, lastKey, lastEnd = lsb, l.SlabId, 0
 		}
 		var end uint32
 		if k, _ := lsb.Cursor().Seek(addrKey(l.Addr)); k == nil {
@@ -232,43 +240,67 @@ func (s *Server) handleGcReq(ctx context.Context, r *GcReq) (*GcResp, error) {
 				end = common.TruncU32(lsb.Sequence())
 			}
 		}
-		if len(punchLocs) > 0 {
-			last := punchLocs[len(punchLocs)-1]
-			lastEnd := last.Addr + last.blocks
-			if end == lastEnd {
-				continue
-			} else if end < lastEnd {
-				return nil, errors.New("this shouldn't happen")
-			}
+		// we're looking at locs in order, so if we're deleting two consecutive chunks,
+		// the first one should find the largest range to punch. if we found the same end we
+		// can ignore it.
+		if end == lastEnd {
+			continue
+		} else if end < lastEnd {
+			return nil, errors.New("this shouldn't happen")
 		}
-		punchLocs = append(punchLocs, locAndSize{
-			SlabLoc: l,
-			blocks:  end - l.Addr,
-		})
+		lastEnd = end
+		gcb.Put(punchKey(l.SlabId, l.Addr, end), nil)
 	}
 
+	// read buncket (pick up anything unfinished from previous gc)
+	var punchLocs []locWithEnd
+	gcbcur := gcb.Cursor()
+	for k, _ := gcbcur.First(); k != nil; k, _ = gcbcur.Next() {
+		switch k[0] {
+		case gcrecPunch:
+			var le locWithEnd
+			le.SlabId, le.Addr, le.end = recFromPunchKey(k)
+			punchLocs = append(punchLocs, le)
+		}
+	}
+
+	// end first transaction here
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
 
-	// actually punch holes
-	s.stateLock.Lock()
-	readFds := maps.Clone(s.readfdBySlab)
-	s.stateLock.Unlock()
-	for _, ls := range punchLocs {
-		if cfd := readFds[ls.SlabId].cacheFd; cfd > 0 {
-			err := unix.Fallocate(
-				cfd,
-				unix.FALLOC_FL_PUNCH_HOLE|unix.FALLOC_FL_KEEP_SIZE,
-				int64(ls.Addr)<<s.blockShift,
-				int64(ls.blocks)<<s.blockShift,
-			)
-			if err != nil {
-				log.Print("fallocate punch error (slab %d as fd %d, %d @ %d): %s",
-					ls.SlabId, cfd, ls.blocks, ls.Addr, err,
+	if len(punchLocs) > 0 {
+		// actually punch holes
+		s.stateLock.Lock()
+		readFds := maps.Clone(s.readfdBySlab)
+		s.stateLock.Unlock()
+		for i, le := range punchLocs {
+			if cfd := readFds[le.SlabId].cacheFd; cfd > 0 {
+				err := unix.Fallocate(
+					cfd,
+					unix.FALLOC_FL_PUNCH_HOLE|unix.FALLOC_FL_KEEP_SIZE,
+					int64(le.Addr)<<s.blockShift,
+					int64(le.end-le.Addr)<<s.blockShift,
 				)
+				if err != nil {
+					log.Print("fallocate punch error (slab %d as fd %d, %d-%d): %s",
+						le.SlabId, cfd, le.Addr, le.end, err,
+					)
+				}
+				punchLocs[i].ok = err == nil
 			}
 		}
+
+		// record success in second transaction
+		_ = s.db.Update(func(tx *bbolt.Tx) error {
+			gcb := tx.Bucket(gcstateBucket)
+			for _, le := range punchLocs {
+				if le.ok {
+					gcb.Delete(punchKey(le.SlabId, le.Addr, le.end))
+				}
+			}
+			return nil
+		})
 	}
 
 	return resp, nil
@@ -328,4 +360,20 @@ func locCmp(a, b erofs.SlabLoc) int {
 	} else {
 		return 0
 	}
+}
+
+func punchKey(slab uint16, addr, end uint32) []byte {
+	b := make([]byte, 11)
+	b[0] = gcrecPunch
+	binary.BigEndian.PutUint16(b[1:], slab)
+	binary.BigEndian.PutUint32(b[3:], addr)
+	binary.BigEndian.PutUint32(b[7:], end)
+	return b
+}
+
+func recFromPunchKey(b []byte) (slab uint16, addr, end uint32) {
+	slab = binary.BigEndian.Uint16(b[1:])
+	addr = binary.BigEndian.Uint32(b[3:])
+	end = binary.BigEndian.Uint32(b[7:])
+	return
 }
