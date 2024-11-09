@@ -987,7 +987,6 @@ func (s *Server) handleOpenSlab(msgId, objectId, fd, flags uint32, id uint16) (i
 		writeFd: fd,
 		tp:      typeSlab,
 		slabId:  id,
-		// cacheFd: common.TruncU32(cacheFd),
 	}
 	s.cacheState[objectId] = state
 	s.stateBySlab[id] = state

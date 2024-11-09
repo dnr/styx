@@ -1,15 +1,22 @@
 package daemon
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"log"
+	"maps"
+	"math"
 	"net/http"
 	"slices"
+	"strings"
 
+	"github.com/dnr/styx/common"
 	"github.com/dnr/styx/common/cdig"
 	"github.com/dnr/styx/erofs"
 	"github.com/dnr/styx/pb"
 	"go.etcd.io/bbolt"
+	"golang.org/x/sys/unix"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -30,6 +37,10 @@ type (
 	rewriteChunk struct {
 		d cdig.CDig
 		v []byte
+	}
+	locAndSize struct {
+		erofs.SlabLoc
+		blocks uint32
 	}
 )
 
@@ -74,11 +85,30 @@ func (s *Server) handleGcReq(ctx context.Context, r *GcReq) (*GcResp, error) {
 	}
 
 	// find images to delete
-	var delImages [][]byte
-	for k, _ := ibcur.First(); k != nil; k, _ = ibcur.Next() {
-		if _, ok := g.keepImage[string(k)]; !ok {
-			delImages = append(delImages, k)
+	var delImages, delCatalogF, delCatalogR [][]byte
+	for k, v := ibcur.First(); k != nil; k, v = ibcur.Next() {
+		if _, ok := g.keepImage[string(k)]; ok {
+			continue
 		}
+		delImages = append(delImages, k)
+		var img pb.DbImage
+		var sph Sph
+		var err error
+		var spName string
+		if proto.Unmarshal(v, &img) != nil {
+			continue
+		} else if sph, _, err = ParseSph(img.StorePath); err != nil {
+			continue
+		} else if _, spName, _ = strings.Cut(img.StorePath, "-"); spName == "" {
+			continue
+		}
+		fkey := bytes.Join([][]byte{[]byte(spName), []byte{0}, sph[:]}, nil)
+		rkey := sph[:]
+		manifestSph := makeManifestSph(sph)
+		mfkey := bytes.Join([][]byte{[]byte(isManifestPrefix), []byte(spName), []byte{0}, manifestSph[:]}, nil)
+		mrkey := manifestSph[:]
+		delCatalogF = append(delCatalogF, fkey, mfkey)
+		delCatalogR = append(delCatalogR, rkey, mrkey)
 	}
 
 	// find manifests to delete
@@ -91,7 +121,8 @@ func (s *Server) handleGcReq(ctx context.Context, r *GcReq) (*GcResp, error) {
 	}
 
 	// find all chunks to delete
-	var delBlocks, remainBlocks, remainChunks int64
+	// var delBlocks, remainBlocks int64
+	var remainChunks int64
 	var delChunks []cdig.CDig
 	var delLocs []erofs.SlabLoc
 	var rewriteChunks []rewriteChunk
@@ -121,11 +152,11 @@ func (s *Server) handleGcReq(ctx context.Context, r *GcReq) (*GcResp, error) {
 	log.Printf("gc: will delete:")
 	log.Printf("gc:   %d images / %d manifests", len(delImages), len(delManifests))
 	log.Printf("gc:   %d chunks", len(delChunks))
-	log.Printf("gc:   %d bytes", delBlocks<<s.blockShift)
+	// log.Printf("gc:   %d bytes", delBlocks<<s.blockShift)
 	log.Printf("gc: remaining:")
 	log.Printf("gc:   %d images", len(g.keepImage))
 	log.Printf("gc:   %d chunks (%d)", len(g.keepDig), remainChunks)
-	log.Printf("gc:   %d bytes", remainBlocks<<s.blockShift)
+	// log.Printf("gc:   %d bytes", remainBlocks<<s.blockShift)
 	log.Printf("gc: rewrite %d chunks", len(rewriteChunks))
 
 	// dry run
@@ -134,29 +165,113 @@ func (s *Server) handleGcReq(ctx context.Context, r *GcReq) (*GcResp, error) {
 	}
 
 	// actually do deletes
-	// FIXME
 
-	// sort locs before punching
-	slices.SortFunc(delLocs, func(a, b erofs.SlabLoc) int {
-		if a.SlabId < b.SlabId {
-			return -1
-		} else if a.SlabId > b.SlabId {
-			return 1
-		} else if a.Addr < b.Addr {
-			return -1
-		} else if a.Addr > b.Addr {
-			return 1
-		} else {
-			return 0
+	// images
+	for _, k := range delImages {
+		g.ib.Delete(k)
+	}
+	// manifests
+	for _, k := range delManifests {
+		g.mb.Delete(k)
+	}
+
+	// chunks delete
+	for _, d := range delChunks {
+		g.cb.Delete(d[:])
+	}
+
+	// chunks rewrite
+	for _, rew := range rewriteChunks {
+		g.cb.Put(rew.d[:], rew.v)
+	}
+
+	// catalog
+	cfb := tx.Bucket(catalogFBucket)
+	for _, dcf := range delCatalogF {
+		cfb.Delete(dcf)
+	}
+	crb := tx.Bucket(catalogRBucket)
+	for _, dcr := range delCatalogR {
+		crb.Delete(dcr)
+	}
+
+	// locs
+
+	// sort for locality and coalescing gaps
+	slices.SortFunc(delLocs, locCmp)
+
+	sb := tx.Bucket(slabBucket)
+	var lastBucket *bbolt.Bucket
+	var lastKey uint16 = math.MaxUint16
+	for _, l := range delLocs {
+		lsb := lastBucket
+		if l.SlabId != lastKey {
+			lsb = sb.Bucket(slabKey(l.SlabId))
+			lastBucket, lastKey = lsb, l.SlabId
 		}
-	})
+		if lsb != nil {
+			lsb.Delete(addrKey(l.Addr))
+			lsb.Delete(addrKey(l.Addr | presentMask))
+		}
+	}
 
-	// TODO: catalog buckets
+	// after all locs have been deleted, find ranges to punch out
+	var punchLocs []locAndSize
+	for _, l := range delLocs {
+		lsb := lastBucket
+		if l.SlabId != lastKey {
+			lsb = sb.Bucket(slabKey(l.SlabId))
+			lastBucket, lastKey = lsb, l.SlabId
+		}
+		var end uint32
+		if k, _ := lsb.Cursor().Seek(addrKey(l.Addr)); k == nil {
+			end = common.TruncU32(lsb.Sequence()) // end of slab
+		} else {
+			end = loadLoc(k).Addr
+			if end&presentMask != 0 {
+				end = common.TruncU32(lsb.Sequence())
+			}
+		}
+		if len(punchLocs) > 0 {
+			last := punchLocs[len(punchLocs)-1]
+			lastEnd := last.Addr + last.blocks
+			if end == lastEnd {
+				continue
+			} else if end < lastEnd {
+				return nil, errors.New("this shouldn't happen")
+			}
+		}
+		punchLocs = append(punchLocs, locAndSize{
+			SlabLoc: l,
+			blocks:  end - l.Addr,
+		})
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
 
 	// actually punch holes
-	// FIXME: oh crap, how do we know the size?
+	s.stateLock.Lock()
+	readFds := maps.Clone(s.readfdBySlab)
+	s.stateLock.Unlock()
+	for _, ls := range punchLocs {
+		if cfd := readFds[ls.SlabId].cacheFd; cfd > 0 {
+			err := unix.Fallocate(
+				cfd,
+				unix.FALLOC_FL_PUNCH_HOLE|unix.FALLOC_FL_KEEP_SIZE,
+				int64(ls.Addr)<<s.blockShift,
+				int64(ls.blocks)<<s.blockShift,
+			)
+			if err != nil {
+				log.Print("fallocate punch error (slab %d as fd %d, %d @ %d): %s",
+					ls.SlabId, cfd, ls.blocks, ls.Addr, err,
+				)
+			}
+		}
+	}
 
-	return resp, tx.Commit()
+	return resp, nil
 }
 
 func (s *Server) gcTraceImage(g *gcCtx, sphStr string, img *pb.DbImage) error {
@@ -199,4 +314,18 @@ func (g *gcCtx) keepAllSphps(sphps []SphPrefix) bool {
 		}
 	}
 	return true
+}
+
+func locCmp(a, b erofs.SlabLoc) int {
+	if a.SlabId < b.SlabId {
+		return -1
+	} else if a.SlabId > b.SlabId {
+		return 1
+	} else if a.Addr < b.Addr {
+		return -1
+	} else if a.Addr > b.Addr {
+		return 1
+	} else {
+		return 0
+	}
 }
