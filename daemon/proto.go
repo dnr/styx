@@ -65,16 +65,27 @@ type (
 	// returns Status
 
 	GcReq struct {
-		DryRun    bool
-		GcByState map[pb.MountState]bool
+		DryRunFast bool
+		DryRunSlow bool
+		GcByState  map[pb.MountState]bool
 	}
 	GcResp struct {
-		DeletedByState   map[pb.MountState]int
-		RemainingByState map[pb.MountState]int
-		DeletedChunks    int
-		RemainingChunks  int
-		DeletedBlocks    int
-		RemainingBlocks  int
+		// always filled in
+		DeleteImagesByState map[pb.MountState]int
+		RemainImagesByState map[pb.MountState]int
+		DeleteImages        int
+		RemainImages        int
+		DeleteManifests     int // should match DeleteImages
+		DeleteCatalogF      int
+		DeleteCatalogR      int
+		DeleteChunks        int
+		RemainRefChunks     int
+		RemainHaveChunks    int // should match RemainRefChunks
+		RewriteChunks       int
+
+		// only filled in on dry-run-slow or real run
+		PunchLocs  int
+		PunchBytes int64
 	}
 
 	RepairReq struct {

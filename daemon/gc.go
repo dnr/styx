@@ -60,8 +60,8 @@ func (s *Server) handleGcReq(ctx context.Context, r *GcReq) (*GcResp, error) {
 	defer tx.Rollback()
 
 	resp := &GcResp{
-		DeletedByState:   make(map[pb.MountState]int),
-		RemainingByState: make(map[pb.MountState]int),
+		DeleteImagesByState: make(map[pb.MountState]int),
+		RemainImagesByState: make(map[pb.MountState]int),
 	}
 	g := &gcCtx{
 		Context:   ctx,
@@ -125,8 +125,6 @@ func (s *Server) handleGcReq(ctx context.Context, r *GcReq) (*GcResp, error) {
 	}
 
 	// find all chunks to delete
-	// var delBlocks, remainBlocks int64
-	var remainChunks int64
 	var delChunks []cdig.CDig
 	var delLocs []erofs.SlabLoc
 	var rewriteChunks []rewriteChunk
@@ -138,7 +136,7 @@ func (s *Server) handleGcReq(ctx context.Context, r *GcReq) (*GcResp, error) {
 			delLocs = append(delLocs, loadLoc(v))
 			continue
 		}
-		remainChunks++
+		g.RemainHaveChunks++
 		sphps := splitSphs(v[6:])
 		if g.keepAllSphps(sphps) {
 			continue
@@ -153,53 +151,30 @@ func (s *Server) handleGcReq(ctx context.Context, r *GcReq) (*GcResp, error) {
 		rewriteChunks = append(rewriteChunks, rewriteChunk{d: d, v: newv})
 	}
 
+	g.DeleteImages = len(delImages)
+	g.DeleteManifests = len(delManifests)
+	g.DeleteCatalogF = len(delCatalogF)
+	g.DeleteCatalogR = len(delCatalogR)
+	g.DeleteChunks = len(delChunks)
+	g.RemainImages = len(g.keepImage)
+	g.RemainRefChunks = len(g.keepDig)
+	g.RewriteChunks = len(rewriteChunks)
+
 	log.Printf("gc: will delete:")
 	log.Printf("gc:   %d images / %d manifests", len(delImages), len(delManifests))
+	log.Printf("gc:   %d catalog fwd / %d catalog rev", len(delCatalogF), len(delCatalogR))
 	log.Printf("gc:   %d chunks", len(delChunks))
-	// log.Printf("gc:   %d bytes", delBlocks<<s.blockShift)
 	log.Printf("gc: remaining:")
 	log.Printf("gc:   %d images", len(g.keepImage))
-	log.Printf("gc:   %d chunks (%d)", len(g.keepDig), remainChunks)
-	// log.Printf("gc:   %d bytes", remainBlocks<<s.blockShift)
+	log.Printf("gc:   %d chunks (%d)", len(g.keepDig), g.RemainHaveChunks)
 	log.Printf("gc: rewrite %d chunks", len(rewriteChunks))
 
-	// dry run
-	if r.DryRun {
+	// dry run fast: just read
+	if r.DryRunFast {
 		return resp, tx.Rollback()
 	}
 
-	// actually do deletes
-
-	// images
-	for _, k := range delImages {
-		g.ib.Delete(k)
-	}
-	// manifests
-	for _, k := range delManifests {
-		g.mb.Delete(k)
-	}
-
-	// chunks delete
-	for _, d := range delChunks {
-		g.cb.Delete(d[:])
-	}
-
-	// chunks rewrite
-	for _, rew := range rewriteChunks {
-		g.cb.Put(rew.d[:], rew.v)
-	}
-
-	// catalog
-	cfb := tx.Bucket(catalogFBucket)
-	for _, dcf := range delCatalogF {
-		cfb.Delete(dcf)
-	}
-	crb := tx.Bucket(catalogRBucket)
-	for _, dcr := range delCatalogR {
-		crb.Delete(dcr)
-	}
-
-	// locs
+	// figure out what to punch (can still roll back db)
 
 	// sort for locality and coalescing gaps
 	slices.SortFunc(delLocs, locCmp)
@@ -234,11 +209,8 @@ func (s *Server) handleGcReq(ctx context.Context, r *GcReq) (*GcResp, error) {
 		var end uint32
 		if k, _ := lsb.Cursor().Seek(addrKey(l.Addr)); k == nil {
 			end = common.TruncU32(lsb.Sequence()) // end of slab
-		} else {
-			end = loadLoc(k).Addr
-			if end&presentMask != 0 {
-				end = common.TruncU32(lsb.Sequence())
-			}
+		} else if end = loadLoc(k).Addr; end&presentMask != 0 {
+			end = common.TruncU32(lsb.Sequence()) // also end of slab
 		}
 		// we're looking at locs in order, so if we're deleting two consecutive chunks,
 		// the first one should find the largest range to punch. if we found the same end we
@@ -252,14 +224,56 @@ func (s *Server) handleGcReq(ctx context.Context, r *GcReq) (*GcResp, error) {
 		gcb.Put(punchKey(l.SlabId, l.Addr, end), nil)
 	}
 
-	// read buncket (pick up anything unfinished from previous gc)
+	// read back from gc state bucket (pick up anything unfinished from previous gc)
 	var punchLocs []locWithEnd
 	gcbcur := gcb.Cursor()
 	for k, _ := gcbcur.First(); k != nil; k, _ = gcbcur.Next() {
 		switch k[0] {
 		case gcrecPunch:
-			punchLocs = append(punchLocs, recFromPunchKey(k))
+			rec := recFromPunchKey(k)
+			punchLocs = append(punchLocs, rec)
+			g.PunchBytes += int64(rec.end-rec.Addr) << s.blockShift
 		}
+	}
+
+	g.PunchLocs = len(punchLocs)
+
+	log.Printf("gc: will free:")
+	log.Printf("gc:   %d ranges", len(punchLocs))
+	log.Printf("gc:   %d bytes", g.PunchBytes)
+
+	// dry run slow: roll back here
+	if r.DryRunSlow {
+		return resp, tx.Rollback()
+	}
+
+	// images
+	for _, k := range delImages {
+		g.ib.Delete(k)
+	}
+	// manifests
+	for _, k := range delManifests {
+		g.mb.Delete(k)
+	}
+
+	// chunks delete
+	for _, d := range delChunks {
+		g.cb.Delete(d[:])
+	}
+
+	// chunks rewrite
+	for _, rew := range rewriteChunks {
+		g.cb.Put(rew.d[:], rew.v)
+	}
+
+	// catalog
+	cfb := tx.Bucket(catalogFBucket)
+	for _, dcf := range delCatalogF {
+		cfb.Delete(dcf)
+	}
+	crb := tx.Bucket(catalogRBucket)
+	for _, dcr := range delCatalogR {
+		crb.Delete(dcr)
 	}
 
 	// end first transaction here
@@ -312,13 +326,13 @@ func (s *Server) gcTraceImage(g *gcCtx, sphStr string, img *pb.DbImage) error {
 	sphPrefix := SphPrefixFromBytes(sph[:sphPrefixBytes])
 
 	if g.GcByState[img.MountState] {
-		g.DeletedByState[img.MountState]++
+		g.DeleteImagesByState[img.MountState]++
 		return nil
 	}
 
 	g.keepImage[sphStr] = struct{}{}
 	g.keepSphps[sphPrefix] = struct{}{}
-	g.RemainingByState[img.MountState]++
+	g.RemainImagesByState[img.MountState]++
 
 	m, mdigs, err := s.getManifestLocal(g.tx, sphStr)
 	if err != nil {
