@@ -110,7 +110,7 @@ func (s *Server) requestChunk(ctx context.Context, loc erofs.SlabLoc, digest cdi
 	if op = s.diffMap[loc]; op != nil {
 		// being request already, wait on this one
 	} else if len(sphps) == 0 {
-		log.Print("missing sph references")
+		// force single op
 	} else {
 		set := newOpSet(s)
 		err := s.db.View(func(tx *bbolt.Tx) error {

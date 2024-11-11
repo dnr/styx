@@ -153,12 +153,12 @@ func (s *s3ChunkStoreWrite) Get(ctx context.Context, path, key string, data []by
 		Key:    &key,
 	})
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("get(%q): %w", key, err)
 	}
 	defer res.Body.Close()
 	b, err := io.ReadAll(res.Body)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("read(%q): %w", key, err)
 	}
 	z := s.zp.Get()
 	defer s.zp.Put(z)

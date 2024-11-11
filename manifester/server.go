@@ -161,12 +161,12 @@ func (s *server) handleChunkDiff(w http.ResponseWriter, req *http.Request) {
 	// wait for both
 	wg.Wait()
 	if baseErr != nil {
-		log.Println("chunk read (base) error", baseErr)
-		w.WriteHeader(http.StatusInternalServerError)
-		return
+		log.Println("chunk read (base) error:", baseErr)
 	}
 	if reqErr != nil {
-		log.Println("chunk read (req) error", reqErr)
+		log.Println("chunk read (req) error:", reqErr)
+	}
+	if baseErr != nil || reqErr != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
@@ -262,8 +262,7 @@ func (s *server) expand(egCtx *errgroup.Group, digests []cdig.CDig, expand strin
 
 	default:
 		var out bytes.Buffer
-		// guess chunks will be about half-full
-		out.Grow(len(digests) << (s.mb.params.ChunkShift - 1))
+		out.Grow(len(digests) << s.mb.params.ChunkShift)
 		err := s.fetchChunkSeries(egCtx, digests, &out)
 		return common.ValOrErr(out.Bytes(), err)
 	}

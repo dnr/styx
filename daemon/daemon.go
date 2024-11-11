@@ -1194,6 +1194,10 @@ func (s *Server) handleReadSlab(state *openFileState, ln, off uint64) (retErr er
 		return err
 	}
 
+	if len(sphps) == 0 {
+		log.Println("missing sph references for", slabId, addr, digest.String())
+	}
+
 	ctx := context.Background()
 	return s.requestChunk(ctx, erofs.SlabLoc{slabId, addr}, digest, sphps)
 }

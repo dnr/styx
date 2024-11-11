@@ -183,7 +183,11 @@ func (s *Server) getNewManifest(ctx context.Context, url string, req manifester.
 	}
 
 	shards := max(min(int((narSize+shardBy-1)/shardBy), 40), 1)
-	log.Printf("requesting manifest for %s with %d shards", req.StorePathHash, shards)
+	msg := "requesting manifest for " + req.StorePathHash
+	if shards > 1 {
+		msg = fmt.Sprintf("%s (%d shards)", msg, shards)
+	}
+	log.Print(msg)
 	egCtx := errgroup.WithContext(ctx)
 
 	var shard0 []byte
@@ -219,6 +223,10 @@ func (s *Server) getNewManifest(ctx context.Context, url string, req manifester.
 		return nil, err
 	}
 	elapsed := time.Since(start)
-	log.Printf("got manifest for %s in %.2fs with %d shards", req.StorePathHash, elapsed.Seconds(), shards)
+	msg = fmt.Sprintf("got manifest for %s in %.2fs", req.StorePathHash, elapsed.Seconds())
+	if shards > 1 {
+		msg = fmt.Sprintf("%s (%d shards)", msg, shards)
+	}
+	log.Print(msg)
 	return shard0, nil
 }
