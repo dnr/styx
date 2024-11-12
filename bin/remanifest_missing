@@ -1,0 +1,8 @@
+#!/bin/sh
+
+sudo styx debug --all-images | jq -r '
+  .Params.params as {manifest_cache_url: $cacheurl, manifester_url: $requrl} |
+  .Images | to_entries | .[] | select(.value.Image.mount_state == 2) |
+  {i: .key, u: .value.Image.upstream} |
+  @sh "styx internal remanifest --cacheurl \($cacheurl) --requrl \($requrl) --storepath \(.i) --upstream \(.u) --request_if_not"
+  ' | sh

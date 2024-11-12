@@ -186,14 +186,8 @@ func withDebugReq(c *cobra.Command) runE {
 
 func withRepairReq(c *cobra.Command) runE {
 	var req daemon.RepairReq
-	var remreq daemon.MountReq
 	c.Flags().BoolVar(&req.Presence, "presence", false, "repair presence info")
-	c.Flags().StringVar(&remreq.Upstream, "remanifest_upstream", "https://cache.nixos.org/", "remanifest upstream")
-	c.Flags().StringVar(&remreq.StorePath, "remanifest_storepath", "", "remanifest store path")
 	return func(c *cobra.Command, args []string) error {
-		if remreq.StorePath != "" {
-			req.Remanifest = &remreq
-		}
 		store(c, &req)
 		return nil
 	}

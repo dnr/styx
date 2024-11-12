@@ -35,7 +35,7 @@ func (s *Server) getManifestAndBuildImage(ctx context.Context, req *MountReq) (*
 	manifestSphPrefix := SphPrefixFromBytes(manifestSph[:sphPrefixBytes])
 
 	// get manifest
-	envelopeBytes, err := s.getManifestFromManifester(ctx, req.Upstream, sphStr, req.NarSize, true)
+	envelopeBytes, err := s.getManifestFromManifester(ctx, req.Upstream, sphStr, req.NarSize)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -140,7 +140,7 @@ func (s *Server) getManifestAndBuildImage(ctx context.Context, req *MountReq) (*
 	return &m, image.Bytes(), nil
 }
 
-func (s *Server) getManifestFromManifester(ctx context.Context, upstream, sph string, narSize int64, tryCache bool) ([]byte, error) {
+func (s *Server) getManifestFromManifester(ctx context.Context, upstream, sph string, narSize int64) ([]byte, error) {
 	mReq := manifester.ManifestReq{
 		Upstream:      upstream,
 		StorePathHash: sph,
@@ -150,16 +150,14 @@ func (s *Server) getManifestFromManifester(ctx context.Context, upstream, sph st
 		// SmallFileCutoff: s.cfg.SmallFileCutoff,
 	}
 
-	if tryCache {
-		// check cache
-		s.stats.manifestCacheReqs.Add(1)
-		if b, err := s.p().mcread.Get(ctx, mReq.CacheKey(), nil); err == nil {
-			log.Printf("got manifest for %s from cache", sph)
-			s.stats.manifestCacheHits.Add(1)
-			return b, nil
-		} else if common.IsContextError(err) {
-			return nil, err
-		}
+	// check cache
+	s.stats.manifestCacheReqs.Add(1)
+	if b, err := s.p().mcread.Get(ctx, mReq.CacheKey(), nil); err == nil {
+		log.Printf("got manifest for %s from cache", sph)
+		s.stats.manifestCacheHits.Add(1)
+		return b, nil
+	} else if common.IsContextError(err) {
+		return nil, err
 	}
 
 	// not found cached, request it
