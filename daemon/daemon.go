@@ -541,11 +541,7 @@ func (s *Server) handleMountReq(ctx context.Context, r *MountReq) (*Status, erro
 	}
 	cookie, _, _ := strings.Cut(r.StorePath, "-")
 
-	if !strings.HasSuffix(r.Upstream, "/") {
-		// upstream should be a url pointing to a directory, so always use trailing-/ form.
-		// nix drops the / even if it's present in nix.conf, so add it back here.
-		r.Upstream += "/"
-	}
+	common.NormalizeUpstream(&r.Upstream)
 
 	var haveImageSize int64
 	var haveIsBare bool

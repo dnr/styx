@@ -369,7 +369,7 @@ func (b *ManifestBuilder) Build(
 		}
 	}
 
-	log.Println("manifest", storePathHash, "added to cache")
+	log.Println("manifest", storePathHash, "added to cache as", cacheKey)
 	b.stats.Manifests.Add(1)
 
 	return &ManifestBuildRes{

@@ -43,6 +43,8 @@ func (s *Server) handleMaterializeReq(ctx context.Context, r *MaterializeReq) (*
 		return nil, err
 	}
 
+	common.NormalizeUpstream(&r.Upstream)
+
 	shouldHaveManifest := false
 	_ = s.imageTx(sphStr, func(img *pb.DbImage) error {
 		switch img.MountState {
