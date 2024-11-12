@@ -18,6 +18,7 @@ $script | gzip --fast | skopeo --insecure-policy copy \
   docker-archive:/dev/stdin \
   docker://$repourl:$tag
 
+export TF_VAR_charon_logdest=$(jq -r <<<$CHARON_SYSLOG_DEST | sed 's|^.*://||;s|:| |')
 sed -i "s,manifester_image_tag\\s*=.*,manifester_image_tag = \"$tag\"," tf/terraform.tfvars
 terraform -chdir=tf apply
 
