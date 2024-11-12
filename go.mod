@@ -2,7 +2,7 @@ module github.com/dnr/styx
 
 go 1.22
 
-replace github.com/DataDog/zstd => github.com/dnr/datadog-zstd-go v0.0.0-20240512084359-465ecf226843
+replace github.com/DataDog/zstd => github.com/dnr/datadog-zstd-go v0.0.0-20241112014204-5b807b5888a6
 
 require (
 	github.com/DataDog/zstd v1.5.5
