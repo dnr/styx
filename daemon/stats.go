@@ -65,3 +65,29 @@ func (s *daemonStats) export() Stats {
 		ExtraReqs:         s.extraReqs.Load(),
 	}
 }
+
+func (a Stats) Sub(b Stats) Stats {
+	return Stats{
+		ManifestCacheReqs: a.ManifestCacheReqs - b.ManifestCacheReqs,
+		ManifestCacheHits: a.ManifestCacheHits - b.ManifestCacheHits,
+		ManifestReqs:      a.ManifestReqs - b.ManifestReqs,
+		ManifestErrs:      a.ManifestErrs - b.ManifestErrs,
+		SlabReads:         a.SlabReads - b.SlabReads,
+		SlabReadErrs:      a.SlabReadErrs - b.SlabReadErrs,
+		SingleReqs:        a.SingleReqs - b.SingleReqs,
+		SingleBytes:       a.SingleBytes - b.SingleBytes,
+		SingleErrs:        a.SingleErrs - b.SingleErrs,
+		BatchReqs:         a.BatchReqs - b.BatchReqs,
+		BatchBytes:        a.BatchBytes - b.BatchBytes,
+		BatchErrs:         a.BatchErrs - b.BatchErrs,
+		DiffReqs:          a.DiffReqs - b.DiffReqs,
+		DiffBytes:         a.DiffBytes - b.DiffBytes,
+		DiffErrs:          a.DiffErrs - b.DiffErrs,
+		RecompressReqs:    a.RecompressReqs - b.RecompressReqs,
+		ExtraReqs:         a.ExtraReqs - b.ExtraReqs,
+	}
+}
+
+func (a Stats) TotalReqs() int64 {
+	return a.SingleReqs + a.BatchReqs + a.DiffReqs
+}

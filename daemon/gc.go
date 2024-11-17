@@ -81,7 +81,7 @@ func (s *Server) handleGcReq(ctx context.Context, r *GcReq) (*GcResp, error) {
 	for k, v := ibcur.First(); k != nil; k, v = ibcur.Next() {
 		var img pb.DbImage
 		if proto.Unmarshal(v, &img) == nil {
-			err := s.gcTraceImage(g, string(v), &img)
+			err := s.gcTraceImage(g, string(k), &img)
 			if err != nil {
 				return nil, err
 			}
@@ -153,8 +153,6 @@ func (s *Server) handleGcReq(ctx context.Context, r *GcReq) (*GcResp, error) {
 
 	g.DeleteImages = len(delImages)
 	g.DeleteManifests = len(delManifests)
-	g.DeleteCatalogF = len(delCatalogF)
-	g.DeleteCatalogR = len(delCatalogR)
 	g.DeleteChunks = len(delChunks)
 	g.RemainImages = len(g.keepImage)
 	g.RemainRefChunks = len(g.keepDig)
@@ -162,7 +160,6 @@ func (s *Server) handleGcReq(ctx context.Context, r *GcReq) (*GcResp, error) {
 
 	log.Printf("gc: will delete:")
 	log.Printf("gc:   %d images / %d manifests", len(delImages), len(delManifests))
-	log.Printf("gc:   %d catalog fwd / %d catalog rev", len(delCatalogF), len(delCatalogR))
 	log.Printf("gc:   %d chunks", len(delChunks))
 	log.Printf("gc: remaining:")
 	log.Printf("gc:   %d images", len(g.keepImage))
@@ -209,7 +206,7 @@ func (s *Server) handleGcReq(ctx context.Context, r *GcReq) (*GcResp, error) {
 		var end uint32
 		if k, _ := lsb.Cursor().Seek(addrKey(l.Addr)); k == nil {
 			end = common.TruncU32(lsb.Sequence()) // end of slab
-		} else if end = loadLoc(k).Addr; end&presentMask != 0 {
+		} else if end = addrFromKey(k); end&presentMask != 0 {
 			end = common.TruncU32(lsb.Sequence()) // also end of slab
 		}
 		// we're looking at locs in order, so if we're deleting two consecutive chunks,

@@ -76,8 +76,6 @@ type (
 		DeleteImages        int
 		RemainImages        int
 		DeleteManifests     int // should match DeleteImages
-		DeleteCatalogF      int
-		DeleteCatalogR      int
 		DeleteChunks        int
 		RemainRefChunks     int
 		RemainHaveChunks    int // should match RemainRefChunks
