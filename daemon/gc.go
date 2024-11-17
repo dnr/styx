@@ -323,7 +323,7 @@ func (s *Server) gcTraceImage(g *gcCtx, sphStr string, img *pb.DbImage) error {
 	if err != nil {
 		return err
 	}
-	sphPrefix := SphPrefixFromBytes(sph[:sphPrefixBytes])
+	sphPrefix := SphPrefixFromBytes(sph[:])
 
 	if g.GcByState[img.MountState] {
 		g.DeleteImagesByState[img.MountState]++
