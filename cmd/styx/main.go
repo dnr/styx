@@ -14,6 +14,7 @@ import (
 	"github.com/dnr/styx/common/systemd"
 	"github.com/dnr/styx/daemon"
 	"github.com/dnr/styx/manifester"
+	"github.com/dnr/styx/pb"
 )
 
 func withChunkStoreWrite(c *cobra.Command) runE {
@@ -162,6 +163,40 @@ func withVaporizeReq(c *cobra.Command) runE {
 	c.Flags().StringVar(&req.Name, "name", "", "store name, if not same as path basename")
 	return func(c *cobra.Command, args []string) error {
 		req.Path = args[0]
+		store(c, &req)
+		return nil
+	}
+}
+
+func withGcReq(c *cobra.Command) runE {
+	var req daemon.GcReq
+	dryRunSlow := c.Flags().Bool("with_freed_stats", false, "return stats on bytes freed too")
+	doIt := c.Flags().Bool("doit", false, "actually do the gc")
+	includeUnmounted := c.Flags().Bool("unmounted", true, "gc unmounted images")
+	includeMaterialized := c.Flags().Bool("materialized", false, "gc materialized images too (only affect slab)")
+	includeErrorStates := c.Flags().Bool("error_states", false, "gc images in error states too")
+	return func(c *cobra.Command, args []string) error {
+		if *doIt {
+			// leave fields false
+		} else if *dryRunSlow {
+			req.DryRunSlow = true
+		} else {
+			req.DryRunFast = true
+		}
+		req.GcByState = make(map[pb.MountState]bool)
+		if *includeUnmounted {
+			req.GcByState[pb.MountState_Unmounted] = true
+		}
+		if *includeMaterialized {
+			req.GcByState[pb.MountState_Materialized] = true
+		}
+		if *includeErrorStates {
+			req.GcByState[pb.MountState_Unknown] = true
+			req.GcByState[pb.MountState_Requested] = true
+			req.GcByState[pb.MountState_MountError] = true
+			req.GcByState[pb.MountState_UnmountRequested] = true
+			req.GcByState[pb.MountState_Deleted] = true
+		}
 		store(c, &req)
 		return nil
 	}
@@ -326,6 +361,19 @@ func main() {
 					daemon.PrefetchPath, &daemon.PrefetchReq{
 						Path: arg,
 					},
+				)
+			},
+		),
+		cmd(
+			&cobra.Command{
+				Use:   "gc",
+				Short: "garbage collects the styx store",
+			},
+			withStyxClient,
+			withGcReq,
+			func(c *cobra.Command, args []string) error {
+				return get[*client.StyxClient](c).CallAndPrint(
+					daemon.GcPath, get[*daemon.GcReq](c),
 				)
 			},
 		),
