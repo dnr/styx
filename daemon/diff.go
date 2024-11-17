@@ -600,7 +600,7 @@ func (s *Server) getDigestsFromImage(tx *bbolt.Tx, sph Sph, isManifest bool) ([]
 
 	v := tx.Bucket(manifestBucket).Get([]byte(sph.String()))
 	if v == nil {
-		return nil, errors.New("manifest not found")
+		return nil, fmt.Errorf("manifest %q not found", sph.String())
 	}
 	var sm pb.SignedMessage
 	err := proto.Unmarshal(v, &sm)
@@ -636,7 +636,7 @@ func (s *Server) getDigestsFromImage(tx *bbolt.Tx, sph Sph, isManifest bool) ([]
 func (s *Server) getManifestLocal(tx *bbolt.Tx, sphStr string) (*pb.Manifest, []cdig.CDig, error) {
 	v := tx.Bucket(manifestBucket).Get([]byte(sphStr))
 	if v == nil {
-		return nil, nil, errors.New("manifest not found")
+		return nil, nil, fmt.Errorf("manifest %q not found", sphStr)
 	}
 	var sm pb.SignedMessage
 	err := proto.Unmarshal(v, &sm)
