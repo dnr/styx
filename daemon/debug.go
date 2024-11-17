@@ -149,6 +149,17 @@ func (s *Server) handleDebugReq(ctx context.Context, r *DebugReq) (*DebugResp, e
 				res.Chunks[cdig.FromBytes(k).String()] = &ci
 			}
 		}
+
+		// chunk sharing
+		if r.IncludeChunkSharing {
+			m := make(map[int]int)
+			cur := tx.Bucket(chunkBucket).Cursor()
+			for k, v := cur.First(); k != nil; k, v = cur.Next() {
+				m[(len(v)-6)/sphPrefixBytes]++
+			}
+			res.ChunkSharingDist = m
+		}
+
 		return nil
 	})
 }

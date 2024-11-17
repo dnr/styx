@@ -172,6 +172,7 @@ func withDebugReq(c *cobra.Command) runE {
 	c.Flags().BoolVar(&req.IncludeAllImages, "all-images", false, "include all images")
 	c.Flags().StringArrayVarP(&req.IncludeImages, "image", "i", nil, "specific images to include")
 	c.Flags().BoolVar(&req.IncludeChunks, "chunks", false, "include all chunks")
+	c.Flags().BoolVar(&req.IncludeChunkSharing, "chunk_sharing", false, "chunk sharing distribution")
 	c.Flags().BoolVar(&req.IncludeSlabs, "slabs", false, "include slabs")
 	return func(c *cobra.Command, args []string) error {
 		for i, img := range req.IncludeImages {

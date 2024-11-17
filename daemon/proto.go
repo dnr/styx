@@ -80,6 +80,8 @@ type (
 
 		IncludeSlabs  bool `json:",omitempty"`
 		IncludeChunks bool `json:",omitempty"`
+
+		IncludeChunkSharing bool `json:",omitempty"`
 	}
 	DebugResp struct {
 		Params  *pb.DbParams
@@ -88,6 +90,8 @@ type (
 		Images  map[string]DebugImage      `json:",omitempty"`
 		Slabs   []*DebugSlabInfo           `json:",omitempty"`
 		Chunks  map[string]*DebugChunkInfo `json:",omitempty"`
+
+		ChunkSharingDist map[int]int `json:",omitempty"`
 	}
 	DebugSizeStats struct {
 		TotalChunks   int
