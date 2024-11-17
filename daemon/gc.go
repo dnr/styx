@@ -258,9 +258,7 @@ func (s *Server) handleGcReq(ctx context.Context, r *GcReq) (*GcResp, error) {
 	for k, _ := gcbcur.First(); k != nil; k, _ = gcbcur.Next() {
 		switch k[0] {
 		case gcrecPunch:
-			var le locWithEnd
-			le.SlabId, le.Addr, le.end = recFromPunchKey(k)
-			punchLocs = append(punchLocs, le)
+			punchLocs = append(punchLocs, recFromPunchKey(k))
 		}
 	}
 
@@ -371,9 +369,9 @@ func punchKey(slab uint16, addr, end uint32) []byte {
 	return b
 }
 
-func recFromPunchKey(b []byte) (slab uint16, addr, end uint32) {
-	slab = binary.BigEndian.Uint16(b[1:])
-	addr = binary.BigEndian.Uint32(b[3:])
-	end = binary.BigEndian.Uint32(b[7:])
+func recFromPunchKey(b []byte) (le locWithEnd) {
+	le.SlabId = binary.BigEndian.Uint16(b[1:])
+	le.Addr = binary.BigEndian.Uint32(b[3:])
+	le.end = binary.BigEndian.Uint32(b[7:])
 	return
 }
