@@ -20,6 +20,7 @@ var (
 	manifestBucket = []byte("manifest")
 	catalogFBucket = []byte("catalogf") // name + hash -> [sysid]
 	catalogRBucket = []byte("catalogr") // hash -> name
+	gcstateBucket  = []byte("gcstate")
 
 	metaSchema = []byte("schema")
 	metaParams = []byte("params")

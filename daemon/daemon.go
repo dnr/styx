@@ -696,15 +696,6 @@ func (s *Server) handleUmountReq(ctx context.Context, r *UmountReq) (*Status, er
 	return nil, umountErr
 }
 
-func (s *Server) handleGcReq(ctx context.Context, r *GcReq) (*Status, error) {
-	if s.p() == nil {
-		return nil, mwErr(http.StatusPreconditionFailed, "styx is not initialized, call 'styx init --params=...'")
-	}
-
-	// TODO
-	return nil, errors.New("unimplemented")
-}
-
 func (s *Server) restoreMounts() {
 	var toRestore []*pb.DbImage
 	_ = s.db.View(func(tx *bbolt.Tx) error {
@@ -996,7 +987,6 @@ func (s *Server) handleOpenSlab(msgId, objectId, fd, flags uint32, id uint16) (i
 		writeFd: fd,
 		tp:      typeSlab,
 		slabId:  id,
-		// cacheFd: common.TruncU32(cacheFd),
 	}
 	s.cacheState[objectId] = state
 	s.stateBySlab[id] = state

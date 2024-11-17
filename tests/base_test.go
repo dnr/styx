@@ -309,6 +309,16 @@ func (tb *testBase) prefetch(sph, path string) {
 	require.True(tb.t, res.Success, "error:", res.Error)
 }
 
+func (tb *testBase) gc(req daemon.GcReq) *daemon.GcResp {
+	sock := filepath.Join(tb.cachedir, "styx.sock")
+	c := client.NewClient(sock)
+	var res daemon.GcResp
+	code, err := c.Call(daemon.GcPath, req, &res)
+	require.NoError(tb.t, err)
+	require.Equal(tb.t, code, http.StatusOK)
+	return &res
+}
+
 func (tb *testBase) dropCaches() {
 	fd, err := unix.Open("/proc/sys/vm/drop_caches", unix.O_WRONLY, 0)
 	require.NoError(tb.t, err)

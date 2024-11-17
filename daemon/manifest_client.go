@@ -32,7 +32,7 @@ func (s *Server) getManifestAndBuildImage(ctx context.Context, req *MountReq) (*
 
 	// use a separate "sph" for the manifest itself (a single entry). only used if manifest is chunked.
 	manifestSph := makeManifestSph(sph)
-	manifestSphPrefix := SphPrefixFromBytes(manifestSph[:sphPrefixBytes])
+	manifestSphPrefix := SphPrefixFromBytes(manifestSph[:])
 
 	// get manifest
 	envelopeBytes, err := s.getManifestFromManifester(ctx, req.Upstream, sphStr, req.NarSize)

@@ -451,11 +451,21 @@ have to do it once.
 
 So far we've only written data. How do we clean things up? There's enough
 metadata in the db to trace all chunk references, so we can find unused chunks.
-The next part is uncertain: based on a few experiments, I think that we can use
-`fallocate` with `FALLOC_FL_PUNCH_HOLE` to free space in the slab file.
+We can then use `fallocate` with `FALLOC_FL_PUNCH_HOLE` to free space in the
+slab file.
 
-(This isn't implemented yet.)
+```sh
+# basic stats:
+styx gc | jq
+# more stats on data freed:
+styx gc --with_freed_stats | jq
+# nothing actually happens until you use --doit
+styx gc --doit
+# you may need to include this to handle images that weren't fully mounted:
+styx gc --error_states --doit
+```
 
+*This is only lightly tested.*
 
 ### Cachefiles culling
 
@@ -565,7 +575,6 @@ styx init --params=https://styx-1.s3.amazonaws.com/params/test-1 --styx_pubkey=s
     - Exploring other approaches like simhash
     - Consider how to make diffs more cacheable
 - Combine multiple store paths into images to reduce overhead
-- GC
 - Respond to cachefiles culling requests
 - Run a system with everything not needed by stage1+stage2 on Styx
 - Adaptive chunk sizes for less overhead on very large packages

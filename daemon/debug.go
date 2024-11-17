@@ -42,7 +42,7 @@ func (s *Server) handleDebugReq(ctx context.Context, r *DebugReq) (*DebugResp, e
 					return
 				}
 
-				m, err := s.getManifestLocal(tx, k)
+				m, _, err := s.getManifestLocal(tx, string(k))
 				if err != nil {
 					log.Print("unmarshal getting manifest iterating images", err)
 					return

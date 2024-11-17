@@ -65,8 +65,26 @@ type (
 	// returns Status
 
 	GcReq struct {
+		DryRunFast bool
+		DryRunSlow bool
+		GcByState  map[pb.MountState]bool
 	}
-	// returns Status
+	GcResp struct {
+		// always filled in
+		DeleteImagesByState map[pb.MountState]int
+		RemainImagesByState map[pb.MountState]int
+		DeleteImages        int
+		RemainImages        int
+		DeleteManifests     int // should match DeleteImages
+		DeleteChunks        int
+		RemainRefChunks     int
+		RemainHaveChunks    int // should match RemainRefChunks
+		RewriteChunks       int
+
+		// only filled in on dry-run-slow or real run
+		PunchLocs  int
+		PunchBytes int64
+	}
 
 	RepairReq struct {
 		Presence   bool      `json:",omitempty"`
