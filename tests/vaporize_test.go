@@ -18,7 +18,7 @@ func TestVaporize(t *testing.T) {
 	testVaporize := func(name, filehash, datahash string, expected int64, doMount bool) {
 		d1 := tb.debug()
 		src := filepath.Join(tmp, name)
-		cmd := fmt.Sprintf(` xz -cd %s/nar/%s.nar.xz | nix-store --restore %s `, TestdataDir, filehash, src)
+		cmd := fmt.Sprintf("xz -cd %s/nar/%s.nar.xz | nix-store --restore %s", TestdataDir, filehash, src)
 		require.NoError(t, exec.Command("sh", "-c", cmd).Run())
 		// vaporize into slab
 		tb.vaporize(src)
@@ -32,9 +32,7 @@ func TestVaporize(t *testing.T) {
 		require.Equal(t, datahash, tb.nixHash(dst))
 		// should be requests for manifest chunks only, all data is in slab
 		d2 := tb.debug()
-		require.Equal(t, expected,
-			(d2.Stats.SingleReqs+d2.Stats.BatchReqs+d2.Stats.DiffReqs)-
-				(d1.Stats.SingleReqs+d1.Stats.BatchReqs+d1.Stats.DiffReqs))
+		require.Equal(t, expected, d2.Stats.Sub(d1.Stats).TotalReqs())
 		// TODO: btrfs fi du to check that extents are shared
 	}
 

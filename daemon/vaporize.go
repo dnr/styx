@@ -1,7 +1,6 @@
 package daemon
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -44,7 +43,6 @@ func (s *Server) handleVaporizeReq(ctx context.Context, r *VaporizeReq) (*Status
 		return nil, mwErr(http.StatusBadRequest, "invalid store path or missing name")
 	}
 
-	_, spName, _ := strings.Cut(storePath, "-")
 	sph, sphStr, err := ParseSph(storePath)
 	if err != nil {
 		return nil, err
@@ -185,32 +183,15 @@ func (s *Server) handleVaporizeReq(ctx context.Context, r *VaporizeReq) (*Status
 	}
 
 	if err = s.db.Update(func(tx *bbolt.Tx) error {
-		// TODO: consolidate code with manifest_client.go
-
-		// write manifest envelope to manifest bucket
+		// write manifest envelope to manifest bucket.
+		// this is really only so that we can track down these chunks for GC.
+		// we can't diff from this image because the chunk store may not have these chunks.
 		mb := tx.Bucket(manifestBucket)
 		if err := mb.Put([]byte(sphStr), envelope); err != nil {
 			return err
 		}
 
-		// write catalog
-		cfb := tx.Bucket(catalogFBucket)
-		crb := tx.Bucket(catalogRBucket)
-		key := bytes.Join([][]byte{[]byte(spName), []byte{0}, sph[:]}, nil)
-		val := []byte{} // TODO: put sysid in here
-		if err := cfb.Put(key, val); err != nil {
-			return err
-		} else if err = crb.Put(sph[:], []byte(spName)); err != nil {
-			return err
-		}
-		if len(entry.InlineData) == 0 {
-			mkey := bytes.Join([][]byte{[]byte(isManifestPrefix), []byte(spName), []byte{0}, manifestSph[:]}, nil)
-			if err := cfb.Put(mkey, nil); err != nil {
-				return err
-			} else if err = crb.Put(manifestSph[:], []byte(isManifestPrefix+spName)); err != nil {
-				return err
-			}
-		}
+		// don't write catalog, so this can't be used as a diff source
 
 		// write image if not present
 		ib := tx.Bucket(imageBucket)
