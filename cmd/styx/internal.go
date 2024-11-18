@@ -15,6 +15,7 @@ import (
 
 	"github.com/dnr/styx/common"
 	"github.com/dnr/styx/common/cdig"
+	"github.com/dnr/styx/daemon"
 	"github.com/dnr/styx/manifester"
 	"github.com/dnr/styx/pb"
 )
@@ -107,10 +108,10 @@ func internalCmd() *cobra.Command {
 			withRemanifestReq,
 			func(c *cobra.Command, args []string) error {
 				req := get[*remanifestReq](c)
-				sph, _, _ := strings.Cut(req.storePath, "-")
+				_, sphStr, _ := daemon.ParseSph(req.storePath)
 				mReq := manifester.ManifestReq{
 					Upstream:      req.upstream,
-					StorePathHash: sph,
+					StorePathHash: sphStr,
 					ChunkShift:    int(common.ChunkShift),
 					DigestAlgo:    common.DigestAlgo,
 					DigestBits:    int(cdig.Bits),
@@ -120,10 +121,10 @@ func internalCmd() *cobra.Command {
 
 				doRequest := false
 				if _, err := mcread.Get(c.Context(), mReq.CacheKey(), nil); err == nil {
-					log.Println("manifest cache hit for", sph)
+					log.Println("manifest cache hit for", sphStr)
 					doRequest = req.reqIfFound
 				} else {
-					log.Println("manifest not found for", sph, err)
+					log.Println("manifest not found for", sphStr, err)
 					doRequest = req.reqIfNot
 				}
 
@@ -150,9 +151,9 @@ func internalCmd() *cobra.Command {
 					res.Body.Close()
 				}
 				if err == nil {
-					log.Println("manifest request for", sph, "success")
+					log.Println("manifest request for", sphStr, "success")
 				} else {
-					log.Println("manifest request for", sph, "failed", err)
+					log.Println("manifest request for", sphStr, "failed", err)
 				}
 				return nil
 			},

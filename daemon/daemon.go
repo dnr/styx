@@ -532,20 +532,20 @@ func (s *Server) handleMountReq(ctx context.Context, r *MountReq) (*Status, erro
 	if s.p() == nil {
 		return nil, mwErr(http.StatusPreconditionFailed, "styx is not initialized, call 'styx init --params=...'")
 	}
-	if !reStorePath.MatchString(r.StorePath) {
-		return nil, mwErr(http.StatusBadRequest, "invalid store path or missing name")
+	_, sphStr, _, err := ParseSphAndName(r.StorePath)
+	if err != nil {
+		return nil, err
 	} else if r.Upstream == "" {
 		return nil, mwErr(http.StatusBadRequest, "invalid upstream")
 	} else if !strings.HasPrefix(r.MountPoint, "/") {
 		return nil, mwErr(http.StatusBadRequest, "mount point must be absolute path")
 	}
-	cookie, _, _ := strings.Cut(r.StorePath, "-")
 
 	common.NormalizeUpstream(&r.Upstream)
 
 	var haveImageSize int64
 	var haveIsBare bool
-	err := s.imageTx(cookie, func(img *pb.DbImage) error {
+	err = s.imageTx(sphStr, func(img *pb.DbImage) error {
 		if img.MountState == pb.MountState_Mounted {
 			if img.MountPoint == r.MountPoint {
 				// nix thinks it's not mounted but it is. return success so nix can enter in db.
@@ -574,16 +574,16 @@ func (s *Server) handleMountReq(ctx context.Context, r *MountReq) (*Status, erro
 }
 
 func (s *Server) tryMount(ctx context.Context, req *MountReq, haveImageSize int64, haveIsBare bool) error {
-	cookie, _, _ := strings.Cut(req.StorePath, "-")
+	_, sphStr, _ := ParseSph(req.StorePath)
 
 	mountCtx := &mountContext{}
 	ctx = withMountContext(ctx, mountCtx)
 
-	ok := s.mountCtxMap.PutIfNotPresent(cookie, ctx)
+	ok := s.mountCtxMap.PutIfNotPresent(sphStr, ctx)
 	if !ok {
 		return errors.New("another mount is in progress for this store path")
 	}
-	defer s.mountCtxMap.Del(cookie)
+	defer s.mountCtxMap.Del(sphStr)
 
 	if haveImageSize > 0 {
 		// if we have an image we can proceed right to mounting
@@ -601,12 +601,12 @@ func (s *Server) tryMount(ctx context.Context, req *MountReq, haveImageSize int6
 	}
 
 	var mountErr error
-	opts := fmt.Sprintf("domain_id=%s,fsid=%s", s.cfg.CacheDomain, cookie)
+	opts := fmt.Sprintf("domain_id=%s,fsid=%s", s.cfg.CacheDomain, sphStr)
 
 	if mountCtx.imageData != nil {
 		// first mount somewhere private, then unmount to force cachefiles to flush the image to disk.
 		// this is gross, there should be a better way to control cachefiles flushing.
-		firstMp := filepath.Join(s.cfg.CachePath, "initial", cookie)
+		firstMp := filepath.Join(s.cfg.CachePath, "initial", sphStr)
 		_ = os.MkdirAll(firstMp, 0o755)
 		mountErr = unix.Mount("none", firstMp, "erofs", 0, opts)
 		_ = unix.Unmount(firstMp, 0)
@@ -625,7 +625,7 @@ func (s *Server) tryMount(ctx context.Context, req *MountReq, haveImageSize int6
 				}
 			}
 			// mount to private dir
-			privateMp := filepath.Join(s.cfg.CachePath, "bare", cookie)
+			privateMp := filepath.Join(s.cfg.CachePath, "bare", sphStr)
 			_ = os.MkdirAll(privateMp, 0o755)
 			mountErr = unix.Mount("none", privateMp, "erofs", 0, opts)
 			if mountErr == nil {
@@ -641,7 +641,7 @@ func (s *Server) tryMount(ctx context.Context, req *MountReq, haveImageSize int6
 		}
 	}
 
-	_ = s.imageTx(cookie, func(img *pb.DbImage) error {
+	_ = s.imageTx(sphStr, func(img *pb.DbImage) error {
 		if mountErr == nil {
 			img.MountState = pb.MountState_Mounted
 			img.LastMountError = ""
@@ -666,10 +666,13 @@ func (s *Server) handleUmountReq(ctx context.Context, r *UmountReq) (*Status, er
 	}
 
 	// allowed to leave out the name part here
-	sph, _, _ := strings.Cut(r.StorePath, "-")
+	_, sphStr, err := ParseSph(r.StorePath)
+	if err != nil {
+		return nil, err
+	}
 
 	var mp string
-	err := s.imageTx(sph, func(img *pb.DbImage) error {
+	err = s.imageTx(sphStr, func(img *pb.DbImage) error {
 		if img.MountState != pb.MountState_Mounted {
 			// TODO: check if erofs is actually mounted anyway and unmount
 			return mwErr(http.StatusNotFound, "not mounted")
@@ -686,7 +689,7 @@ func (s *Server) handleUmountReq(ctx context.Context, r *UmountReq) (*Status, er
 	umountErr := unix.Unmount(mp, 0)
 
 	if umountErr == nil {
-		_ = s.imageTx(sph, func(img *pb.DbImage) error {
+		_ = s.imageTx(sphStr, func(img *pb.DbImage) error {
 			img.MountState = pb.MountState_Unmounted
 			img.MountPoint = ""
 			return nil

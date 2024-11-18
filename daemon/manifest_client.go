@@ -25,7 +25,7 @@ import (
 
 func (s *Server) getManifestAndBuildImage(ctx context.Context, req *MountReq) (*pb.Manifest, []byte, error) {
 	// convert to binary
-	sph, sphStr, err := ParseSph(req.StorePath)
+	sph, sphStr, spName, err := ParseSphAndName(req.StorePath)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -58,10 +58,6 @@ func (s *Server) getManifestAndBuildImage(ctx context.Context, req *MountReq) (*
 	storePath := strings.TrimPrefix(entry.Path, common.ManifestContext+"/")
 	if storePath != req.StorePath {
 		return nil, nil, fmt.Errorf("envelope storepath != requested storepath: %q != %q", storePath, req.StorePath)
-	}
-	spHash, spName, _ := strings.Cut(storePath, "-")
-	if spHash != sphStr || len(spName) == 0 {
-		return nil, nil, fmt.Errorf("invalid or mismatched name in manifest %q", storePath)
 	}
 
 	// record signed manifest message in db and add names to catalog

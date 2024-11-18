@@ -39,11 +39,8 @@ func (s *Server) handleVaporizeReq(ctx context.Context, r *VaporizeReq) (*Status
 	if storePath == "" {
 		storePath = path.Base(r.Path)
 	}
-	if !reStorePath.MatchString(storePath) {
-		return nil, mwErr(http.StatusBadRequest, "invalid store path or missing name")
-	}
 
-	sph, sphStr, err := ParseSph(storePath)
+	sph, sphStr, _, err := ParseSphAndName(storePath)
 	if err != nil {
 		return nil, err
 	}

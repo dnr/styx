@@ -30,7 +30,24 @@ type (
 )
 
 func ParseSph(s string) (sph Sph, sphStr string, err error) {
-	sphStr, _, _ = strings.Cut(s, "-")
+	sph, sphStr, _, err = parseSphAndName(s)
+	return
+}
+
+func ParseSphAndName(s string) (sph Sph, sphStr, spName string, err error) {
+	sph, sphStr, spName, err = parseSphAndName(s)
+	if err == nil && spName == "" {
+		err = mwErr(http.StatusBadRequest, "store path missing name")
+	}
+	return
+}
+
+func parseSphAndName(s string) (sph Sph, sphStr, spName string, err error) {
+	sphStr, spName, _ = strings.Cut(s, "-")
+	if len(sphStr) != 32 {
+		err = mwErr(http.StatusBadRequest, "path is not a valid store path")
+		return
+	}
 	var n int
 	n, err = nixbase32.Decode(sph[:], []byte(sphStr))
 	if err != nil || n != len(sph) {

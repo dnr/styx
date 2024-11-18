@@ -8,11 +8,9 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"regexp"
 	"time"
 
 	"github.com/avast/retry-go/v4"
-	"github.com/nix-community/go-nix/pkg/nixbase32"
 	"golang.org/x/sys/unix"
 
 	"github.com/dnr/styx/common"
@@ -20,9 +18,6 @@ import (
 	"github.com/dnr/styx/erofs"
 	"github.com/dnr/styx/pb"
 )
-
-// matches store path without the /nix/store
-var reStorePath = regexp.MustCompile(`^[` + nixbase32.Alphabet + `]{32}-.*$`)
 
 func verifyParams(p *pb.GlobalParams) error {
 	if p.ChunkShift != int32(common.ChunkShift) {

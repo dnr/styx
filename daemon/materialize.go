@@ -29,16 +29,13 @@ var errCachefdNotFound = errors.New("cache fd not found for slab")
 func (s *Server) handleMaterializeReq(ctx context.Context, r *MaterializeReq) (*Status, error) {
 	if s.p() == nil {
 		return nil, mwErr(http.StatusPreconditionFailed, "styx is not initialized, call 'styx init --params=...'")
-	}
-	if !reStorePath.MatchString(r.StorePath) {
-		return nil, mwErr(http.StatusBadRequest, "invalid store path or missing name")
 	} else if r.Upstream == "" {
 		return nil, mwErr(http.StatusBadRequest, "invalid upstream")
 	} else if !strings.HasPrefix(r.DestPath, "/") {
 		return nil, mwErr(http.StatusBadRequest, "dest must be absolute path")
 	}
 
-	_, sphStr, err := ParseSph(r.StorePath)
+	_, sphStr, _, err := ParseSphAndName(r.StorePath)
 	if err != nil {
 		return nil, err
 	}

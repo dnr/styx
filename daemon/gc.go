@@ -10,7 +10,6 @@ import (
 	"math"
 	"net/http"
 	"slices"
-	"strings"
 
 	"github.com/dnr/styx/common"
 	"github.com/dnr/styx/common/cdig"
@@ -101,9 +100,7 @@ func (s *Server) handleGcReq(ctx context.Context, r *GcReq) (*GcResp, error) {
 		var spName string
 		if proto.Unmarshal(v, &img) != nil {
 			continue
-		} else if sph, _, err = ParseSph(img.StorePath); err != nil {
-			continue
-		} else if _, spName, _ = strings.Cut(img.StorePath, "-"); spName == "" {
+		} else if sph, spName, err = ParseSph(img.StorePath); err != nil || spName == "" {
 			continue
 		}
 		fkey := bytes.Join([][]byte{[]byte(spName), []byte{0}, sph[:]}, nil)
