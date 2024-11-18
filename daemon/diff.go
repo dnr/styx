@@ -10,6 +10,7 @@ import (
 	"log"
 	"maps"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 	"unsafe"
@@ -1020,7 +1021,22 @@ func (set *opSet) buildRecompress(
 	// findFile will only return true if it found an entry and it has digests,
 	// i.e. missing file, is symlink, inline, etc. will all return false.
 	if found := baseIter.findFile(reqEnt.Path); !found {
-		return errors.New("base missing corresponding file: " + reqEnt.Path)
+		// kind of gross, but we need to handle this for linux:
+		// try to find corresponding module file ignoring version number in path
+		if strings.HasPrefix(res.baseName, "linux") && isLinuxKoXz(reqEnt) {
+			// path is like: /lib/modules/6.11.7/kernel/net/dccp/dccp.ko.xz
+			parts := strings.Split(reqEnt.Path, "/")
+			pre := strings.Join(parts[:3], "/")
+			post := strings.Join(parts[4:], "/")
+			re, err := regexp.Compile(`^` + regexp.QuoteMeta(pre) + `/[^/]+/` + regexp.QuoteMeta(post) + `$`)
+			if err == nil {
+				baseIter.reset()
+				found = baseIter.findFileFunc(re.MatchString)
+			}
+		}
+		if !found {
+			return errors.New("base missing corresponding file: " + reqEnt.Path)
+		}
 	}
 
 	baseEnt := baseIter.ent()
@@ -1178,6 +1194,19 @@ func (i *digestIterator) findFile(path string) bool {
 			return false
 		}
 		if ent.Path == path {
+			return i.toFileStart()
+		}
+		i.e++
+	}
+}
+
+func (i *digestIterator) findFileFunc(f func(string) bool) bool {
+	for {
+		ent := i.ent()
+		if ent == nil {
+			return false
+		}
+		if f(ent.Path) {
 			return i.toFileStart()
 		}
 		i.e++
