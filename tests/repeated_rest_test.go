@@ -23,7 +23,8 @@ func TestRepeatedRead(t *testing.T) {
 	extra := 0
 	reqSize := daemon.InitOpSize
 	for size > 0 {
-		size -= reqSize << common.ChunkShift
+		// FIXME: do we still need extra here?
+		size -= reqSize << common.PickChunkShift(int64(size))
 		extra += (reqSize - 1) / daemon.MaxOpSize
 		reqSize = min(reqSize*2, daemon.MaxDiffOps*daemon.MaxOpSize)
 	}

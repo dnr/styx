@@ -7,8 +7,8 @@ import "entry.proto";
 
 // Parameters that have to be agreed on by manifester and daemon.
 message GlobalParams {
-  // Bits of chunk size, e.g. 16 = 1<<16 byte chunks
-  int32 chunk_shift = 1;
+  // Default chunk shift (if not specified in entry) is always 16.
+  reserved 1;
   // Digest algorithm, e.g. "sha256"
   string digest_algo = 2;
   // Bits of digest used, e.g. 192

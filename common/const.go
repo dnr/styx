@@ -8,6 +8,7 @@ var (
 	ModprobeBin = "modprobe"
 	FilefragBin = "filefrag"
 
+	// replaced by ldflags
 	Version = "dev"
 
 	// Context for signatures

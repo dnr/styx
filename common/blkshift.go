@@ -1,6 +1,10 @@
 package common
 
-const ChunkShift BlkShift = 16
+const (
+	ManifestChunkShift BlkShift = 16
+
+	MaxChunkShift BlkShift = 20
+)
 
 type BlkShift int
 

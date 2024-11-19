@@ -196,7 +196,6 @@ func (tb *testBase) initDaemon() {
 	require.NoError(tb.t, err)
 	params := pb.DaemonParams{
 		Params: &pb.GlobalParams{
-			ChunkShift: int32(common.ChunkShift),
 			DigestAlgo: common.DigestAlgo,
 			DigestBits: cdig.Bits,
 		},

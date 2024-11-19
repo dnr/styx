@@ -98,11 +98,10 @@ func NewManifestBuilder(cfg ManifestBuilderConfig, cs ChunkStoreWrite) (*Manifes
 		cs:       cs,
 		chunksem: semaphore.NewWeighted(int64(cmp.Or(cfg.ConcurrentChunkOps, 200))),
 		params: &pb.GlobalParams{
-			ChunkShift: int32(common.ChunkShift),
 			DigestAlgo: common.DigestAlgo,
 			DigestBits: int32(cdig.Bits),
 		},
-		chunkPool: common.NewChunkPool(common.ChunkShift),
+		chunkPool: common.NewChunkPool(),
 		pubKeys:   cfg.PublicKeys,
 		signKeys:  cfg.SigningKeys,
 	}, nil
@@ -332,7 +331,6 @@ func (b *ManifestBuilder) Build(
 	cacheKey := (&ManifestReq{
 		Upstream:      upstream,
 		StorePathHash: storePathHash,
-		ChunkShift:    int(common.ChunkShift),
 		DigestAlgo:    common.DigestAlgo,
 		DigestBits:    int(cdig.Bits),
 	}).CacheKey()
@@ -475,8 +473,8 @@ func (b *ManifestBuilder) entry(egCtx *errgroup.Group, args *BuildArgs, m *pb.Ma
 
 // Note that goroutines will continue writing into the returned slice after this returns!
 // Caller should not look at it until after Wait() on the errgroup.
-func (b *ManifestBuilder) chunkData(egCtx *errgroup.Group, args *BuildArgs, dataSize int64, r io.Reader) ([]byte, error) {
-	nChunks := common.ChunkShift.Blocks(dataSize)
+func (b *ManifestBuilder) chunkData(egCtx *errgroup.Group, args *BuildArgs, dataSize int64, cshift common.BlkShift, r io.Reader) ([]byte, error) {
+	nChunks := cshift.Blocks(dataSize)
 	fullDigests := make([]byte, nChunks*cdig.Bytes)
 	digests := fullDigests
 	remaining := dataSize
@@ -487,7 +485,7 @@ func (b *ManifestBuilder) chunkData(egCtx *errgroup.Group, args *BuildArgs, data
 			return nil, err
 		}
 
-		size := min(remaining, common.ChunkShift.Size())
+		size := min(remaining, cshift.Size())
 		remaining -= size
 		_data := b.chunkPool.Get(int(size))
 		data := _data[:size]

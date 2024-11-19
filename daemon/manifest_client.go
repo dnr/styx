@@ -46,8 +46,7 @@ func (s *Server) getManifestAndBuildImage(ctx context.Context, req *MountReq) (*
 		return nil, nil, err
 	}
 	if smParams != nil {
-		match := smParams.ChunkShift == int32(common.ChunkShift) &&
-			smParams.DigestBits == cdig.Bits &&
+		match := smParams.DigestBits == cdig.Bits &&
 			smParams.DigestAlgo == common.DigestAlgo
 		if !match {
 			return nil, nil, fmt.Errorf("chunked manifest global params mismatch")
@@ -140,7 +139,6 @@ func (s *Server) getManifestFromManifester(ctx context.Context, upstream, sph st
 	mReq := manifester.ManifestReq{
 		Upstream:      upstream,
 		StorePathHash: sph,
-		ChunkShift:    int(common.ChunkShift),
 		DigestAlgo:    common.DigestAlgo,
 		DigestBits:    int(cdig.Bits),
 		// SmallFileCutoff: s.cfg.SmallFileCutoff,

@@ -131,11 +131,6 @@ func (b *Builder) BuildFromManifestWithSlab(
 	const formatInline = (layoutCompact | (EROFS_INODE_FLAT_INLINE << EROFS_I_DATALAYOUT_BIT))
 	const formatChunked = (layoutCompact | (EROFS_INODE_CHUNK_BASED << EROFS_I_DATALAYOUT_BIT))
 
-	chunkedIU, err := inodeChunkInfo(b.blk)
-	if err != nil {
-		return err
-	}
-
 	var inodes []*inodebuilder
 	var root *inodebuilder
 	var datablocks []regulardata
@@ -253,9 +248,14 @@ func (b *Builder) BuildFromManifestWithSlab(
 
 				i.i.ISize = common.TruncU32(e.Size)
 				i.i.IFormat = formatChunked
+				cshift := common.BlkShift(e.ChunkShiftDef())
+				chunkedIU, err := inodeChunkInfo(b.blk, cshift)
+				if err != nil {
+					return err
+				}
 				i.i.IU = chunkedIU
 
-				nChunks := int(common.ChunkShift.Blocks(e.Size))
+				nChunks := int(cshift.Blocks(e.Size))
 				if len(e.Digests) != nChunks*cdig.Bytes {
 					return fmt.Errorf("digest list wrong size")
 				}
@@ -608,12 +608,12 @@ func writeAndPad(out io.Writer, data []byte, shift common.BlkShift) int64 {
 	return rounded
 }
 
-func inodeChunkInfo(blkbits common.BlkShift) (uint32, error) {
-	if common.ChunkShift-blkbits > EROFS_CHUNK_FORMAT_BLKBITS_MASK {
+func inodeChunkInfo(bshift, cshift common.BlkShift) (uint32, error) {
+	if cshift-bshift > EROFS_CHUNK_FORMAT_BLKBITS_MASK {
 		return 0, fmt.Errorf("chunk size too big")
 	}
 	b, err := packToBytes(erofs_inode_chunk_info{
-		Format: EROFS_CHUNK_FORMAT_INDEXES | uint16(common.ChunkShift-blkbits),
+		Format: EROFS_CHUNK_FORMAT_INDEXES | uint16(cshift-bshift),
 	})
 	if err != nil {
 		return 0, err

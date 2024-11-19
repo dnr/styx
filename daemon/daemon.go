@@ -149,7 +149,7 @@ func NewServer(cfg Config) *Server {
 		cfg:          &cfg,
 		blockShift:   common.BlkShift(cfg.ErofsBlockShift),
 		msgPool:      &sync.Pool{New: func() any { return make([]byte, CACHEFILES_MSG_MAX_SIZE) }},
-		chunkPool:    common.NewChunkPool(common.ChunkShift),
+		chunkPool:    common.NewChunkPool(),
 		builder:      erofs.NewBuilder(erofs.BuilderConfig{BlockShift: cfg.ErofsBlockShift}),
 		cacheState:   make(map[uint32]*openFileState),
 		stateBySlab:  make(map[uint16]*openFileState),
@@ -1141,9 +1141,10 @@ func (s *Server) handleReadSlab(state *openFileState, ln, off uint64) (retErr er
 		}
 	}()
 
-	if ln > uint64(common.ChunkShift.Size()) {
+	if ln > uint64(common.MaxChunkShift.Size()) {
 		panic("got too big slab read")
 	}
+	// FIXME: also verify this doesn't cross into the next chunk
 
 	slabId := state.slabId
 	var addr uint32

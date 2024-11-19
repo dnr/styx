@@ -230,10 +230,12 @@ func (s *Server) buildAndStartPrefetch(ctx context.Context, reqs []cdig.CDig) ([
 }
 
 // currently this is only used to read manifest chunks
+// all chunks must be the same size
 func (s *Server) readChunks(
 	ctx context.Context, // can be nil if allowMissing is true
 	useTx *bbolt.Tx, // optional
 	totalSize int64,
+	chunkShift common.BlkShift,
 	locs []erofs.SlabLoc,
 	digests []cdig.CDig, // used if allowMissing is true
 	sphps []SphPrefix, // used if allowMissing is true
@@ -275,7 +277,7 @@ func (s *Server) readChunks(
 	out := make([]byte, totalSize)
 	rest := out
 	for _, loc := range locs {
-		toRead := min(int(common.ChunkShift.Size()), len(rest))
+		toRead := min(int(chunkShift.Size()), len(rest))
 		err := s.getKnownChunk(loc, rest[:toRead])
 		if err != nil {
 			return nil, err
@@ -287,10 +289,12 @@ func (s *Server) readChunks(
 
 func (s *Server) readSingle(ctx context.Context, loc erofs.SlabLoc, digest cdig.CDig) error {
 	// we have no size info here
-	buf := s.chunkPool.Get(int(common.ChunkShift.Size()))
-	defer s.chunkPool.Put(buf)
+	// TODO: can we figure out at least chunk shift and use a pool?
+	// we probably have to just store the size
+	// buf := s.chunkPool.Get(int(common.ChunkShift.Size()))
+	// defer s.chunkPool.Put(buf)
 
-	chunk, err := s.p().csread.Get(ctx, digest.String(), buf[:0])
+	chunk, err := s.p().csread.Get(ctx, digest.String(), nil)
 	if err != nil {
 		return fmt.Errorf("chunk read error: %w", err)
 	} else if len(chunk) > len(buf) || &buf[0] != &chunk[0] {
@@ -1158,7 +1162,8 @@ func (i *digestIterator) size() int32 {
 	if ent == nil {
 		return -1
 	}
-	return int32(common.ChunkShift.FileChunkSize(ent.Size, i.d+cdig.Bytes >= len(ent.Digests)))
+	cshift := common.BlkShift(ent.ChunkShiftDef())
+	return int32(cshift.FileChunkSize(ent.Size, i.d+cdig.Bytes >= len(ent.Digests)))
 }
 
 // moves forward n chunks. returns true if valid.

@@ -31,7 +31,6 @@ type (
 		StorePathHash string
 
 		// TODO: move this to pb and embed a GlobalParams?
-		ChunkShift int
 		DigestAlgo string
 		DigestBits int
 
@@ -75,7 +74,8 @@ func (r *ManifestReq) CacheKey() string {
 	h.Write([]byte("styx-manifest-cache-v1\n"))
 	h.Write([]byte(fmt.Sprintf("u=%s\n", r.Upstream)))
 	h.Write([]byte(fmt.Sprintf("h=%s\n", r.StorePathHash)))
-	h.Write([]byte(fmt.Sprintf("p=%d:%s:%d\n", r.ChunkShift, r.DigestAlgo, r.DigestBits)))
+	// use fixed 16 for compatibility, chunk size is now variable
+	h.Write([]byte(fmt.Sprintf("p=16:%s:%d\n", r.DigestAlgo, r.DigestBits)))
 	// note: SmallFileCutoff is not part of key, client may get different one from requested
 	return "v1-" + base64.RawURLEncoding.EncodeToString(h.Sum(nil))[:36]
 }

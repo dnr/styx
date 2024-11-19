@@ -50,7 +50,6 @@ func (s *Server) handleVaporizeReq(ctx context.Context, r *VaporizeReq) (*Status
 
 	m := &pb.Manifest{
 		Params: &pb.GlobalParams{
-			ChunkShift: int32(common.ChunkShift),
 			DigestAlgo: common.DigestAlgo,
 			DigestBits: cdig.Bits,
 		},
@@ -170,7 +169,6 @@ func (s *Server) handleVaporizeReq(ctx context.Context, r *VaporizeReq) (*Status
 	envelope, err := proto.Marshal(&pb.SignedMessage{
 		Msg: entry,
 		Params: &pb.GlobalParams{
-			ChunkShift: int32(common.ChunkShift),
 			DigestAlgo: common.DigestAlgo,
 			DigestBits: int32(cdig.Bits),
 		},
@@ -224,13 +222,14 @@ func (s *Server) vaporizeFile(
 	fullPath string,
 	size int64,
 	tryClone *bool,
-) ([]cdig.CDig, error) {
-	buf := s.chunkPool.Get(int(common.ChunkShift.Size()))
+) ([]cdig.CDig, common.BlkShift, error) {
+	cshift := common.PickChunkShift(size)
+	buf := s.chunkPool.Get(int(cshift.Size()))
 	defer s.chunkPool.Put(buf)
 
 	f, err := os.Open(fullPath)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	defer f.Close()
 
@@ -241,7 +240,7 @@ func (s *Server) vaporizeFile(
 		if err == io.EOF {
 			break
 		} else if err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 		digests = append(digests, cdig.Sum(buf[:n]))
 	}
@@ -253,7 +252,7 @@ func (s *Server) vaporizeFile(
 	blocks = common.AppendBlocksList(blocks, size, s.blockShift)
 	locs, wasAllocated, err := s.preallocateBatch(ctx, blocks, digests)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 
 	present := make([]bool, len(locs))
@@ -269,9 +268,9 @@ func (s *Server) vaporizeFile(
 			continue
 		}
 
-		size := common.ChunkShift.FileChunkSize(size, i == len(locs)-1)
+		size := cshift.FileChunkSize(size, i == len(locs)-1)
 		rounded := s.blockShift.Roundup(size)
-		roff := int64(i) << common.ChunkShift
+		roff := int64(i) << cshift
 		// since the slab file extends beyond the end of our copy, even if it's sparse,
 		// CopyFileRange can only be used to copy whole blocks.
 		// also, if the loc was already allocated (but not present), then it's already linked
@@ -317,7 +316,7 @@ func (s *Server) vaporizeFile(
 			continue // don't bother if it was there before we started
 		}
 
-		size := common.ChunkShift.FileChunkSize(size, i == len(locs)-1)
+		size := cshift.FileChunkSize(size, i == len(locs)-1)
 		b := buf[:size]
 		err := s.getKnownChunk(loc, b)
 		if err != nil {
@@ -331,7 +330,11 @@ func (s *Server) vaporizeFile(
 		}
 	}
 
-	return common.ValOrErr(digests, s.commitPreallocated(ctx, blocks, digests, locs, wasAllocated))
+	err := s.commitPreallocated(ctx, blocks, digests, locs, wasAllocated)
+	if err != nil {
+		return nil, nil, err
+	}
+	return digests, cshift, nil
 }
 
 // two-phase allocate to support vaporize
