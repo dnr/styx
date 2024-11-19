@@ -409,6 +409,9 @@ func (b *ManifestBuilder) ManifestAsEntry(ctx context.Context, args *BuildArgs, 
 		Type: pb.EntryType_REGULAR,
 		Size: int64(len(mb)),
 	}
+	if common.ManifestChunkShift != common.DefaultChunkShift {
+		entry.ChunkShift = int32(common.ManifestChunkShift)
+	}
 
 	if len(mb) <= args.SmallFileCutoff {
 		entry.InlineData = mb
@@ -416,7 +419,7 @@ func (b *ManifestBuilder) ManifestAsEntry(ctx context.Context, args *BuildArgs, 
 	}
 
 	egCtx := errgroup.WithContext(ctx)
-	entry.Digests, err = b.chunkData(egCtx, args, int64(len(mb)), bytes.NewReader(mb))
+	entry.Digests, err = b.chunkData(egCtx, args, int64(len(mb)), common.ManifestChunkShift, bytes.NewReader(mb))
 
 	return common.ValOrErr(entry, cmp.Or(err, egCtx.Wait()))
 }
@@ -453,8 +456,13 @@ func (b *ManifestBuilder) entry(egCtx *errgroup.Group, args *BuildArgs, m *pb.Ma
 				return err
 			}
 		} else {
+			// FIXME: maybe be able override this for testing?
+			cshift := common.PickChunkShift(e.Size)
+			if cshift != common.DefaultChunkShift {
+				e.ChunkShift = int32(cshift)
+			}
 			var err error
-			e.Digests, err = b.chunkData(egCtx, args, e.Size, dataR)
+			e.Digests, err = b.chunkData(egCtx, args, e.Size, cshift, dataR)
 			if err != nil {
 				return err
 			}

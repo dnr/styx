@@ -96,11 +96,14 @@ func (s *Server) handleVaporizeReq(ctx context.Context, r *VaporizeReq) (*Status
 					return err
 				}
 			} else {
-				digests, err := s.vaporizeFile(ctxForChunks, fullPath, ent.Size, &tryClone)
+				digests, cshift, err := s.vaporizeFile(ctxForChunks, fullPath, ent.Size, &tryClone)
 				if err != nil {
 					return err
 				}
 				ent.Digests = cdig.ToSliceAlias(digests)
+				if cshift != common.DefaultChunkShift {
+					ent.ChunkShift = int32(cshift)
+				}
 			}
 
 		case fs.ModeDir:
@@ -141,7 +144,8 @@ func (s *Server) handleVaporizeReq(ctx context.Context, r *VaporizeReq) (*Status
 		// allocate space for manifest chunks in slab
 		digests := cdig.FromSliceAlias(entry.Digests)
 		blocks := make([]uint16, 0, len(digests))
-		blocks = common.AppendBlocksList(blocks, entry.Size, s.blockShift)
+		cshift := common.BlkShift(entry.ChunkShiftDef())
+		blocks = common.AppendBlocksList(blocks, entry.Size, s.blockShift, cshift)
 		locs, err := s.AllocateBatch(ctxForManifestChunks, blocks, digests)
 		if err != nil {
 			return nil, err
@@ -224,6 +228,7 @@ func (s *Server) vaporizeFile(
 	tryClone *bool,
 ) ([]cdig.CDig, common.BlkShift, error) {
 	cshift := common.PickChunkShift(size)
+
 	buf := s.chunkPool.Get(int(cshift.Size()))
 	defer s.chunkPool.Put(buf)
 
@@ -249,7 +254,7 @@ func (s *Server) vaporizeFile(
 	// it's rare for a file to have repeated chunks though, so don't worry about it for now.
 
 	blocks := make([]uint16, 0, len(digests))
-	blocks = common.AppendBlocksList(blocks, size, s.blockShift)
+	blocks = common.AppendBlocksList(blocks, size, s.blockShift, cshift)
 	locs, wasAllocated, err := s.preallocateBatch(ctx, blocks, digests)
 	if err != nil {
 		return nil, 0, err
@@ -280,7 +285,7 @@ func (s *Server) vaporizeFile(
 			cfd := s.readfdBySlab[loc.SlabId].cacheFd
 			s.stateLock.Unlock()
 			if cfd == 0 {
-				return nil, errCachefdNotFound
+				return nil, 0, errCachefdNotFound
 			}
 			woff := int64(loc.Addr) << s.blockShift
 			rsize, err := unix.CopyFileRange(int(f.Fd()), &roff, cfd, &woff, int(size), 0)
@@ -295,18 +300,18 @@ func (s *Server) vaporizeFile(
 				*tryClone = false
 				// fall back to plain copy
 			default:
-				return nil, err
+				return nil, 0, err
 			}
 		}
 
 		// plain copy. note we write through the writefd instead for consistency.
 		b := buf[:size]
 		if _, err := f.ReadAt(b, roff); err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 		err := s.gotNewChunk(loc, digests[i], b)
 		if err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 	}
 
@@ -320,19 +325,19 @@ func (s *Server) vaporizeFile(
 		b := buf[:size]
 		err := s.getKnownChunk(loc, b)
 		if err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 		got := cdig.Sum(b)
 		if got != digests[i] {
 			err := fmt.Errorf("digest mismatch after vaporize: %x != %x at %d/%d", got, digests[i], loc.SlabId, loc.Addr)
 			log.Print(err.Error())
-			return nil, err
+			return nil, 0, err
 		}
 	}
 
-	err := s.commitPreallocated(ctx, blocks, digests, locs, wasAllocated)
+	err = s.commitPreallocated(ctx, blocks, digests, locs, wasAllocated)
 	if err != nil {
-		return nil, nil, err
+		return nil, 0, err
 	}
 	return digests, cshift, nil
 }

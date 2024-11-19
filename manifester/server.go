@@ -64,10 +64,7 @@ func NewManifestServer(cfg Config, mb *ManifestBuilder) (*server, error) {
 }
 
 func (s *server) validateManifestReq(r *ManifestReq, upstreamHost string) error {
-	if r.ChunkShift != int(s.mb.params.ChunkShift) {
-		return fmt.Errorf("mismatched chunk shift (this server uses %d, not %d)",
-			s.mb.params.ChunkShift, r.ChunkShift)
-	} else if r.DigestAlgo != s.mb.params.DigestAlgo {
+	if r.DigestAlgo != s.mb.params.DigestAlgo {
 		return fmt.Errorf("mismatched chunk shift (this server uses %s, not %s)",
 			s.mb.params.DigestAlgo, r.DigestAlgo)
 	} else if r.DigestBits != cdig.Bits {
@@ -262,7 +259,7 @@ func (s *server) expand(egCtx *errgroup.Group, digests []cdig.CDig, expand strin
 
 	default:
 		var out bytes.Buffer
-		out.Grow(len(digests) << s.mb.params.ChunkShift)
+		out.Grow(len(digests) << common.DefaultChunkShift)
 		err := s.fetchChunkSeries(egCtx, digests, &out)
 		return common.ValOrErr(out.Bytes(), err)
 	}

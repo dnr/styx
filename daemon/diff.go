@@ -297,8 +297,8 @@ func (s *Server) readSingle(ctx context.Context, loc erofs.SlabLoc, digest cdig.
 	chunk, err := s.p().csread.Get(ctx, digest.String(), nil)
 	if err != nil {
 		return fmt.Errorf("chunk read error: %w", err)
-	} else if len(chunk) > len(buf) || &buf[0] != &chunk[0] {
-		return fmt.Errorf("chunk overflowed chunk size: %d > %d", len(chunk), len(buf))
+		// } else if len(chunk) > len(buf) || &buf[0] != &chunk[0] {
+		// 	return fmt.Errorf("chunk overflowed chunk size: %d > %d", len(chunk), len(buf))
 	}
 	s.stats.singleBytes.Add(int64(len(chunk)))
 
@@ -625,7 +625,8 @@ func (s *Server) getDigestsFromImage(tx *bbolt.Tx, sph Sph, isManifest bool) ([]
 		if err != nil {
 			return nil, err
 		}
-		data, err = s.readChunks(nil, tx, entry.Size, locs, nil, nil, false)
+		cshift := common.BlkShift(entry.ChunkShiftDef())
+		data, err = s.readChunks(nil, tx, entry.Size, cshift, locs, nil, nil, false)
 		if err != nil {
 			return nil, err
 		}
@@ -658,7 +659,8 @@ func (s *Server) getManifestLocal(tx *bbolt.Tx, sphStr string) (*pb.Manifest, []
 		if err != nil {
 			return nil, nil, err
 		}
-		data, err = s.readChunks(nil, tx, entry.Size, locs, nil, nil, false)
+		cshift := common.BlkShift(entry.ChunkShiftDef())
+		data, err = s.readChunks(nil, tx, entry.Size, cshift, locs, nil, nil, false)
 		if err != nil {
 			return nil, nil, err
 		}

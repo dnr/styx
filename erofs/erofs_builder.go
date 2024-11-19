@@ -265,7 +265,7 @@ func (b *Builder) BuildFromManifestWithSlab(
 					}
 				}
 				i.batchStart = len(batchBlocks)
-				batchBlocks = common.AppendBlocksList(batchBlocks, e.Size, b.blk)
+				batchBlocks = common.AppendBlocksList(batchBlocks, e.Size, b.blk, cshift)
 				i.batchEnd = len(batchBlocks)
 				batchDigests = append(batchDigests, cdig.FromSliceAlias(e.Digests)...)
 				batchInodes = append(batchInodes, i)

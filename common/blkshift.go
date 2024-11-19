@@ -2,8 +2,8 @@ package common
 
 const (
 	ManifestChunkShift BlkShift = 16
-
-	MaxChunkShift BlkShift = 20
+	DefaultChunkShift  BlkShift = 16
+	MaxChunkShift      BlkShift = 20
 )
 
 type BlkShift int

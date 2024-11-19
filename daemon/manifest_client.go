@@ -96,7 +96,8 @@ func (s *Server) getManifestAndBuildImage(ctx context.Context, req *MountReq) (*
 		// allocate space for manifest chunks in slab
 		digests := cdig.FromSliceAlias(entry.Digests)
 		blocks := make([]uint16, 0, len(digests))
-		blocks = common.AppendBlocksList(blocks, entry.Size, s.blockShift)
+		cshift := common.BlkShift(entry.ChunkShiftDef())
+		blocks = common.AppendBlocksList(blocks, entry.Size, s.blockShift, cshift)
 
 		ctxForManifestChunks := withAllocateCtx(ctx, manifestSph, true)
 		locs, err := s.AllocateBatch(ctxForManifestChunks, blocks, digests)
@@ -105,7 +106,7 @@ func (s *Server) getManifestAndBuildImage(ctx context.Context, req *MountReq) (*
 		}
 
 		// read them out
-		data, err = s.readChunks(ctx, nil, entry.Size, locs, digests, []SphPrefix{manifestSphPrefix}, true)
+		data, err = s.readChunks(ctx, nil, entry.Size, cshift, locs, digests, []SphPrefix{manifestSphPrefix}, true)
 		if err != nil {
 			return nil, nil, err
 		}
