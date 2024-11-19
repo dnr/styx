@@ -3,13 +3,11 @@ package common
 import "sync"
 
 type ChunkPool struct {
+	// if shift.MaxChunkShift > 20, add more here:
 	p12, p14, p16, p18, p20 sync.Pool
 }
 
 func NewChunkPool() *ChunkPool {
-	if MaxChunkShift != 20 {
-		panic("add more fields")
-	}
 	return &ChunkPool{
 		p12: sync.Pool{New: func() any { return make([]byte, 1<<12) }},
 		p14: sync.Pool{New: func() any { return make([]byte, 1<<14) }},

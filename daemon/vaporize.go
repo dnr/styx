@@ -17,6 +17,7 @@ import (
 
 	"github.com/dnr/styx/common"
 	"github.com/dnr/styx/common/cdig"
+	"github.com/dnr/styx/common/shift"
 	"github.com/dnr/styx/erofs"
 	"github.com/dnr/styx/manifester"
 	"github.com/dnr/styx/pb"
@@ -101,7 +102,7 @@ func (s *Server) handleVaporizeReq(ctx context.Context, r *VaporizeReq) (*Status
 					return err
 				}
 				ent.Digests = cdig.ToSliceAlias(digests)
-				if cshift != common.DefaultChunkShift {
+				if cshift != shift.DefaultChunkShift {
 					ent.ChunkShift = int32(cshift)
 				}
 			}
@@ -144,7 +145,7 @@ func (s *Server) handleVaporizeReq(ctx context.Context, r *VaporizeReq) (*Status
 		// allocate space for manifest chunks in slab
 		digests := cdig.FromSliceAlias(entry.Digests)
 		blocks := make([]uint16, 0, len(digests))
-		cshift := common.BlkShift(entry.ChunkShiftDef())
+		cshift := entry.ChunkShiftDef()
 		blocks = common.AppendBlocksList(blocks, entry.Size, s.blockShift, cshift)
 		locs, err := s.AllocateBatch(ctxForManifestChunks, blocks, digests)
 		if err != nil {
@@ -226,7 +227,7 @@ func (s *Server) vaporizeFile(
 	fullPath string,
 	size int64,
 	tryClone *bool,
-) ([]cdig.CDig, common.BlkShift, error) {
+) ([]cdig.CDig, shift.Shift, error) {
 	cshift := common.PickChunkShift(size)
 
 	buf := s.chunkPool.Get(int(cshift.Size()))
@@ -468,7 +469,7 @@ func (s *Server) commitPreallocated(ctx context.Context, blocks []uint16, digest
 
 type memChunkStore struct {
 	m        map[cdig.CDig][]byte
-	blkshift common.BlkShift
+	blkshift shift.Shift
 }
 
 func (m *memChunkStore) PutIfNotExists(ctx context.Context, path string, key string, data []byte) ([]byte, error) {

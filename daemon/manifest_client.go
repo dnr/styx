@@ -96,7 +96,7 @@ func (s *Server) getManifestAndBuildImage(ctx context.Context, req *MountReq) (*
 		// allocate space for manifest chunks in slab
 		digests := cdig.FromSliceAlias(entry.Digests)
 		blocks := make([]uint16, 0, len(digests))
-		cshift := common.BlkShift(entry.ChunkShiftDef())
+		cshift := entry.ChunkShiftDef()
 		blocks = common.AppendBlocksList(blocks, entry.Size, s.blockShift, cshift)
 
 		ctxForManifestChunks := withAllocateCtx(ctx, manifestSph, true)

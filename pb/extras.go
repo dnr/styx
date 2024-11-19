@@ -1,5 +1,7 @@
 package pb
 
+import "github.com/dnr/styx/common/shift"
+
 func (e *Entry) FileMode() int {
 	if e.Executable {
 		return 0o755
@@ -14,9 +16,9 @@ func (e *Entry) DigestBytesDef() int {
 	return int(e.DigestBytes)
 }
 
-func (e *Entry) ChunkShiftDef() int {
+func (e *Entry) ChunkShiftDef() shift.Shift {
 	if e.ChunkShift == 0 {
-		return 16
+		return shift.DefaultChunkShift
 	}
-	return int(e.ChunkShift)
+	return shift.Shift(e.ChunkShift)
 }

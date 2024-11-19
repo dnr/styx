@@ -28,6 +28,7 @@ import (
 	"github.com/dnr/styx/common"
 	"github.com/dnr/styx/common/cdig"
 	"github.com/dnr/styx/common/errgroup"
+	"github.com/dnr/styx/common/shift"
 	"github.com/dnr/styx/pb"
 )
 
@@ -409,8 +410,8 @@ func (b *ManifestBuilder) ManifestAsEntry(ctx context.Context, args *BuildArgs, 
 		Type: pb.EntryType_REGULAR,
 		Size: int64(len(mb)),
 	}
-	if common.ManifestChunkShift != common.DefaultChunkShift {
-		entry.ChunkShift = int32(common.ManifestChunkShift)
+	if shift.ManifestChunkShift != shift.DefaultChunkShift {
+		entry.ChunkShift = int32(shift.ManifestChunkShift)
 	}
 
 	if len(mb) <= args.SmallFileCutoff {
@@ -419,7 +420,7 @@ func (b *ManifestBuilder) ManifestAsEntry(ctx context.Context, args *BuildArgs, 
 	}
 
 	egCtx := errgroup.WithContext(ctx)
-	entry.Digests, err = b.chunkData(egCtx, args, int64(len(mb)), common.ManifestChunkShift, bytes.NewReader(mb))
+	entry.Digests, err = b.chunkData(egCtx, args, int64(len(mb)), shift.ManifestChunkShift, bytes.NewReader(mb))
 
 	return common.ValOrErr(entry, cmp.Or(err, egCtx.Wait()))
 }
@@ -458,7 +459,7 @@ func (b *ManifestBuilder) entry(egCtx *errgroup.Group, args *BuildArgs, m *pb.Ma
 		} else {
 			// FIXME: maybe be able override this for testing?
 			cshift := common.PickChunkShift(e.Size)
-			if cshift != common.DefaultChunkShift {
+			if cshift != shift.DefaultChunkShift {
 				e.ChunkShift = int32(cshift)
 			}
 			var err error
@@ -481,7 +482,7 @@ func (b *ManifestBuilder) entry(egCtx *errgroup.Group, args *BuildArgs, m *pb.Ma
 
 // Note that goroutines will continue writing into the returned slice after this returns!
 // Caller should not look at it until after Wait() on the errgroup.
-func (b *ManifestBuilder) chunkData(egCtx *errgroup.Group, args *BuildArgs, dataSize int64, cshift common.BlkShift, r io.Reader) ([]byte, error) {
+func (b *ManifestBuilder) chunkData(egCtx *errgroup.Group, args *BuildArgs, dataSize int64, cshift shift.Shift, r io.Reader) ([]byte, error) {
 	nChunks := cshift.Blocks(dataSize)
 	fullDigests := make([]byte, nChunks*cdig.Bytes)
 	digests := fullDigests

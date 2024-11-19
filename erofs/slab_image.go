@@ -7,10 +7,11 @@ import (
 	"hash/crc32"
 
 	"github.com/dnr/styx/common"
+	"github.com/dnr/styx/common/shift"
 	"golang.org/x/sys/unix"
 )
 
-func SlabImageRead(devid string, slabBytes int64, blkShift common.BlkShift, off uint64, buf []byte) error {
+func SlabImageRead(devid string, slabBytes int64, blkShift shift.Shift, off uint64, buf []byte) error {
 	if off != 0 {
 		return errors.New("slab image read must be from start")
 	} else if len(buf) < 4096 {
@@ -33,7 +34,7 @@ func SlabImageRead(devid string, slabBytes int64, blkShift common.BlkShift, off 
 		Blocks:          common.TruncU32(1),
 		MetaBlkAddr:     common.TruncU32(0),
 		ExtraDevices:    common.TruncU16(1),
-		DevtSlotOff:     (EROFS_SUPER_OFFSET +EROFS_SUPER_SIZE ) / EROFS_DEVT_SLOT_SIZE,
+		DevtSlotOff:     (EROFS_SUPER_OFFSET + EROFS_SUPER_SIZE) / EROFS_DEVT_SLOT_SIZE,
 	}
 	copy(super.VolumeName[:], "@"+devid)
 	h := sha256.New()

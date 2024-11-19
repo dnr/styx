@@ -1,6 +1,8 @@
 package common
 
-func PickChunkShift(fileSize int64) BlkShift {
+import "github.com/dnr/styx/common/shift"
+
+func PickChunkShift(fileSize int64) shift.Shift {
 	// aim for 64-256 chunks/file
 	switch {
 	case fileSize <= 256<<16: // 16 MiB
@@ -8,6 +10,6 @@ func PickChunkShift(fileSize int64) BlkShift {
 	case fileSize <= 256<<18: // 64 MiB
 		return 18
 	default:
-		return MaxChunkShift
+		return shift.MaxChunkShift
 	}
 }

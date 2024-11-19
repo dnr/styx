@@ -26,6 +26,7 @@ import (
 	"github.com/dnr/styx/common"
 	"github.com/dnr/styx/common/cdig"
 	"github.com/dnr/styx/common/errgroup"
+	"github.com/dnr/styx/common/shift"
 )
 
 const (
@@ -259,7 +260,7 @@ func (s *server) expand(egCtx *errgroup.Group, digests []cdig.CDig, expand strin
 
 	default:
 		var out bytes.Buffer
-		out.Grow(len(digests) << common.DefaultChunkShift)
+		out.Grow(len(digests) << shift.DefaultChunkShift)
 		err := s.fetchChunkSeries(egCtx, digests, &out)
 		return common.ValOrErr(out.Bytes(), err)
 	}

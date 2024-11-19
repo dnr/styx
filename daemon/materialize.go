@@ -213,7 +213,7 @@ tryAgain:
 
 	var buf []byte
 	digs := cdig.FromSliceAlias(ent.Digests)
-	cshift := common.BlkShift(ent.ChunkShiftDef())
+	cshift := ent.ChunkShiftDef()
 	roundedUp := false
 	for i, dig := range digs {
 		loc := locs[dig]

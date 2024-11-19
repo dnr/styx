@@ -22,6 +22,7 @@ import (
 
 	"github.com/dnr/styx/common"
 	"github.com/dnr/styx/common/cdig"
+	"github.com/dnr/styx/common/shift"
 	"github.com/dnr/styx/pb"
 )
 
@@ -41,7 +42,7 @@ type (
 	}
 
 	Builder struct {
-		blk common.BlkShift
+		blk shift.Shift
 	}
 
 	regulardata struct {
@@ -83,7 +84,7 @@ func NewBuilder(cfg BuilderConfig) *Builder {
 		panic("larger block size not supported yet")
 	}
 	return &Builder{
-		blk: common.BlkShift(cfg.BlockShift),
+		blk: shift.Shift(cfg.BlockShift),
 	}
 }
 
@@ -248,7 +249,7 @@ func (b *Builder) BuildFromManifestWithSlab(
 
 				i.i.ISize = common.TruncU32(e.Size)
 				i.i.IFormat = formatChunked
-				cshift := common.BlkShift(e.ChunkShiftDef())
+				cshift := e.ChunkShiftDef()
 				chunkedIU, err := inodeChunkInfo(b.blk, cshift)
 				if err != nil {
 					return err
@@ -509,31 +510,31 @@ func (b *Builder) BuildFromManifestWithSlab(
 	return nil
 }
 
-func (db *dirbuilder) sortAndSize(shift common.BlkShift) {
+func (db *dirbuilder) sortAndSize(bshift shift.Shift) {
 	const direntsize = 12
 
 	sort.Slice(db.ents, func(i, j int) bool { return db.ents[i].name < db.ents[j].name })
 
 	blocks := int64(0)
-	remaining := shift.Size()
+	remaining := bshift.Size()
 
 	for _, ent := range db.ents {
 		need := int64(direntsize + len(ent.name))
 		if need > remaining {
 			blocks++
-			remaining = shift.Size()
+			remaining = bshift.Size()
 		}
 		remaining -= need
 	}
 
-	db.size = blocks<<shift + (shift.Size() - remaining)
+	db.size = blocks<<bshift + (bshift.Size() - remaining)
 }
 
-func (db *dirbuilder) write(out io.Writer, shift common.BlkShift) {
+func (db *dirbuilder) write(out io.Writer, bshift shift.Shift) {
 	const direntsize = 12
 
-	remaining := shift.Size()
-	ents := make([]erofs_dirent, 0, shift.Size()/16)
+	remaining := bshift.Size()
+	ents := make([]erofs_dirent, 0, bshift.Size()/16)
 	var names bytes.Buffer
 
 	flush := func(isTail bool) {
@@ -549,7 +550,7 @@ func (db *dirbuilder) write(out io.Writer, shift common.BlkShift) {
 
 		ents = ents[:0]
 		names.Reset()
-		remaining = shift.Size()
+		remaining = bshift.Size()
 	}
 
 	for _, ent := range db.ents {
@@ -598,17 +599,17 @@ func packToBytes(v any) ([]byte, error) {
 	return common.ValOrErr(b.Bytes(), err)
 }
 
-func writeAndPad(out io.Writer, data []byte, shift common.BlkShift) int64 {
+func writeAndPad(out io.Writer, data []byte, bshift shift.Shift) int64 {
 	n, err := out.Write(data)
 	if err != nil || n != len(data) {
 		panic("write err")
 	}
-	rounded := shift.Roundup(int64(n))
+	rounded := bshift.Roundup(int64(n))
 	pad(out, rounded-int64(n))
 	return rounded
 }
 
-func inodeChunkInfo(bshift, cshift common.BlkShift) (uint32, error) {
+func inodeChunkInfo(bshift, cshift shift.Shift) (uint32, error) {
 	if cshift-bshift > EROFS_CHUNK_FORMAT_BLKBITS_MASK {
 		return 0, fmt.Errorf("chunk size too big")
 	}

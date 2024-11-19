@@ -22,6 +22,7 @@ import (
 
 	"github.com/dnr/styx/common"
 	"github.com/dnr/styx/common/cdig"
+	"github.com/dnr/styx/common/shift"
 	"github.com/dnr/styx/erofs"
 	"github.com/dnr/styx/manifester"
 	"github.com/dnr/styx/pb"
@@ -235,7 +236,7 @@ func (s *Server) readChunks(
 	ctx context.Context, // can be nil if allowMissing is true
 	useTx *bbolt.Tx, // optional
 	totalSize int64,
-	chunkShift common.BlkShift,
+	chunkShift shift.Shift,
 	locs []erofs.SlabLoc,
 	digests []cdig.CDig, // used if allowMissing is true
 	sphps []SphPrefix, // used if allowMissing is true
@@ -625,7 +626,7 @@ func (s *Server) getDigestsFromImage(tx *bbolt.Tx, sph Sph, isManifest bool) ([]
 		if err != nil {
 			return nil, err
 		}
-		cshift := common.BlkShift(entry.ChunkShiftDef())
+		cshift := shift.Shift(entry.ChunkShiftDef())
 		data, err = s.readChunks(nil, tx, entry.Size, cshift, locs, nil, nil, false)
 		if err != nil {
 			return nil, err
@@ -659,7 +660,7 @@ func (s *Server) getManifestLocal(tx *bbolt.Tx, sphStr string) (*pb.Manifest, []
 		if err != nil {
 			return nil, nil, err
 		}
-		cshift := common.BlkShift(entry.ChunkShiftDef())
+		cshift := entry.ChunkShiftDef()
 		data, err = s.readChunks(nil, tx, entry.Size, cshift, locs, nil, nil, false)
 		if err != nil {
 			return nil, nil, err
@@ -1164,7 +1165,7 @@ func (i *digestIterator) size() int32 {
 	if ent == nil {
 		return -1
 	}
-	cshift := common.BlkShift(ent.ChunkShiftDef())
+	cshift := ent.ChunkShiftDef()
 	return int32(cshift.FileChunkSize(ent.Size, i.d+cdig.Bytes >= len(ent.Digests)))
 }
 

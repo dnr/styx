@@ -304,7 +304,7 @@ func (gc *gc) traceManifest(eg *errgroup.Group, mc string) error {
 	var chunks, mchunks int
 	b = sm.Msg.InlineData
 	if b == nil {
-		cshift := common.BlkShift(sm.Msg.ChunkShiftDef())
+		cshift := sm.Msg.ChunkShiftDef()
 		b = make([]byte, sm.Msg.Size)
 		subeg := errgroup.WithContext(eg)
 		subeg.SetLimit(cmp.Or(gc.lim.chunk, 5))

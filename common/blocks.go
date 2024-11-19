@@ -1,6 +1,8 @@
 package common
 
-func AppendBlocksList(blocks []uint16, size int64, blockShift, chunkShift BlkShift) []uint16 {
+import "github.com/dnr/styx/common/shift"
+
+func AppendBlocksList(blocks []uint16, size int64, blockShift, chunkShift shift.Shift) []uint16 {
 	nChunks := chunkShift.Blocks(size)
 	allButLast := TruncU16(chunkShift.Size() >> blockShift)
 	for j := 0; j < int(nChunks)-1; j++ {
