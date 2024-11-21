@@ -19,6 +19,7 @@ import (
 	"github.com/dnr/styx/common"
 	"github.com/dnr/styx/common/cdig"
 	"github.com/dnr/styx/common/client"
+	"github.com/dnr/styx/common/shift"
 	"github.com/dnr/styx/common/systemd"
 	"github.com/dnr/styx/daemon"
 	"github.com/dnr/styx/manifester"
@@ -47,6 +48,7 @@ type (
 		manifesterAddr string
 		upstreamHost   string
 		upstreamUrl    string
+		chunkSizer     func(int64) shift.Shift
 
 		tdserver   *http.Server
 		manifester service
@@ -145,6 +147,7 @@ func (tb *testBase) startManifester() {
 
 	mbcfg := manifester.ManifestBuilderConfig{
 		ConcurrentChunkOps: 10,
+		ChunkSizer:         tb.chunkSizer,
 	}
 	mbcfg.PublicKeys, err = common.LoadPubKeys([]string{nixosKeys})
 	require.NoError(tb.t, err)

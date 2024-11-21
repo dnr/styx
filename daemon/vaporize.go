@@ -97,7 +97,8 @@ func (s *Server) handleVaporizeReq(ctx context.Context, r *VaporizeReq) (*Status
 					return err
 				}
 			} else {
-				digests, cshift, err := s.vaporizeFile(ctxForChunks, fullPath, ent.Size, &tryClone)
+				cshift := common.DefaultChunkShift(ent.Size)
+				digests, err := s.vaporizeFile(ctxForChunks, fullPath, ent.Size, cshift, &tryClone)
 				if err != nil {
 					return err
 				}
@@ -226,16 +227,16 @@ func (s *Server) vaporizeFile(
 	ctx context.Context,
 	fullPath string,
 	size int64,
+	cshift shift.Shift,
 	tryClone *bool,
-) ([]cdig.CDig, shift.Shift, error) {
-	cshift := common.PickChunkShift(size)
+) ([]cdig.CDig, error) {
 
 	buf := s.chunkPool.Get(int(cshift.Size()))
 	defer s.chunkPool.Put(buf)
 
 	f, err := os.Open(fullPath)
 	if err != nil {
-		return nil, 0, err
+		return nil, err
 	}
 	defer f.Close()
 
@@ -246,7 +247,7 @@ func (s *Server) vaporizeFile(
 		if err == io.EOF {
 			break
 		} else if err != nil {
-			return nil, 0, err
+			return nil, err
 		}
 		digests = append(digests, cdig.Sum(buf[:n]))
 	}
@@ -258,7 +259,7 @@ func (s *Server) vaporizeFile(
 	blocks = common.AppendBlocksList(blocks, size, s.blockShift, cshift)
 	locs, wasAllocated, err := s.preallocateBatch(ctx, blocks, digests)
 	if err != nil {
-		return nil, 0, err
+		return nil, err
 	}
 
 	present := make([]bool, len(locs))
@@ -286,7 +287,7 @@ func (s *Server) vaporizeFile(
 			cfd := s.readfdBySlab[loc.SlabId].cacheFd
 			s.stateLock.Unlock()
 			if cfd == 0 {
-				return nil, 0, errCachefdNotFound
+				return nil, errCachefdNotFound
 			}
 			woff := int64(loc.Addr) << s.blockShift
 			rsize, err := unix.CopyFileRange(int(f.Fd()), &roff, cfd, &woff, int(size), 0)
@@ -301,18 +302,18 @@ func (s *Server) vaporizeFile(
 				*tryClone = false
 				// fall back to plain copy
 			default:
-				return nil, 0, err
+				return nil, err
 			}
 		}
 
 		// plain copy. note we write through the writefd instead for consistency.
 		b := buf[:size]
 		if _, err := f.ReadAt(b, roff); err != nil {
-			return nil, 0, err
+			return nil, err
 		}
 		err := s.gotNewChunk(loc, digests[i], b)
 		if err != nil {
-			return nil, 0, err
+			return nil, err
 		}
 	}
 
@@ -326,21 +327,21 @@ func (s *Server) vaporizeFile(
 		b := buf[:size]
 		err := s.getKnownChunk(loc, b)
 		if err != nil {
-			return nil, 0, err
+			return nil, err
 		}
 		got := cdig.Sum(b)
 		if got != digests[i] {
 			err := fmt.Errorf("digest mismatch after vaporize: %x != %x at %d/%d", got, digests[i], loc.SlabId, loc.Addr)
 			log.Print(err.Error())
-			return nil, 0, err
+			return nil, err
 		}
 	}
 
 	err = s.commitPreallocated(ctx, blocks, digests, locs, wasAllocated)
 	if err != nil {
-		return nil, 0, err
+		return nil, err
 	}
-	return digests, cshift, nil
+	return digests, nil
 }
 
 // two-phase allocate to support vaporize

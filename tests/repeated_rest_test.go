@@ -6,12 +6,14 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/dnr/styx/common"
+	"github.com/dnr/styx/common/shift"
 	"github.com/dnr/styx/daemon"
 )
 
 func TestRepeatedRead(t *testing.T) {
 	tb := newTestBase(t)
+	// override this so our calculation works out
+	tb.chunkSizer = func(int64) shift.Shift { return 16 }
 	tb.startAll()
 
 	mp1 := tb.mount("d30xd6x3669hg2a6xwjb1r3nb9a99sw2-openblas-0.3.27")
@@ -23,8 +25,7 @@ func TestRepeatedRead(t *testing.T) {
 	extra := 0
 	reqSize := daemon.InitOpSize
 	for size > 0 {
-		// FIXME: do we still need extra here?
-		size -= reqSize << common.PickChunkShift(int64(size))
+		size -= reqSize << 16
 		extra += (reqSize - 1) / daemon.MaxOpSize
 		reqSize = min(reqSize*2, daemon.MaxDiffOps*daemon.MaxOpSize)
 	}

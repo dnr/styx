@@ -43,12 +43,13 @@ type (
 	}
 
 	ManifestBuilder struct {
-		cs        ChunkStoreWrite
-		chunksem  *semaphore.Weighted
-		params    *pb.GlobalParams
-		chunkPool *common.ChunkPool
-		pubKeys   []signature.PublicKey
-		signKeys  []signature.SecretKey
+		cs         ChunkStoreWrite
+		chunksem   *semaphore.Weighted
+		params     *pb.GlobalParams
+		chunkPool  *common.ChunkPool
+		pubKeys    []signature.PublicKey
+		signKeys   []signature.SecretKey
+		chunkSizer func(int64) shift.Shift
 
 		stats atomicStats
 	}
@@ -75,6 +76,7 @@ type (
 
 	ManifestBuilderConfig struct {
 		ConcurrentChunkOps int
+		ChunkSizer         func(int64) shift.Shift
 
 		// Verify loaded narinfo against these keys. Nil means don't verify.
 		PublicKeys []signature.PublicKey
@@ -95,6 +97,10 @@ var (
 )
 
 func NewManifestBuilder(cfg ManifestBuilderConfig, cs ChunkStoreWrite) (*ManifestBuilder, error) {
+	chunkSizer := cfg.ChunkSizer
+	if chunkSizer == nil {
+		chunkSizer = common.DefaultChunkShift
+	}
 	return &ManifestBuilder{
 		cs:       cs,
 		chunksem: semaphore.NewWeighted(int64(cmp.Or(cfg.ConcurrentChunkOps, 200))),
@@ -102,9 +108,10 @@ func NewManifestBuilder(cfg ManifestBuilderConfig, cs ChunkStoreWrite) (*Manifes
 			DigestAlgo: common.DigestAlgo,
 			DigestBits: int32(cdig.Bits),
 		},
-		chunkPool: common.NewChunkPool(),
-		pubKeys:   cfg.PublicKeys,
-		signKeys:  cfg.SigningKeys,
+		chunkPool:  common.NewChunkPool(),
+		pubKeys:    cfg.PublicKeys,
+		signKeys:   cfg.SigningKeys,
+		chunkSizer: chunkSizer,
 	}, nil
 }
 
@@ -457,8 +464,7 @@ func (b *ManifestBuilder) entry(egCtx *errgroup.Group, args *BuildArgs, m *pb.Ma
 				return err
 			}
 		} else {
-			// FIXME: maybe be able override this for testing?
-			cshift := common.PickChunkShift(e.Size)
+			cshift := b.chunkSizer(e.Size)
 			if cshift != shift.DefaultChunkShift {
 				e.ChunkShift = int32(cshift)
 			}

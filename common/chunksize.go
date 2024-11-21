@@ -2,7 +2,7 @@ package common
 
 import "github.com/dnr/styx/common/shift"
 
-func PickChunkShift(fileSize int64) shift.Shift {
+func DefaultChunkShift(fileSize int64) shift.Shift {
 	// aim for 64-256 chunks/file
 	switch {
 	case fileSize <= 256<<16: // 16 MiB
