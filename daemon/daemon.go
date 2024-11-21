@@ -1143,9 +1143,8 @@ func (s *Server) handleReadSlab(state *openFileState, ln, off uint64) (retErr er
 	}()
 
 	if ln > uint64(shift.MaxChunkShift.Size()) {
-		panic("got too big slab read")
+		return errors.New("got too big slab read")
 	}
-	// FIXME: also verify this doesn't cross into the next chunk
 
 	slabId := state.slabId
 	var addr uint32
@@ -1173,6 +1172,20 @@ func (s *Server) handleReadSlab(state *openFileState, ln, off uint64) (retErr er
 		// take addr from key so we write at the right place even if read was in the middle of a chunk
 		addr = addrFromKey(k)
 		digest = cdig.FromBytes(v)
+
+		// find next to check size. this will be too lenient if we gc'd the chunk right after this,
+		// but it's just a sanity check.
+		k, v = cur.Next()
+		var nextAddr uint32
+		if k == nil {
+			nextAddr = common.TruncU32(sb.Sequence())
+		} else if nextAddr = addrFromKey(k); nextAddr&presentMask != 0 {
+			nextAddr = common.TruncU32(sb.Sequence())
+		}
+		if ln > uint64(nextAddr-addr)<<s.blockShift {
+			return errors.New("got too big slab read")
+		}
+
 		// look up digest to get store paths
 		loc := tx.Bucket(chunkBucket).Get(v)
 		if loc == nil {
