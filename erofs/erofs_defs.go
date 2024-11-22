@@ -3,7 +3,7 @@ package erofs
 import (
 	"fmt"
 
-	"github.com/dnr/styx/common"
+	"github.com/dnr/styx/common/shift"
 	"github.com/lunixbochs/struc"
 )
 
@@ -181,7 +181,7 @@ const (
 	EROFS_SUPER_SIZE          = 128
 	EROFS_COMPACT_INODE_SIZE  = 32
 	EROFS_EXTENDED_INODE_SIZE = 64
-	EROFS_NID_SHIFT           = common.BlkShift(5)
+	EROFS_NID_SHIFT           = shift.Shift(5)
 )
 
 type (

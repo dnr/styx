@@ -213,16 +213,17 @@ tryAgain:
 
 	var buf []byte
 	digs := cdig.FromSliceAlias(ent.Digests)
+	cshift := ent.ChunkShiftDef()
 	roundedUp := false
 	for i, dig := range digs {
 		loc := locs[dig]
-		size := common.ChunkShift.FileChunkSize(ent.Size, i == len(digs)-1)
+		size := cshift.FileChunkSize(ent.Size, i == len(digs)-1)
 		if *tryClone {
 			if cfd := readFds[loc.SlabId].cacheFd; cfd > 0 {
 				sizeUp := int(s.blockShift.Roundup(size))
 				roundedUp = sizeUp != int(size)
 				roff := int64(loc.Addr) << s.blockShift
-				woff := int64(i) << common.ChunkShift
+				woff := int64(i) << cshift
 				var rsize int
 				rsize, err = unix.CopyFileRange(cfd, &roff, int(dst.Fd()), &woff, sizeUp, 0)
 				if err == nil && rsize != sizeUp {
@@ -254,7 +255,7 @@ tryAgain:
 			}
 		} else {
 			if buf == nil {
-				buf = s.chunkPool.Get(int(common.ChunkShift.Size()))
+				buf = s.chunkPool.Get(int(cshift.Size()))
 				defer s.chunkPool.Put(buf)
 			}
 			b := buf[:size]

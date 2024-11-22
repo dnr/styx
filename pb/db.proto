@@ -25,7 +25,7 @@ enum MountState {
 // present if data has been fetched
 
 // key: "chunk" / <hash_bits of digest>
-// value: <u16 BE slab id> <u32 BE block address> ( <sph prefix bits> )*
+// value: <u16 LE slab id> <u32 LE block address> ( <sph prefix bits> )*
 
 // key: "image" / <store path hash (nix base32)>
 // value:

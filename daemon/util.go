@@ -20,10 +20,7 @@ import (
 )
 
 func verifyParams(p *pb.GlobalParams) error {
-	if p.ChunkShift != int32(common.ChunkShift) {
-		return fmt.Errorf("built-in chunk shift %d != %d; rebuild or use different params",
-			common.ChunkShift, p.ChunkShift)
-	} else if p.DigestAlgo != cdig.Algo {
+	if p.DigestAlgo != cdig.Algo {
 		return fmt.Errorf("built-in digest algo %s != %s; rebuild or use different params",
 			cdig.Algo, p.DigestAlgo)
 	} else if p.DigestBits != cdig.Bits {

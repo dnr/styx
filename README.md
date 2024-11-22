@@ -177,7 +177,8 @@ Then a few definitions:
 4KiB blocks. (I think currently the block size must match the system page size.)
 
 **Chunk**: To reduce metadata overhead, the unit of data sharing and data
-movement is larger than a single block. Styx currently uses 64KiB, 16 blocks.
+movement is larger than a single block. The chunk size is adaptive on a per-file
+basis depending on the file size, and is currently either 64 KiB, 256 KiB, or 1 MiB.
 
 **Chunk digest**: Chunks are identified by a cryptographic digest. Currently we
 use a 192-bit prefix of SHA-256.
@@ -577,7 +578,6 @@ styx init --params=https://styx-1.s3.amazonaws.com/params/test-1 --styx_pubkey=s
 - Combine multiple store paths into images to reduce overhead
 - Respond to cachefiles culling requests
 - Run a system with everything not needed by stage1+stage2 on Styx
-- Adaptive chunk sizes for less overhead on very large packages
 - Closer integration into other binary caches and maybe Nix itself
 
 

@@ -3,8 +3,8 @@ package erofs
 import (
 	"context"
 
-	"github.com/dnr/styx/common"
 	"github.com/dnr/styx/common/cdig"
+	"github.com/dnr/styx/common/shift"
 )
 
 type (
@@ -14,7 +14,7 @@ type (
 	}
 
 	SlabManager interface {
-		VerifyParams(blockShift common.BlkShift) error
+		VerifyParams(blockShift shift.Shift) error
 		AllocateBatch(ctx context.Context, blocks []uint16, digests []cdig.CDig) ([]SlabLoc, error)
 		SlabInfo(slabId uint16) (tag string, totalBlocks uint32)
 	}

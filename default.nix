@@ -2,7 +2,7 @@
 rec {
   base = {
     pname = "styx";
-    version = "0.0.9";
+    version = "0.0.10";
     vendorHash = "sha256-Enhe29MNy+Nqim7OelHl5gv+vcrHSx51FzGgs/6Hy4A=";
     src = pkgs.lib.sourceByRegex ./. [
       "^go\\.(mod|sum)$"

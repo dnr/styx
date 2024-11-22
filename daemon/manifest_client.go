@@ -46,8 +46,7 @@ func (s *Server) getManifestAndBuildImage(ctx context.Context, req *MountReq) (*
 		return nil, nil, err
 	}
 	if smParams != nil {
-		match := smParams.ChunkShift == int32(common.ChunkShift) &&
-			smParams.DigestBits == cdig.Bits &&
+		match := smParams.DigestBits == cdig.Bits &&
 			smParams.DigestAlgo == common.DigestAlgo
 		if !match {
 			return nil, nil, fmt.Errorf("chunked manifest global params mismatch")
@@ -97,7 +96,8 @@ func (s *Server) getManifestAndBuildImage(ctx context.Context, req *MountReq) (*
 		// allocate space for manifest chunks in slab
 		digests := cdig.FromSliceAlias(entry.Digests)
 		blocks := make([]uint16, 0, len(digests))
-		blocks = common.AppendBlocksList(blocks, entry.Size, s.blockShift)
+		cshift := entry.ChunkShiftDef()
+		blocks = common.AppendBlocksList(blocks, entry.Size, s.blockShift, cshift)
 
 		ctxForManifestChunks := withAllocateCtx(ctx, manifestSph, true)
 		locs, err := s.AllocateBatch(ctxForManifestChunks, blocks, digests)
@@ -106,7 +106,7 @@ func (s *Server) getManifestAndBuildImage(ctx context.Context, req *MountReq) (*
 		}
 
 		// read them out
-		data, err = s.readChunks(ctx, nil, entry.Size, locs, digests, []SphPrefix{manifestSphPrefix}, true)
+		data, err = s.readChunks(ctx, nil, entry.Size, cshift, locs, digests, []SphPrefix{manifestSphPrefix}, true)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -140,7 +140,6 @@ func (s *Server) getManifestFromManifester(ctx context.Context, upstream, sph st
 	mReq := manifester.ManifestReq{
 		Upstream:      upstream,
 		StorePathHash: sph,
-		ChunkShift:    int(common.ChunkShift),
 		DigestAlgo:    common.DigestAlgo,
 		DigestBits:    int(cdig.Bits),
 		// SmallFileCutoff: s.cfg.SmallFileCutoff,

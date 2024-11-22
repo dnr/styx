@@ -17,6 +17,7 @@ import (
 
 	"github.com/dnr/styx/common"
 	"github.com/dnr/styx/common/cdig"
+	"github.com/dnr/styx/common/shift"
 	"github.com/dnr/styx/erofs"
 	"github.com/dnr/styx/manifester"
 	"github.com/dnr/styx/pb"
@@ -50,7 +51,6 @@ func (s *Server) handleVaporizeReq(ctx context.Context, r *VaporizeReq) (*Status
 
 	m := &pb.Manifest{
 		Params: &pb.GlobalParams{
-			ChunkShift: int32(common.ChunkShift),
 			DigestAlgo: common.DigestAlgo,
 			DigestBits: cdig.Bits,
 		},
@@ -97,11 +97,15 @@ func (s *Server) handleVaporizeReq(ctx context.Context, r *VaporizeReq) (*Status
 					return err
 				}
 			} else {
-				digests, err := s.vaporizeFile(ctxForChunks, fullPath, ent.Size, &tryClone)
+				cshift := common.DefaultChunkShift(ent.Size)
+				digests, err := s.vaporizeFile(ctxForChunks, fullPath, ent.Size, cshift, &tryClone)
 				if err != nil {
 					return err
 				}
 				ent.Digests = cdig.ToSliceAlias(digests)
+				if cshift != shift.DefaultChunkShift {
+					ent.ChunkShift = int32(cshift)
+				}
 			}
 
 		case fs.ModeDir:
@@ -142,7 +146,8 @@ func (s *Server) handleVaporizeReq(ctx context.Context, r *VaporizeReq) (*Status
 		// allocate space for manifest chunks in slab
 		digests := cdig.FromSliceAlias(entry.Digests)
 		blocks := make([]uint16, 0, len(digests))
-		blocks = common.AppendBlocksList(blocks, entry.Size, s.blockShift)
+		cshift := entry.ChunkShiftDef()
+		blocks = common.AppendBlocksList(blocks, entry.Size, s.blockShift, cshift)
 		locs, err := s.AllocateBatch(ctxForManifestChunks, blocks, digests)
 		if err != nil {
 			return nil, err
@@ -170,7 +175,6 @@ func (s *Server) handleVaporizeReq(ctx context.Context, r *VaporizeReq) (*Status
 	envelope, err := proto.Marshal(&pb.SignedMessage{
 		Msg: entry,
 		Params: &pb.GlobalParams{
-			ChunkShift: int32(common.ChunkShift),
 			DigestAlgo: common.DigestAlgo,
 			DigestBits: int32(cdig.Bits),
 		},
@@ -223,9 +227,11 @@ func (s *Server) vaporizeFile(
 	ctx context.Context,
 	fullPath string,
 	size int64,
+	cshift shift.Shift,
 	tryClone *bool,
 ) ([]cdig.CDig, error) {
-	buf := s.chunkPool.Get(int(common.ChunkShift.Size()))
+
+	buf := s.chunkPool.Get(int(cshift.Size()))
 	defer s.chunkPool.Put(buf)
 
 	f, err := os.Open(fullPath)
@@ -250,7 +256,7 @@ func (s *Server) vaporizeFile(
 	// it's rare for a file to have repeated chunks though, so don't worry about it for now.
 
 	blocks := make([]uint16, 0, len(digests))
-	blocks = common.AppendBlocksList(blocks, size, s.blockShift)
+	blocks = common.AppendBlocksList(blocks, size, s.blockShift, cshift)
 	locs, wasAllocated, err := s.preallocateBatch(ctx, blocks, digests)
 	if err != nil {
 		return nil, err
@@ -269,9 +275,9 @@ func (s *Server) vaporizeFile(
 			continue
 		}
 
-		size := common.ChunkShift.FileChunkSize(size, i == len(locs)-1)
+		size := cshift.FileChunkSize(size, i == len(locs)-1)
 		rounded := s.blockShift.Roundup(size)
-		roff := int64(i) << common.ChunkShift
+		roff := int64(i) << cshift
 		// since the slab file extends beyond the end of our copy, even if it's sparse,
 		// CopyFileRange can only be used to copy whole blocks.
 		// also, if the loc was already allocated (but not present), then it's already linked
@@ -317,7 +323,7 @@ func (s *Server) vaporizeFile(
 			continue // don't bother if it was there before we started
 		}
 
-		size := common.ChunkShift.FileChunkSize(size, i == len(locs)-1)
+		size := cshift.FileChunkSize(size, i == len(locs)-1)
 		b := buf[:size]
 		err := s.getKnownChunk(loc, b)
 		if err != nil {
@@ -331,7 +337,11 @@ func (s *Server) vaporizeFile(
 		}
 	}
 
-	return common.ValOrErr(digests, s.commitPreallocated(ctx, blocks, digests, locs, wasAllocated))
+	err = s.commitPreallocated(ctx, blocks, digests, locs, wasAllocated)
+	if err != nil {
+		return nil, err
+	}
+	return digests, nil
 }
 
 // two-phase allocate to support vaporize
@@ -460,7 +470,7 @@ func (s *Server) commitPreallocated(ctx context.Context, blocks []uint16, digest
 
 type memChunkStore struct {
 	m        map[cdig.CDig][]byte
-	blkshift common.BlkShift
+	blkshift shift.Shift
 }
 
 func (m *memChunkStore) PutIfNotExists(ctx context.Context, path string, key string, data []byte) ([]byte, error) {

@@ -21,6 +21,8 @@ message Entry {
   bytes inline_data = 5;
   // Otherwise, this is a series of concatenated digests, one per chunk:
   bytes digests = 6;
+  int32 digest_bytes = 7;   // Number of bytes per digest (default: 24)
+  int32 chunk_shift = 8;    // Chunk size = 1 << chunk_shift (default: 16)
   // Debug data (only in debug output, not on network or db)
   int32 stats_inline_data = 100;
   int32 stats_present_chunks = 101;

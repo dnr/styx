@@ -28,6 +28,7 @@ import (
 	"github.com/dnr/styx/common"
 	"github.com/dnr/styx/common/cdig"
 	"github.com/dnr/styx/common/errgroup"
+	"github.com/dnr/styx/common/shift"
 	"github.com/dnr/styx/pb"
 )
 
@@ -42,12 +43,13 @@ type (
 	}
 
 	ManifestBuilder struct {
-		cs        ChunkStoreWrite
-		chunksem  *semaphore.Weighted
-		params    *pb.GlobalParams
-		chunkPool *common.ChunkPool
-		pubKeys   []signature.PublicKey
-		signKeys  []signature.SecretKey
+		cs         ChunkStoreWrite
+		chunksem   *semaphore.Weighted
+		params     *pb.GlobalParams
+		chunkPool  *common.ChunkPool
+		pubKeys    []signature.PublicKey
+		signKeys   []signature.SecretKey
+		chunkSizer func(int64) shift.Shift
 
 		stats atomicStats
 	}
@@ -74,6 +76,7 @@ type (
 
 	ManifestBuilderConfig struct {
 		ConcurrentChunkOps int
+		ChunkSizer         func(int64) shift.Shift
 
 		// Verify loaded narinfo against these keys. Nil means don't verify.
 		PublicKeys []signature.PublicKey
@@ -94,17 +97,21 @@ var (
 )
 
 func NewManifestBuilder(cfg ManifestBuilderConfig, cs ChunkStoreWrite) (*ManifestBuilder, error) {
+	chunkSizer := cfg.ChunkSizer
+	if chunkSizer == nil {
+		chunkSizer = common.DefaultChunkShift
+	}
 	return &ManifestBuilder{
 		cs:       cs,
 		chunksem: semaphore.NewWeighted(int64(cmp.Or(cfg.ConcurrentChunkOps, 200))),
 		params: &pb.GlobalParams{
-			ChunkShift: int32(common.ChunkShift),
 			DigestAlgo: common.DigestAlgo,
 			DigestBits: int32(cdig.Bits),
 		},
-		chunkPool: common.NewChunkPool(common.ChunkShift),
-		pubKeys:   cfg.PublicKeys,
-		signKeys:  cfg.SigningKeys,
+		chunkPool:  common.NewChunkPool(),
+		pubKeys:    cfg.PublicKeys,
+		signKeys:   cfg.SigningKeys,
+		chunkSizer: chunkSizer,
 	}, nil
 }
 
@@ -332,7 +339,6 @@ func (b *ManifestBuilder) Build(
 	cacheKey := (&ManifestReq{
 		Upstream:      upstream,
 		StorePathHash: storePathHash,
-		ChunkShift:    int(common.ChunkShift),
 		DigestAlgo:    common.DigestAlgo,
 		DigestBits:    int(cdig.Bits),
 	}).CacheKey()
@@ -411,6 +417,9 @@ func (b *ManifestBuilder) ManifestAsEntry(ctx context.Context, args *BuildArgs, 
 		Type: pb.EntryType_REGULAR,
 		Size: int64(len(mb)),
 	}
+	if shift.ManifestChunkShift != shift.DefaultChunkShift {
+		entry.ChunkShift = int32(shift.ManifestChunkShift)
+	}
 
 	if len(mb) <= args.SmallFileCutoff {
 		entry.InlineData = mb
@@ -418,7 +427,7 @@ func (b *ManifestBuilder) ManifestAsEntry(ctx context.Context, args *BuildArgs, 
 	}
 
 	egCtx := errgroup.WithContext(ctx)
-	entry.Digests, err = b.chunkData(egCtx, args, int64(len(mb)), bytes.NewReader(mb))
+	entry.Digests, err = b.chunkData(egCtx, args, int64(len(mb)), shift.ManifestChunkShift, bytes.NewReader(mb))
 
 	return common.ValOrErr(entry, cmp.Or(err, egCtx.Wait()))
 }
@@ -455,8 +464,12 @@ func (b *ManifestBuilder) entry(egCtx *errgroup.Group, args *BuildArgs, m *pb.Ma
 				return err
 			}
 		} else {
+			cshift := b.chunkSizer(e.Size)
+			if cshift != shift.DefaultChunkShift {
+				e.ChunkShift = int32(cshift)
+			}
 			var err error
-			e.Digests, err = b.chunkData(egCtx, args, e.Size, dataR)
+			e.Digests, err = b.chunkData(egCtx, args, e.Size, cshift, dataR)
 			if err != nil {
 				return err
 			}
@@ -475,8 +488,8 @@ func (b *ManifestBuilder) entry(egCtx *errgroup.Group, args *BuildArgs, m *pb.Ma
 
 // Note that goroutines will continue writing into the returned slice after this returns!
 // Caller should not look at it until after Wait() on the errgroup.
-func (b *ManifestBuilder) chunkData(egCtx *errgroup.Group, args *BuildArgs, dataSize int64, r io.Reader) ([]byte, error) {
-	nChunks := common.ChunkShift.Blocks(dataSize)
+func (b *ManifestBuilder) chunkData(egCtx *errgroup.Group, args *BuildArgs, dataSize int64, cshift shift.Shift, r io.Reader) ([]byte, error) {
+	nChunks := cshift.Blocks(dataSize)
 	fullDigests := make([]byte, nChunks*cdig.Bytes)
 	digests := fullDigests
 	remaining := dataSize
@@ -487,7 +500,7 @@ func (b *ManifestBuilder) chunkData(egCtx *errgroup.Group, args *BuildArgs, data
 			return nil, err
 		}
 
-		size := min(remaining, common.ChunkShift.Size())
+		size := min(remaining, cshift.Size())
 		remaining -= size
 		_data := b.chunkPool.Get(int(size))
 		data := _data[:size]

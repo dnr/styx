@@ -30,6 +30,7 @@ import (
 
 	"github.com/dnr/styx/common"
 	"github.com/dnr/styx/common/cdig"
+	"github.com/dnr/styx/common/shift"
 	"github.com/dnr/styx/common/systemd"
 	"github.com/dnr/styx/erofs"
 	"github.com/dnr/styx/manifester"
@@ -62,7 +63,7 @@ type (
 	Server struct {
 		cfg        *Config
 		post       atomic.Pointer[postinit]
-		blockShift common.BlkShift
+		blockShift shift.Shift
 		db         *bbolt.DB
 		msgPool    *sync.Pool
 		chunkPool  *common.ChunkPool
@@ -147,9 +148,9 @@ var errAlreadyMountedElsewhere = errors.New("already mounted on another mountpoi
 func NewServer(cfg Config) *Server {
 	return &Server{
 		cfg:          &cfg,
-		blockShift:   common.BlkShift(cfg.ErofsBlockShift),
+		blockShift:   shift.Shift(cfg.ErofsBlockShift),
 		msgPool:      &sync.Pool{New: func() any { return make([]byte, CACHEFILES_MSG_MAX_SIZE) }},
-		chunkPool:    common.NewChunkPool(common.ChunkShift),
+		chunkPool:    common.NewChunkPool(),
 		builder:      erofs.NewBuilder(erofs.BuilderConfig{BlockShift: cfg.ErofsBlockShift}),
 		cacheState:   make(map[uint32]*openFileState),
 		stateBySlab:  make(map[uint16]*openFileState),
@@ -1141,8 +1142,8 @@ func (s *Server) handleReadSlab(state *openFileState, ln, off uint64) (retErr er
 		}
 	}()
 
-	if ln > uint64(common.ChunkShift.Size()) {
-		panic("got too big slab read")
+	if ln > uint64(shift.MaxChunkShift.Size()) {
+		return errors.New("got too big slab read")
 	}
 
 	slabId := state.slabId
@@ -1171,6 +1172,20 @@ func (s *Server) handleReadSlab(state *openFileState, ln, off uint64) (retErr er
 		// take addr from key so we write at the right place even if read was in the middle of a chunk
 		addr = addrFromKey(k)
 		digest = cdig.FromBytes(v)
+
+		// find next to check size. this will be too lenient if we gc'd the chunk right after this,
+		// but it's just a sanity check.
+		k, v = cur.Next()
+		var nextAddr uint32
+		if k == nil {
+			nextAddr = common.TruncU32(sb.Sequence())
+		} else if nextAddr = addrFromKey(k); nextAddr&presentMask != 0 {
+			nextAddr = common.TruncU32(sb.Sequence())
+		}
+		if ln > uint64(nextAddr-addr)<<s.blockShift {
+			return errors.New("got too big slab read")
+		}
+
 		// look up digest to get store paths
 		loc := tx.Bucket(chunkBucket).Get(v)
 		if loc == nil {
@@ -1308,7 +1323,7 @@ func appendSph(loc []byte, sph Sph) []byte {
 	return newLoc
 }
 
-func (s *Server) VerifyParams(blockShift common.BlkShift) error {
+func (s *Server) VerifyParams(blockShift shift.Shift) error {
 	if blockShift != s.blockShift {
 		return errors.New("mismatched params")
 	}

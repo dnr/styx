@@ -22,6 +22,7 @@ import (
 
 	"github.com/dnr/styx/common"
 	"github.com/dnr/styx/common/cdig"
+	"github.com/dnr/styx/common/shift"
 	"github.com/dnr/styx/erofs"
 	"github.com/dnr/styx/manifester"
 	"github.com/dnr/styx/pb"
@@ -32,7 +33,8 @@ const (
 
 	// only public so they can be referenced by tests
 	InitOpSize = 8
-	MaxOpSize  = 128 // must be ≤ manifester.ChunkDiffMaxDigests
+	MaxOpSize  = 128      // must be ≤ manifester.ChunkDiffMaxDigests
+	MaxOpBytes = 12 << 20 // must be ≤ manifester.ChunkDiffMaxBytes
 	MaxDiffOps = 8
 	MaxSources = 3
 )
@@ -230,10 +232,12 @@ func (s *Server) buildAndStartPrefetch(ctx context.Context, reqs []cdig.CDig) ([
 }
 
 // currently this is only used to read manifest chunks
+// all chunks must be the same size
 func (s *Server) readChunks(
 	ctx context.Context, // can be nil if allowMissing is true
 	useTx *bbolt.Tx, // optional
 	totalSize int64,
+	chunkShift shift.Shift,
 	locs []erofs.SlabLoc,
 	digests []cdig.CDig, // used if allowMissing is true
 	sphps []SphPrefix, // used if allowMissing is true
@@ -275,7 +279,7 @@ func (s *Server) readChunks(
 	out := make([]byte, totalSize)
 	rest := out
 	for _, loc := range locs {
-		toRead := min(int(common.ChunkShift.Size()), len(rest))
+		toRead := min(int(chunkShift.Size()), len(rest))
 		err := s.getKnownChunk(loc, rest[:toRead])
 		if err != nil {
 			return nil, err
@@ -287,14 +291,16 @@ func (s *Server) readChunks(
 
 func (s *Server) readSingle(ctx context.Context, loc erofs.SlabLoc, digest cdig.CDig) error {
 	// we have no size info here
-	buf := s.chunkPool.Get(int(common.ChunkShift.Size()))
-	defer s.chunkPool.Put(buf)
+	// TODO: can we figure out at least chunk shift and use a pool?
+	// we probably have to just store the size
+	// buf := s.chunkPool.Get(int(common.ChunkShift.Size()))
+	// defer s.chunkPool.Put(buf)
 
-	chunk, err := s.p().csread.Get(ctx, digest.String(), buf[:0])
+	chunk, err := s.p().csread.Get(ctx, digest.String(), nil)
 	if err != nil {
 		return fmt.Errorf("chunk read error: %w", err)
-	} else if len(chunk) > len(buf) || &buf[0] != &chunk[0] {
-		return fmt.Errorf("chunk overflowed chunk size: %d > %d", len(chunk), len(buf))
+		// } else if len(chunk) > len(buf) || &buf[0] != &chunk[0] {
+		// 	return fmt.Errorf("chunk overflowed chunk size: %d > %d", len(chunk), len(buf))
 	}
 	s.stats.singleBytes.Add(int64(len(chunk)))
 
@@ -621,7 +627,8 @@ func (s *Server) getDigestsFromImage(tx *bbolt.Tx, sph Sph, isManifest bool) ([]
 		if err != nil {
 			return nil, err
 		}
-		data, err = s.readChunks(nil, tx, entry.Size, locs, nil, nil, false)
+		cshift := shift.Shift(entry.ChunkShiftDef())
+		data, err = s.readChunks(nil, tx, entry.Size, cshift, locs, nil, nil, false)
 		if err != nil {
 			return nil, err
 		}
@@ -654,7 +661,8 @@ func (s *Server) getManifestLocal(tx *bbolt.Tx, sphStr string) (*pb.Manifest, []
 		if err != nil {
 			return nil, nil, err
 		}
-		data, err = s.readChunks(nil, tx, entry.Size, locs, nil, nil, false)
+		cshift := entry.ChunkShiftDef()
+		data, err = s.readChunks(nil, tx, entry.Size, cshift, locs, nil, nil, false)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -833,18 +841,18 @@ func (set *opSet) newOp() {
 }
 
 func (set *opSet) checkReq() {
-	if len(set.op.reqInfo) >= set.maxOpSize {
+	if len(set.op.reqInfo) >= set.maxOpSize || set.op.reqTotalSize >= MaxOpBytes {
 		set.newOp()
 	}
 }
 
 func (set *opSet) fullBase() bool {
 	// assumes baseInfo is filled in previous ops
-	return len(set.ops) >= set.maxOps && len(set.op.baseInfo) >= set.maxOpSize
+	return len(set.ops) >= set.maxOps && (len(set.op.baseInfo) >= set.maxOpSize || set.op.baseTotalSize >= MaxOpBytes)
 }
 func (set *opSet) fullReq() bool {
 	// assumes reqInfo is filled in previous ops
-	return len(set.ops) >= set.maxOps && len(set.op.reqInfo) >= set.maxOpSize
+	return len(set.ops) >= set.maxOps && (len(set.op.reqInfo) >= set.maxOpSize || set.op.reqTotalSize >= MaxOpBytes)
 }
 
 // call with diffLock held
@@ -981,7 +989,7 @@ func (set *opSet) buildExtendDiff(
 
 		// fill base only if room in this op, don't make more ops just for base
 		baseDigest := baseIter.digest()
-		if baseDigest != cdig.Zero && len(set.op.baseInfo) < set.maxOpSize && !set.isUsing(baseDigest) {
+		if baseDigest != cdig.Zero && len(set.op.baseInfo) < set.maxOpSize && set.op.baseTotalSize < MaxOpBytes && !set.isUsing(baseDigest) {
 			baseLoc, basePresent := set.s.digestPresent(tx, baseDigest)
 			if basePresent {
 				set.markUsing(baseDigest)
@@ -1158,7 +1166,8 @@ func (i *digestIterator) size() int32 {
 	if ent == nil {
 		return -1
 	}
-	return int32(common.ChunkShift.FileChunkSize(ent.Size, i.d+cdig.Bytes >= len(ent.Digests)))
+	cshift := ent.ChunkShiftDef()
+	return int32(cshift.FileChunkSize(ent.Size, i.d+cdig.Bytes >= len(ent.Digests)))
 }
 
 // moves forward n chunks. returns true if valid.

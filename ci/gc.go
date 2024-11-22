@@ -304,6 +304,7 @@ func (gc *gc) traceManifest(eg *errgroup.Group, mc string) error {
 	var chunks, mchunks int
 	b = sm.Msg.InlineData
 	if b == nil {
+		cshift := sm.Msg.ChunkShiftDef()
 		b = make([]byte, sm.Msg.Size)
 		subeg := errgroup.WithContext(eg)
 		subeg.SetLimit(cmp.Or(gc.lim.chunk, 5))
@@ -312,8 +313,8 @@ func (gc *gc) traceManifest(eg *errgroup.Group, mc string) error {
 			mchunks++
 			subeg.Go(func() error {
 				key := manifester.ChunkReadPath[1:] + dig.String()
-				start := i << common.ChunkShift
-				end := min(len(b), (i+1)<<common.ChunkShift)
+				start := i << cshift
+				end := min(len(b), (i+1)<<cshift)
 				_, err := gc.readOne(subeg, key, b[start:end])
 				return err
 			})

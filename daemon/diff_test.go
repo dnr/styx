@@ -12,6 +12,7 @@ import (
 var d1 = "0123456789ytrewq6789poiu"
 var d2 = "hjkl30104mnop410019jjkka"
 var d3 = "zxcv95345asdfiijb632ooia"
+var testCShift common.BlkShift = 16 // TODO: test with different sizes
 var testEntries = []*pb.Entry{
 	&pb.Entry{
 		Path: "/",
@@ -23,7 +24,7 @@ var testEntries = []*pb.Entry{
 	},
 	&pb.Entry{
 		Path:    "/file",
-		Size:    common.ChunkShift.Size() + 100,
+		Size:    testCShift.Size() + 100,
 		Digests: []byte(d1 + d2),
 	},
 	&pb.Entry{
@@ -41,7 +42,7 @@ var testEntries = []*pb.Entry{
 	},
 	&pb.Entry{
 		Path:    "/lastfile",
-		Size:    common.ChunkShift.Size()*2 + 300,
+		Size:    testCShift.Size()*2 + 300,
 		Digests: []byte(d3 + d2 + d1),
 	},
 }
@@ -56,7 +57,7 @@ func TestDigestIterator(t *testing.T) {
 
 	r.Equal(testEntries[2], i.ent())
 	r.Equal(fb(d1), i.digest())
-	r.EqualValues(common.ChunkShift.Size(), i.size())
+	r.EqualValues(testCShift.Size(), i.size())
 
 	r.NotNil(i.next(1))
 	r.Equal(testEntries[2], i.ent())
@@ -71,7 +72,7 @@ func TestDigestIterator(t *testing.T) {
 	r.NotNil(i.next(1))
 	r.Equal(testEntries[6], i.ent())
 	r.Equal(fb(d3), i.digest())
-	r.EqualValues(common.ChunkShift.Size(), i.size())
+	r.EqualValues(testCShift.Size(), i.size())
 
 	r.NotNil(i.next(2))
 	r.Equal(testEntries[6], i.ent())
@@ -102,10 +103,10 @@ func TestDigestIterator_ToFileStart(t *testing.T) {
 	r.NotNil(i.next(4))
 	r.Equal(testEntries[6], i.ent())
 	r.Equal(fb(d2), i.digest())
-	r.EqualValues(common.ChunkShift.Size(), i.size())
+	r.EqualValues(testCShift.Size(), i.size())
 
 	r.True(i.toFileStart())
 	r.Equal(testEntries[6], i.ent())
 	r.Equal(fb(d3), i.digest())
-	r.EqualValues(common.ChunkShift.Size(), i.size())
+	r.EqualValues(testCShift.Size(), i.size())
 }
