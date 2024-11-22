@@ -389,7 +389,7 @@ It turns out that in the most common cases, it is possible:
 Sometimes you know that you're going to need to download almost all the data in
 a package and want to just ensure it's there, instead of fetching it on-demand.
 Essentially, you just want the differential compression features of Styx without
-the on-demand. Use:
+the on-demand. After a package has been installed by Styx as an EROFS mount, do:
 
 ```sh
 styx prefetch /nix/store/...-mypackage/
@@ -405,7 +405,7 @@ fetching, but furthermore you need the files to be present on a "real"
 filesystem, e.g. because you're using Styx to download your kernel or firmware
 or something that has to be present in early boot.
 
-In that case you can use `materialize`: This is similar to mounting a package as
+For that case there's `materialize`: This is similar to mounting a package as
 EROFS and then copying into a plain filesystem, but more efficient:
 
 1. If you're using a filesystem with extent sharing like btrfs and materializing
@@ -414,12 +414,10 @@ meaning it will use no extra space.
 2. If you're using a filesystem without extent sharing, the copy will still be
    done with `copy_file_range`, which is a little more efficient.
 
-TODO: Soon there'll be an option to have nix do this instead of mount. In the
-meantime you can do it manually:
+Downloading the data is done with the same parameters as prefetch.
 
-```sh
-styx materialize https://cache.nixos.org hash-mypackage /some/mount/point
-```
+You can tell Nix to use Styx to materialize packages using the
+`styx-materialize` setting.
 
 ### Vaporize
 
@@ -428,11 +426,16 @@ filesystem into the Styx slab file (on btrfs it will attempt to share extents
 where possible).
 
 Why would you want to do this? When transitioning a system to use Styx for more
-packages, it would be nice to be able to do diffs from existing packages, even
-if they weren't installed with Styx. This lets you do that: you can vaporize all
-or most of your Nix store (without consuming much extra disk space), then install
-(either mount or materialize) new packages with Styx and take advantage of diffs
-from the existing ones.
+packages, it would be nice to be able to share space with existing packages
+where possible. This lets you do that: you can vaporize all or most of your Nix
+store (without consuming much extra disk space), then install (either mount or
+materialize) new packages with Styx avoid downloading some data that you already
+have.
+
+Note that you can't diff from these chunks, initially, because they may not
+exist on the remote chunk store. After mounting/materializing at least one
+package that refers to the same chunks, they'll be available for diffing through
+that package.
 
 In some sense, vaporize + materialize is a fancy de-duplication mechanism for
 btrfs and similar filesystems, that also integrates with Styx' on-demand and
@@ -467,17 +470,6 @@ styx gc --error_states --doit
 ```
 
 *This is only lightly tested.*
-
-### Cachefiles culling
-
-Cachefiles has a culling mechanism that kicks in when the disk gets full. It's
-not clear what we should do since we can't just throw away the whole slab (the
-bulk of the data). Maybe we could keep some LRU info and throw out some old
-data.
-
-For now, don't let the disk get full or things will probably go badly.
-
-(This isn't implemented yet.)
 
 
 ### CI
@@ -550,8 +542,14 @@ with `nix-shell -p ...` and see what happens.
    # This enables all features and patches.
    # Look at module/defualt.nix for more fine-grained enable options if desired.
    services.styx.enable = true;
-   # This sets a list of regexes to consider using Styx.
+   # This sets a list of package name regexes to use Styx on-demand.
+   # This shouldn't include anything you need to boot a system and connect to
+   # the network.
    nix.settings.styx-include = [ "list" "of" "package" "name" "regexp-.*" ];
+   # This sets a list of package name regexes to use Styx materialize.
+   # It's safe to include everything here, if Styx fails, Nix will fall back
+   # to normal substitution.
+   nix.settings.styx-materialize = [ ".*" ];
 ```
 
 After the daemon is running, you have to initialize it by running:
@@ -576,7 +574,6 @@ styx init --params=https://styx-1.s3.amazonaws.com/params/test-1 --styx_pubkey=s
     - Exploring other approaches like simhash
     - Consider how to make diffs more cacheable
 - Combine multiple store paths into images to reduce overhead
-- Respond to cachefiles culling requests
 - Run a system with everything not needed by stage1+stage2 on Styx
 - Closer integration into other binary caches and maybe Nix itself
 
