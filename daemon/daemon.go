@@ -12,7 +12,6 @@ import (
 	"net/http"
 	"net/http/pprof"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -281,10 +280,6 @@ func (s *Server) openDb() (err error) {
 	})
 }
 
-func (s *Server) setupEnv() error {
-	return exec.Command(common.ModprobeBin, "cachefiles").Run()
-}
-
 func (s *Server) setupMounts() error {
 	// TODO: check if /nix/store is actually mounted ro and if we are in a private mount ns
 	_ = unix.MountSetattr(unix.AT_FDCWD, "/nix/store", 0, &unix.MountAttr{
@@ -315,22 +310,19 @@ func (s *Server) setupManifestSlab() error {
 }
 
 func (s *Server) openDevNode() (int, error) {
+	// udev should have created this when the cachefiles module was loaded
 	fd, err := unix.Open(s.cfg.DevPath, unix.O_RDWR, 0600)
-	if err == unix.ENOENT {
-		_ = unix.Mknod(s.cfg.DevPath, 0600|unix.S_IFCHR, 10<<8+122)
-		fd, err = unix.Open(s.cfg.DevPath, unix.O_RDWR, 0600)
-	}
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("error opening %s: %w  (is the cachefiles module loaded?)", s.cfg.DevPath, err)
 	} else if _, err = unix.Write(fd, []byte("dir "+s.cfg.CachePath)); err != nil {
 		unix.Close(fd)
-		return 0, err
+		return 0, fmt.Errorf("error setting up cachefiles: %w", err)
 	} else if _, err = unix.Write(fd, []byte("tag "+s.cfg.CacheTag)); err != nil {
 		unix.Close(fd)
-		return 0, err
+		return 0, fmt.Errorf("error setting up cachefiles: %w", err)
 	} else if _, err = unix.Write(fd, []byte("bind ondemand")); err != nil {
 		unix.Close(fd)
-		return 0, err
+		return 0, fmt.Errorf("error setting up cachefiles ondemand: %w  (is the kernel built with CACHEFILES_ONDEMAND?)", err)
 	}
 	return fd, nil
 }
@@ -341,7 +333,9 @@ func (s *Server) setupDevNode() error {
 		if _, err = unix.Write(fd, []byte("restore")); err != nil {
 			s.cfg.FdStore.RemoveFd(savedFdName)
 			unix.Close(fd)
-			return err
+			// instead of trying to recover, just let systemd restart the process
+			// and next time we won't have a saved fd.
+			return fmt.Errorf("cachefiles 'restore' failed: %w", err)
 		}
 		s.devnode.Store(int32(fd))
 		log.Println("restored cachefiles device")
@@ -386,7 +380,7 @@ func (s *Server) startSocketServer() (err error) {
 	os.Remove(socketPath)
 	l, err := net.ListenUnix("unix", &net.UnixAddr{Net: "unix", Name: socketPath})
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to listen on unix socket %s: %w", socketPath, err)
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc(InitPath, jsonmw(s.handleInitReq))
@@ -749,17 +743,14 @@ func (s *Server) restoreMounts() {
 // cachefiles server
 
 func (s *Server) Start() error {
-	if err := s.setupEnv(); err != nil {
-		return err
-	}
 	if err := s.setupMounts(); err != nil {
-		return err
+		return fmt.Errorf("error setting up mount namespaces: %w", err)
 	}
 	if err := s.openDb(); err != nil {
-		return err
+		return fmt.Errorf("error setting up database in %s: %w", s.cfg.CachePath, err)
 	}
 	if err := s.setupManifestSlab(); err != nil {
-		return err
+		return fmt.Errorf("error setting up manifest slab: %w", err)
 	}
 	if err := s.setupDevNode(); err != nil {
 		return err
@@ -1217,7 +1208,7 @@ func (s *Server) mountSlabImage(slabId uint16) error {
 		}
 		opts := fmt.Sprintf("domain_id=%s,fsid=%s", s.cfg.CacheDomain, fsid)
 		if err = unix.Mount("none", mountPoint, "erofs", 0, opts); err != nil {
-			return fmt.Errorf("error mounting slab image %s on %s: %w", fsid, mountPoint, err)
+			return fmt.Errorf("error mounting slab image %s on %s: %w  (is the kernel built with EROFS_FS_ONDEMAND?)", fsid, mountPoint, err)
 		}
 		// unmount and mount again to force slab to be flushed to disk.
 		// if anything else is mounted already this won't work, though it won't hurt either.

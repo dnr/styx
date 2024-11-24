@@ -5,7 +5,6 @@ var (
 	NixBin      = "nix"
 	GzipBin     = "gzip"
 	XzBin       = "xz"
-	ModprobeBin = "modprobe"
 	FilefragBin = "filefrag"
 
 	// replaced by ldflags

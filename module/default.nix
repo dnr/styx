@@ -75,8 +75,14 @@ in with lib; {
         wantedBy = [ "sysinit.target" ];
         before = [ "sysinit.target" "shutdown.target" ];
         conflicts = [ "shutdown.target" ];
-        after = [ "local-fs.target" ];
-        # TODO: restartTriggers
+        requires = [
+          "modprobe@cachefiles.service"
+        ];
+        after = [
+          "local-fs.target"
+          "modprobe@cachefiles.service"
+        ];
+        # TODO: restartTriggers?
         unitConfig = {
           DefaultDependencies = false;
           RequiresMountsFor = [ "/var/cache/styx" "/nix/store" ];

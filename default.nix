@@ -20,7 +20,6 @@ rec {
   ];
   daemonLdFlags = baseLdFlags ++ [
     "-X github.com/dnr/styx/common.GzipBin=${pkgs.gzip}/bin/gzip"
-    "-X github.com/dnr/styx/common.ModprobeBin=${pkgs.kmod}/bin/modprobe"
     "-X github.com/dnr/styx/common.FilefragBin=${pkgs.e2fsprogs}/bin/filefrag"
   ];
   staticLdFlags = [
