@@ -19,6 +19,8 @@
   # use shared nixpkgs
   nix.nixPath = [ "nixpkgs=/tmp/nixpkgs" ];
 
+  # just console
+  virtualisation.graphics = false;
   # provide nixpkgs and this dir for convenience
   virtualisation.sharedDirectories = {
     nixpkgs = { source = toString <nixpkgs>; target = "/tmp/nixpkgs"; };
@@ -44,4 +46,20 @@
     psmisc
     vim
   ];
+
+  # hack to transfer console size
+  systemd.services."serial-getty@".serviceConfig.ExecStartPost =
+    let fixconsole = pkgs.writeShellScript "fixconsole" ''
+      #!${pkgs.runtimeShell}
+      tty=/dev/$1
+      for o in $(</proc/cmdline); do
+        case $o in
+          styx.consolesize=*)
+            set -- $(IFS=:=; echo $o)
+            ${pkgs.coreutils}/bin/stty -F $tty rows $2 cols $3
+            echo -ne '\e[?7h' > $tty
+            ;;
+        esac
+      done
+    ''; in "-${fixconsole} %i";
 }
