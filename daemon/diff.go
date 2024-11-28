@@ -37,6 +37,8 @@ const (
 	MaxOpBytes = 12 << 20 // must be ≤ manifester.ChunkDiffMaxBytes
 	MaxDiffOps = 8
 	MaxSources = 3
+	// start doubling on any file RRs, but require two extra image RRs
+	ImageRROffset = 2
 )
 
 type (
@@ -69,7 +71,7 @@ type (
 
 		// shared with all ops in opSet.
 		// the contents of the recentReads are under diffLock.
-		rrs *[MaxSources]*recentRead
+		rrs *[MaxSources * 2]*recentRead
 	}
 
 	// context for building set of diff ops
@@ -80,7 +82,8 @@ type (
 		ops   []*diffOp
 		using map[cdig.CDig]struct{}
 		// rrs is indirect so that diffOps can point to it without keeping opSet live
-		rrs         *[MaxSources]*recentRead
+		// first half are for image, second half are for file
+		rrs         *[MaxSources * 2]*recentRead
 		limitShift  int
 		maxOpSize   int
 		maxOps      int
@@ -719,7 +722,6 @@ func (s *Server) findRecentRead(reqHash Sph, path string) *recentRead {
 	key := string(reqHash[:]) + path
 	if rr := s.recentReads[key]; rr != nil {
 		rr.reads++
-		// log.Printf("another read for %s, increasing request size", path)
 		rr.when = time.Now()
 		return rr
 	}
@@ -791,7 +793,7 @@ func newOpSet(s *Server) *opSet {
 	set := &opSet{
 		s:           s,
 		using:       make(map[cdig.CDig]struct{}),
-		rrs:         new([MaxSources]*recentRead),
+		rrs:         new([MaxSources * 2]*recentRead),
 		maxOpSize:   InitOpSize,
 		maxOps:      1,
 		sourcesLeft: MaxSources,
@@ -811,15 +813,22 @@ func (set *opSet) shiftMax(limitShift int) {
 	}
 }
 
-func (set *opSet) addRecentRead(rr *recentRead) {
-	for i := 0; i < MaxSources; i++ {
-		if set.rrs[i] == rr {
-			return
-		} else if set.rrs[i] == nil {
-			set.rrs[i] = rr
-			return
+func (set *opSet) updateRecentReads(sph Sph, path string) {
+	addRecentRead := func(rr *recentRead, rrs []*recentRead) {
+		for i, have := range rrs {
+			if have == rr {
+				return
+			} else if have == nil {
+				rrs[i] = rr
+				return
+			}
 		}
 	}
+	imageRR := set.s.findRecentRead(sph, "")
+	addRecentRead(imageRR, set.rrs[:MaxSources])
+	fileRR := set.s.findRecentRead(sph, path)
+	addRecentRead(fileRR, set.rrs[MaxSources:])
+	set.shiftMax(max(imageRR.reads-ImageRROffset, fileRR.reads))
 }
 
 func (set *opSet) isUsing(dig cdig.CDig) bool {
@@ -957,9 +966,7 @@ func (set *opSet) buildExtendDiff(
 	}
 
 	if useRR {
-		rr := set.s.findRecentRead(res.reqHash, reqEnt.Path)
-		set.addRecentRead(rr)
-		set.shiftMax(rr.reads)
+		set.updateRecentReads(res.reqHash, reqEnt.Path)
 	}
 
 	// try to find some file in base
