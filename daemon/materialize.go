@@ -26,6 +26,8 @@ import (
 
 var errCachefdNotFound = errors.New("cache fd not found for slab")
 
+var zeroTimeval = []unix.Timeval{{}, {}}
+
 func (s *Server) handleMaterializeReq(ctx context.Context, r *MaterializeReq) (*Status, error) {
 	if s.p() == nil {
 		return nil, mwErr(http.StatusPreconditionFailed, "styx is not initialized, call 'styx init --params=...'")
@@ -167,6 +169,7 @@ func (s *Server) materialize(dest string, m *pb.Manifest) error {
 			if err = os.MkdirAll(p, 0o755); err != nil {
 				return err
 			}
+			_ = unix.Lutimes(p, zeroTimeval)
 		case pb.EntryType_REGULAR:
 			if err = s.materializeFile(p, ent, locs, readFds, &tryClone); err != nil {
 				return err
@@ -178,6 +181,7 @@ func (s *Server) materialize(dest string, m *pb.Manifest) error {
 			if err = os.Symlink(string(ent.InlineData), p); err != nil {
 				return err
 			}
+			_ = unix.Lutimes(p, zeroTimeval)
 		default:
 			return errors.New("unknown entry type in manifest")
 		}
@@ -197,6 +201,7 @@ func (s *Server) materializeFile(
 	defer func() {
 		if dst != nil {
 			retErr = cmp.Or(retErr, dst.Close())
+			_ = unix.Lutimes(path, zeroTimeval)
 		}
 	}()
 tryAgain:
