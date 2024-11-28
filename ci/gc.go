@@ -229,7 +229,7 @@ func (gc *gc) trace(ctx context.Context, roots []string) error {
 	gc.stage("GC TRACE")
 
 	eg := errgroup.WithContext(ctx)
-	eg.SetLimit(cmp.Or(gc.lim.trace, 50))
+	eg.SetWorkLimit(cmp.Or(gc.lim.trace, 50))
 	for _, key := range roots {
 		key := key
 		eg.Go(func() error { return gc.traceRoot(eg, key) })

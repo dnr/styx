@@ -70,7 +70,7 @@ func withStartConfig(c *cobra.Command) runE {
 func withGCConfig(c *cobra.Command) runE {
 	var cfg ci.GCConfig
 	c.Flags().StringVar(&cfg.Bucket, "bucket", "styx-1", "s3 bucket")
-	c.Flags().DurationVar(&cfg.MaxAge, "max_age", 30*24*time.Hour, "gc age")
+	c.Flags().DurationVar(&cfg.MaxAge, "max_age", 210*24*time.Hour, "gc age")
 	return func(c *cobra.Command, args []string) error {
 		store(c, cfg)
 		return nil

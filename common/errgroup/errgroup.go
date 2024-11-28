@@ -13,6 +13,7 @@
 //   - Added Limit() method to get the limit, so that doesn't have to be passed separately either
 //     when both are needed.
 //   - Added Cancel() to immediately cancel as if a called function returned an error.
+//   - Added SetWorkLimit()
 //
 // Note: use context.Cause(group) to get the pending error without calling Wait().
 package errgroup
@@ -37,13 +38,17 @@ type Group struct {
 
 	wg sync.WaitGroup
 
-	sem chan token
+	sem     chan token
+	workSem chan token
 
 	errOnce sync.Once
 	err     error
 }
 
 func (g *Group) done() {
+	if g.workSem != nil {
+		<-g.workSem
+	}
 	if g.sem != nil {
 		<-g.sem
 	}
@@ -81,14 +86,7 @@ func (g *Group) Go(f func() error) {
 		g.sem <- token{}
 	}
 
-	g.wg.Add(1)
-	go func() {
-		defer g.done()
-
-		if err := f(); err != nil {
-			g.Cancel(err)
-		}
-	}()
+	g._go(f)
 }
 
 // TryGo calls the given function in a new goroutine only if the number of
@@ -105,15 +103,23 @@ func (g *Group) TryGo(f func() error) bool {
 		}
 	}
 
+	g._go(f)
+	return true
+}
+
+func (g *Group) _go(f func() error) {
 	g.wg.Add(1)
 	go func() {
 		defer g.done()
+
+		if g.workSem != nil {
+			g.workSem <- token{}
+		}
 
 		if err := f(); err != nil {
 			g.Cancel(err)
 		}
 	}()
-	return true
 }
 
 // SetLimit limits the number of active goroutines in this group to at most n.
@@ -134,9 +140,28 @@ func (g *Group) SetLimit(n int) {
 	g.sem = make(chan token, n)
 }
 
+// SetWorkLimit limits the number of goroutines doing work in this group to at most n.
+// Goroutines will be created (Go() will return) without regard to the limit, but blocked on a
+// semaphore. A negative value indicates no limit.
+func (g *Group) SetWorkLimit(n int) {
+	if n < 0 {
+		g.workSem = nil
+		return
+	}
+	if len(g.workSem) != 0 {
+		panic(fmt.Errorf("errgroup: modify work limit while %v goroutines in the group are still active", len(g.workSem)))
+	}
+	g.workSem = make(chan token, n)
+}
+
 // Limit returns the limit size
 func (g *Group) Limit() int {
 	return cap(g.sem)
+}
+
+// WorkLimit returns the work limit size
+func (g *Group) WorkLimit() int {
+	return cap(g.workSem)
 }
 
 // Cancel cancels the group context with an error, as if a function started by Do returned that error.
