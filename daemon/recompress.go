@@ -18,6 +18,14 @@ import (
 var (
 	reManPage   = regexp.MustCompile(`^/share/man/.*[.]gz$`)
 	reLinuxKoXz = regexp.MustCompile(`^/lib/modules/[^/]+/kernel/.*[.]ko[.]xz$`)
+
+	recompressManPage = []string{manifester.ExpandGz}
+	// note: currently largest kernel module on my system (excluding kheaders) is
+	// amdgpu.ko.xz at 3.4mb, 54 chunks (64kb), and expands to 24.4mb, which is
+	// reasonable to pass through the chunk differ.
+	// TODO: maybe get these args from looking at the base? or the chunk differ can look at
+	// req and return them? or try several values and take the matching one?
+	recompressLinuxKo = []string{manifester.ExpandXz, "--check=crc32", "--lzma2=dict=1MiB"}
 )
 
 func isManPageGz(ent *pb.Entry) bool {
@@ -32,14 +40,9 @@ func isLinuxKoXz(ent *pb.Entry) bool {
 func getRecompressArgs(ent *pb.Entry) []string {
 	switch {
 	case isManPageGz(ent):
-		return []string{manifester.ExpandGz}
+		return recompressManPage
 	case isLinuxKoXz(ent):
-		// note: currently largest kernel module on my system (excluding kheaders) is
-		// amdgpu.ko.xz at 3.4mb, 54 chunks (64kb), and expands to 24.4mb, which is
-		// reasonable to pass through the chunk differ.
-		// TODO: maybe get these args from looking at the base? or the chunk differ can look at
-		// req and return them? or try several values and take the matching one?
-		return []string{manifester.ExpandXz, "--check=crc32", "--lzma2=dict=1MiB"}
+		return recompressLinuxKo
 	default:
 		return nil
 	}

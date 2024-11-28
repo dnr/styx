@@ -958,9 +958,6 @@ func (set *opSet) buildExtendDiff(
 			if err := set.buildRecompress(tx, res, args, baseIter, reqIter, reqEnt); err == nil {
 				set.log(res, args[0], true)
 				return
-			} else {
-				log.Println("skipping recompress:", err)
-				set.op.resetDiff()
 			}
 		}
 	}
@@ -1032,7 +1029,14 @@ func (set *opSet) buildRecompress(
 	args []string,
 	baseIter, reqIter digestIterator,
 	reqEnt *pb.Entry,
-) error {
+) (retErr error) {
+	defer func() {
+		if retErr != nil {
+			log.Println("skipping recompress:", retErr)
+			set.op.resetDiff()
+		}
+	}()
+
 	// findFile will only return true if it found an entry and it has digests,
 	// i.e. missing file, is symlink, inline, etc. will all return false.
 	if found := baseIter.findFile(reqEnt.Path); !found {
