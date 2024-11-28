@@ -182,10 +182,6 @@ func (s *Server) postInit(params *pb.DaemonParams, keys []signature.PublicKey) e
 }
 
 func (s *Server) openDb() (err error) {
-	if err := os.MkdirAll(s.cfg.CachePath, 0700); err != nil {
-		return err
-	}
-
 	opts := bbolt.Options{
 		NoFreelistSync: true,
 		FreelistType:   bbolt.FreelistMapType,
@@ -281,10 +277,51 @@ func (s *Server) openDb() (err error) {
 }
 
 func (s *Server) setupMounts() error {
-	// TODO: check if /nix/store is actually mounted ro and if we are in a private mount ns
-	_ = unix.MountSetattr(unix.AT_FDCWD, "/nix/store", 0, &unix.MountAttr{
-		Attr_clr: unix.MOUNT_ATTR_RDONLY,
-	})
+	// always ensure cache dir exists
+	if err := os.MkdirAll(s.cfg.CachePath, 0700); err != nil {
+		return err
+	}
+
+	// skip all this stuff if we aren't in a private mount ns, most things should still work
+	if private, err := havePrivateMountNs(); err != nil || !private {
+		return nil
+	}
+
+	// remount /nix/store writable so we can manifest in it.
+	// ignore failures (maybe it wasn't bind-mounted)
+	err := unix.MountSetattr(unix.AT_FDCWD, "/nix/store", 0, &unix.MountAttr{Attr_clr: unix.MOUNT_ATTR_RDONLY})
+	if err != nil {
+		log.Println("failed to remount /nix/store rw; manifest may not work:", err)
+	}
+
+	// we want to make mounts under /var/cache/styx not propagate.
+	// to do that, we need to put a mount there (can bind mount it to itself)
+	// and set the mount as private.
+	// to put a bind mount there and have the bind mount itself not propagate,
+	// we need to change the propagation of /, and then change it back.
+	// TODO: we can remove this stuff if we're not doing long-term mounts under
+	// /var/cache/styx anymore.
+	err = unix.MountSetattr(unix.AT_FDCWD, "/", 0, &unix.MountAttr{Propagation: unix.MS_PRIVATE})
+	if err != nil {
+		log.Println("failed to change propatation on root, skipping cache bind mount:", err)
+		return nil
+	}
+
+	// restore propagation on /
+	defer unix.MountSetattr(unix.AT_FDCWD, "/", 0, &unix.MountAttr{Propagation: unix.MS_SHARED})
+
+	err = unix.Mount(s.cfg.CachePath, s.cfg.CachePath, "none", unix.MS_BIND, "")
+	if err != nil {
+		log.Println("failed to bind mount cache dir:", err)
+		return nil
+	}
+
+	err = unix.MountSetattr(unix.AT_FDCWD, s.cfg.CachePath, 0, &unix.MountAttr{Propagation: unix.MS_PRIVATE})
+	if err != nil {
+		log.Println("failed to cache propatation on cache dir:", err)
+		return nil
+	}
+
 	return nil
 }
 

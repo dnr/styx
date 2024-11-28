@@ -114,3 +114,20 @@ func isErofsMount(p string) (bool, error) {
 	err := unix.Statfs(p, &st)
 	return st.Type == erofs.EROFS_MAGIC, err
 }
+
+func getMountNs(pid int) (string, error) {
+	path := fmt.Sprintf("/proc/%d/ns/mnt", pid)
+	return os.Readlink(path)
+}
+
+func havePrivateMountNs() (bool, error) {
+	myMountNs, err := getMountNs(os.Getpid())
+	if err != nil {
+		return false, err
+	}
+	parentMountNs, err := getMountNs(os.Getppid())
+	if err != nil {
+		return false, err
+	}
+	return myMountNs != parentMountNs, nil
+}
