@@ -4,6 +4,7 @@ let
   runstyxtest = pkgs.writeShellScriptBin "runstyxtest" ''
     cd ${styxtest}/bin
     if [[ $UID != 0 ]]; then sudo=sudo; fi
+    $sudo modprobe cachefiles
     exec $sudo ./styxtest -test.v "$@"
   '';
 in {
