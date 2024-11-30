@@ -940,7 +940,9 @@ func (set *opSet) buildExtendDiff(
 	reqIdx := 0
 	for reqIter.digest() != targetDigest {
 		if reqIter.next(1) == nil {
-			panic("req digest not found in manifest") // shouldn't happen
+			// this shouldn't happen
+			log.Printf("bug: req digest not found in manifest: %s in %s-%s", targetDigest, res.reqHash, res.reqName)
+			return
 		}
 		reqIdx++
 	}

@@ -3,8 +3,8 @@ package daemon
 import (
 	"testing"
 
-	"github.com/dnr/styx/common"
 	"github.com/dnr/styx/common/cdig"
+	"github.com/dnr/styx/common/shift"
 	"github.com/dnr/styx/pb"
 	"github.com/stretchr/testify/require"
 )
@@ -12,7 +12,7 @@ import (
 var d1 = "0123456789ytrewq6789poiu"
 var d2 = "hjkl30104mnop410019jjkka"
 var d3 = "zxcv95345asdfiijb632ooia"
-var testCShift common.BlkShift = 16 // TODO: test with different sizes
+var testCShift shift.Shift = 16 // TODO: test with different sizes
 var testEntries = []*pb.Entry{
 	&pb.Entry{
 		Path: "/",

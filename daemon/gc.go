@@ -289,7 +289,7 @@ func (s *Server) handleGcReq(ctx context.Context, r *GcReq) (*GcResp, error) {
 					int64(le.end-le.Addr)<<s.blockShift,
 				)
 				if err != nil {
-					log.Print("fallocate punch error (slab %d as fd %d, %d-%d): %s",
+					log.Printf("fallocate punch error (slab %d as fd %d, %d-%d): %s",
 						le.SlabId, cfd, le.Addr, le.end, err,
 					)
 				}

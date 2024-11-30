@@ -40,7 +40,7 @@ func (dig CDig) Check(b []byte) error {
 	return nil
 }
 
-// Note len(b) must be at least Bytes or this will panic.
+// Note len(b) should be at least Bytes.
 func FromBytes(b []byte) (dig CDig) {
 	copy(dig[:], b[:Bytes])
 	return

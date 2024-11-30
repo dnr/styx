@@ -1203,11 +1203,10 @@ func (s *Server) handleReadSlab(state *openFileState, ln, off uint64) (retErr er
 
 		// find next to check size. this will be too lenient if we gc'd the chunk right after this,
 		// but it's just a sanity check.
-		k, v = cur.Next()
 		var nextAddr uint32
-		if k == nil {
+		if nextK, _ := cur.Next(); nextK == nil {
 			nextAddr = common.TruncU32(sb.Sequence())
-		} else if nextAddr = addrFromKey(k); nextAddr&presentMask != 0 {
+		} else if nextAddr = addrFromKey(nextK); nextAddr&presentMask != 0 {
 			nextAddr = common.TruncU32(sb.Sequence())
 		}
 		if ln > uint64(nextAddr-addr)<<s.blockShift {
@@ -1276,7 +1275,7 @@ func (s *Server) mountSlabImage(slabId uint16) error {
 	s.readfdBySlab[common.TruncU16(slabId)] = slabFds{slabFd, cacheFd}
 	s.stateLock.Unlock()
 
-	log.Println(logMsg, fsid, "on", mountPoint)
+	log.Println(logMsg, fsid)
 	return nil
 }
 
