@@ -178,7 +178,13 @@ func (s *Server) materialize(dest string, m *pb.Manifest) error {
 			if i == 0 {
 				return errors.New("bare file can't be symlink")
 			}
-			if err = os.Symlink(string(ent.InlineData), p); err != nil {
+			err = unix.Symlink(string(ent.InlineData), p)
+			if err == unix.EEXIST {
+				// handle overlayfs store in interactive vm, shouldn't happen normally
+				_ = os.Remove(p)
+				err = unix.Symlink(string(ent.InlineData), p)
+			}
+			if err != nil {
 				return err
 			}
 			_ = unix.Lutimes(p, zeroTimeval)
