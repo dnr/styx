@@ -42,10 +42,14 @@ func (s *Server) handleDebugReq(ctx context.Context, r *DebugReq) (*DebugResp, e
 					return
 				}
 
-				m, _, err := s.getManifestLocal(tx, string(k))
+				m, mdigs, err := s.getManifestLocal(tx, string(k))
 				if err != nil {
 					log.Print("unmarshal getting manifest iterating images", err)
 					return
+				}
+				var mchunks []string
+				for _, mdig := range mdigs {
+					mchunks = append(mchunks, mdig.String())
 				}
 				var tchunks, tblocks, pchunks, pblocks int
 				for _, ent := range m.Entries {
@@ -53,24 +57,26 @@ func (s *Server) handleDebugReq(ctx context.Context, r *DebugReq) (*DebugResp, e
 					digests := cdig.FromSliceAlias(ent.Digests)
 					tchunks += len(digests)
 					cshift := ent.ChunkShiftDef()
-					for i := range digests {
+					for i, dig := range digests {
 						chunkSize := cshift.FileChunkSize(ent.Size, i == len(digests)-1)
 						blocks := s.blockShift.Blocks(chunkSize)
 						tblocks += int(blocks)
-						if _, present := s.digestPresent(tx, digests[i]); present {
+						if _, present := s.digestPresent(tx, dig); present {
 							ent.StatsPresentChunks++
 							ent.StatsPresentBlocks += int32(blocks)
 							pchunks += 1
 							pblocks += int(blocks)
 						}
+						ent.DebugDigests = append(ent.DebugDigests, dig.String())
 					}
 					ent.InlineData = nil
 					ent.Digests = nil
 				}
 
 				res.Images[img.StorePath] = DebugImage{
-					Image:    &img,
-					Manifest: m,
+					Image:          &img,
+					Manifest:       m,
+					ManifestChunks: mchunks,
 					Stats: DebugSizeStats{
 						TotalChunks:   tchunks,
 						TotalBlocks:   tblocks,

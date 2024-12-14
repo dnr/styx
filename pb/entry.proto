@@ -27,4 +27,5 @@ message Entry {
   int32 stats_inline_data = 100;
   int32 stats_present_chunks = 101;
   int32 stats_present_blocks = 102;
+  repeated string debug_digests = 103;
 }

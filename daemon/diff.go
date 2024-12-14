@@ -632,7 +632,7 @@ func (s *Server) getDigestsFromImage(tx *bbolt.Tx, sph Sph, isManifest bool) ([]
 		if err != nil {
 			return nil, err
 		}
-		cshift := shift.Shift(entry.ChunkShiftDef())
+		cshift := entry.ChunkShiftDef()
 		data, err = s.readChunks(nil, tx, entry.Size, cshift, locs, nil, nil, false)
 		if err != nil {
 			return nil, err

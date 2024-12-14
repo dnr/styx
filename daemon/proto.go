@@ -129,9 +129,10 @@ type (
 		Present    bool
 	}
 	DebugImage struct {
-		Image    *pb.DbImage
-		Manifest *pb.Manifest
-		Stats    DebugSizeStats
+		Image          *pb.DbImage
+		Manifest       *pb.Manifest
+		ManifestChunks []string
+		Stats          DebugSizeStats
 	}
 
 	Status struct {
