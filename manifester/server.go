@@ -66,10 +66,10 @@ func NewManifestServer(cfg Config, mb *ManifestBuilder) (*server, error) {
 
 func (s *server) validateManifestReq(r *ManifestReq, upstreamHost string) error {
 	if r.DigestAlgo != s.mb.params.DigestAlgo {
-		return fmt.Errorf("mismatched chunk shift (this server uses %s, not %s)",
+		return fmt.Errorf("mismatched digest algo (this server uses %s, not %s)",
 			s.mb.params.DigestAlgo, r.DigestAlgo)
 	} else if r.DigestBits != cdig.Bits {
-		return fmt.Errorf("mismatched chunk shift (this server uses %d, not %d)",
+		return fmt.Errorf("mismatched digest bits (this server uses %d, not %d)",
 			cdig.Bits, r.DigestBits)
 	}
 

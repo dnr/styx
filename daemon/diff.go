@@ -268,7 +268,9 @@ func (s *Server) readChunks(
 			break // we have them all
 		}
 		if !allowMissing {
-			return nil, errors.New("there were missing chunks")
+			// if this happens we probably have a race between fetching and using manifests
+			loc := locs[firstMissing]
+			return nil, fmt.Errorf("missing chunk %d:%d", loc.SlabId, loc.Addr)
 		}
 
 		// request first missing one. the differ will do some readahead.
@@ -699,9 +701,12 @@ func (s *Server) locPresent(tx *bbolt.Tx, loc erofs.SlabLoc) bool {
 	if _, ok := s.presentMap.Get(loc); ok {
 		return true
 	}
-	sb := tx.Bucket(slabBucket)
-	db := sb.Bucket(slabKey(loc.SlabId))
-	return db.Get(addrKey(loc.Addr|presentMask)) != nil
+	sb := tx.Bucket(slabBucket).Bucket(slabKey(loc.SlabId))
+	if sb == nil {
+		log.Println("missing slab bucket", loc.SlabId)
+		return false
+	}
+	return sb.Get(addrKey(loc.Addr|presentMask)) != nil
 }
 
 func (s *Server) digestLoc(tx *bbolt.Tx, digest cdig.CDig) erofs.SlabLoc {
@@ -924,14 +929,14 @@ func (set *opSet) buildExtendDiff(
 	if res.usingBase() {
 		baseEntries, err := set.s.getDigestsFromImage(tx, res.baseHash, isManifest)
 		if err != nil {
-			log.Println("failed to get digests for", res.baseHash, res.baseName)
+			log.Println("failed to get digests for", res.baseHash, res.baseName, err)
 			return
 		}
 		baseIter = newDigestIterator(baseEntries)
 	}
 	reqEntries, err := set.s.getDigestsFromImage(tx, res.reqHash, isManifest)
 	if err != nil {
-		log.Println("failed to get digests for", res.reqHash, res.reqName)
+		log.Println("failed to get digests for", res.reqHash, res.reqName, err)
 		return
 	}
 	reqIter := newDigestIterator(reqEntries)
@@ -949,7 +954,9 @@ func (set *opSet) buildExtendDiff(
 
 	reqEnt := reqIter.ent()
 	var readLog string
-	if firstOp {
+	if isManifest {
+		readLog = fmt.Sprintf("read manifest %s-%s", res.reqHash, strings.TrimPrefix(res.reqName, isManifestPrefix))
+	} else if firstOp {
 		readLog = fmt.Sprintf("read /nix/store/%s-%s%s", res.reqHash, res.reqName, reqEnt.Path)
 	} else { // later: don't bother logging this
 		readLog = fmt.Sprintf("  or /nix/store/%s-%s%s", res.reqHash, res.reqName, reqEnt.Path)

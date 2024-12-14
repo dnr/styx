@@ -257,7 +257,7 @@ tryAgain:
 			case nil:
 				// nothing
 			case syscall.EINVAL, syscall.EOPNOTSUPP, syscall.EXDEV, io.ErrShortWrite, errCachefdNotFound:
-				log.Println("error from CopyFileRange, falling back to plain copy:", err)
+				log.Printf("CopyFileRange: %s, using plain copy", err)
 				*tryClone = false
 				dst.Close()
 				goto tryAgain

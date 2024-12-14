@@ -298,7 +298,7 @@ func (s *Server) vaporizeFile(
 			case nil:
 				continue
 			case syscall.EINVAL, syscall.EOPNOTSUPP, syscall.EXDEV, io.ErrShortWrite:
-				log.Println("error from CopyFileRange, falling back to plain copy:", err)
+				log.Printf("CopyFileRange: %s, using plain copy", err)
 				*tryClone = false
 				// fall back to plain copy
 			default:

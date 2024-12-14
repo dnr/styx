@@ -1426,7 +1426,7 @@ func (s *Server) lookupLocs(tx *bbolt.Tx, digests []cdig.CDig) ([]erofs.SlabLoc,
 	for i := range out {
 		loc := cb.Get(digests[i][:])
 		if loc == nil {
-			return nil, errors.New("missing chunk")
+			return nil, fmt.Errorf("missing chunk %s in lookupLocs", digests[i])
 		}
 		out[i] = loadLoc(loc)
 	}
