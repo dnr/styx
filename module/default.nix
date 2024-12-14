@@ -20,8 +20,9 @@ in with lib; {
 
   config = mkMerge [
     (mkIf (cfg.enable || cfg.enablePatchedNix) {
-      nix.package = pkgs.nixVersions.nix_2_18.overrideAttrs (prev: {
-        patches = prev.patches ++ [ ./patches/nix_2_18.patch ];
+      # TODO: switch to nixVersions.stable
+      nix.package = pkgs.nixVersions.nix_2_24.overrideAttrs (prev: {
+        patches = prev.patches ++ [ ./patches/nix_2_24.patch ];
         doInstallCheck = false; # broke tests/ca, ignore for now
       });
     })
@@ -31,7 +32,8 @@ in with lib; {
         # Add "?styx=1" to default substituter.
         # TODO: can we do this in overlay style to filter the previous value?
         substituters = mkForce [ "https://cache.nixos.org/?styx=1" ];
-        styx-include = [ ];
+        styx-ondemand = [ ];
+        styx-materialize = [ ];
       };
     })
 

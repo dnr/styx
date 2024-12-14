@@ -545,7 +545,7 @@ with `nix-shell -p ...` and see what happens.
    # This sets a list of package name regexes to use Styx on-demand.
    # This shouldn't include anything you need to boot a system and connect to
    # the network.
-   nix.settings.styx-include = [ "list" "of" "package" "name" "regexp-.*" ];
+   nix.settings.styx-ondemand = [ "list" "of" "package" "name" "regexp-.*" ];
    # This sets a list of package name regexes to use Styx materialize.
    # It's safe to include everything here, if Styx fails, Nix will fall back
    # to normal substitution.

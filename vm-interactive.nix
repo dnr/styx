@@ -14,7 +14,7 @@
   services.styx.enable = true;
 
   # let styx handle everything
-  nix.settings.styx-include = [ ".*" ];
+  nix.settings.styx-ondemand = [ ".*" ];
 
   # use shared nixpkgs
   nix.nixPath = [ "nixpkgs=/tmp/nixpkgs" ];
