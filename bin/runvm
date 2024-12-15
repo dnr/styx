@@ -33,6 +33,9 @@ for arg; do
 done
 [[ $keep ]] || rm -f $NIX_DISK_IMAGE
 
+# some nix invocations are pretty ram-hungry
+export QEMU_OPTS="-m 4G ${QEMU_OPTS:-}"
+
 # This is kind of gross: if you're actually using styx, then your "/nix/store"
 # is not a single filesystem anymore, there's stuff mounded inside it. The nixos
 # qemu module shares /nix/store by default, but qemu gets really confused with
