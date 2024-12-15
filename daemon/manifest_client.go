@@ -59,23 +59,17 @@ func (s *Server) getManifestAndBuildImage(ctx context.Context, req *MountReq) (*
 		return nil, nil, fmt.Errorf("envelope storepath != requested storepath: %q != %q", storePath, req.StorePath)
 	}
 
-	// record signed manifest message in db and add names to catalog
+	// record signed manifest message in db and put manifest (but not image) in the catalog
+	// so we can diff manifests
 	if err = s.db.Update(func(tx *bbolt.Tx) error {
 		mb := tx.Bucket(manifestBucket)
 		if err := mb.Put([]byte(sphStr), envelopeBytes); err != nil {
 			return err
 		}
 
-		cfb := tx.Bucket(catalogFBucket)
-		crb := tx.Bucket(catalogRBucket)
-		key := bytes.Join([][]byte{[]byte(spName), []byte{0}, sph[:]}, nil)
-		val := []byte{} // TODO: put sysid in here
-		if err := cfb.Put(key, val); err != nil {
-			return err
-		} else if err = crb.Put(sph[:], []byte(spName)); err != nil {
-			return err
-		}
 		if len(entry.InlineData) == 0 {
+			cfb := tx.Bucket(catalogFBucket)
+			crb := tx.Bucket(catalogRBucket)
 			mkey := bytes.Join([][]byte{[]byte(isManifestPrefix), []byte(spName), []byte{0}, manifestSph[:]}, nil)
 			if err := cfb.Put(mkey, nil); err != nil {
 				return err
@@ -130,6 +124,22 @@ func (s *Server) getManifestAndBuildImage(ctx context.Context, req *MountReq) (*
 	err = s.builder.BuildFromManifestWithSlab(ctxForChunks, &m, &image, s)
 	if err != nil {
 		return nil, nil, fmt.Errorf("build image error: %w", err)
+	}
+
+	// now record image manifest in catalog
+	if err = s.db.Update(func(tx *bbolt.Tx) error {
+		cfb := tx.Bucket(catalogFBucket)
+		crb := tx.Bucket(catalogRBucket)
+		key := bytes.Join([][]byte{[]byte(spName), []byte{0}, sph[:]}, nil)
+		val := []byte{} // TODO: put sysid in here
+		if err := cfb.Put(key, val); err != nil {
+			return err
+		} else if err = crb.Put(sph[:], []byte(spName)); err != nil {
+			return err
+		}
+		return nil
+	}); err != nil {
+		return nil, nil, err
 	}
 
 	log.Printf("new image %s: %d envelope, %d manifest, %d erofs", storePath, len(envelopeBytes), entry.Size, image.Len())
