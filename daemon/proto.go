@@ -96,8 +96,9 @@ type (
 		IncludeAllImages bool     `json:",omitempty"`
 		IncludeImages    []string `json:",omitempty"` // list of base32 sph
 
-		IncludeSlabs  bool `json:",omitempty"`
-		IncludeChunks bool `json:",omitempty"`
+		IncludeSlabs     bool     `json:",omitempty"`
+		IncludeAllChunks bool     `json:",omitempty"`
+		IncludeChunks    []string `json:",omitempty"` // list of base64 digests
 
 		IncludeChunkSharing bool `json:",omitempty"`
 	}

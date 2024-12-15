@@ -30,10 +30,10 @@ func verifyParams(p *pb.GlobalParams) error {
 	return nil
 }
 
-func splitSphs(sphs []byte) []SphPrefix {
-	out := make([]SphPrefix, len(sphs)/sphPrefixBytes)
+func splitSphps(b []byte) []SphPrefix {
+	out := make([]SphPrefix, len(b)/sphPrefixBytes)
 	for i := range out {
-		out[i] = SphPrefixFromBytes(sphs[i*sphPrefixBytes : (i+1)*sphPrefixBytes])
+		out[i] = SphPrefixFromBytes(b[i*sphPrefixBytes : (i+1)*sphPrefixBytes])
 	}
 	return out
 }

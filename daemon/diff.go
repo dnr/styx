@@ -208,7 +208,7 @@ func (s *Server) buildAndStartPrefetch(ctx context.Context, reqs []cdig.CDig) ([
 			continue
 		}
 		// build new requests
-		sphps := splitSphs(loc[6:])
+		sphps := splitSphps(loc[6:])
 		if len(sphps) == 0 {
 			return nil, errors.New("missing sph references")
 		}

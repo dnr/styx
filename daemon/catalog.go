@@ -3,6 +3,7 @@ package daemon
 import (
 	"bytes"
 	"errors"
+	"log"
 	"net/http"
 	"strings"
 
@@ -81,6 +82,15 @@ func (s *Server) catalogFindName(tx *bbolt.Tx, reqHashPrefix SphPrefix) (Sph, st
 	// It may be the "wrong" one due to a collision since we use only half the bytes.
 	// That means less than ideal diffing but it won't break anything.
 	k, v := cur.Seek(reqHashPrefix[:])
+	if len(k) < sphPrefixBytes {
+		return Sph{}, ""
+	} else if !bytes.Equal(k[:sphPrefixBytes], reqHashPrefix[:]) {
+		var zerop SphPrefix
+		log.Printf("mismatched sphp, wanted %s, got %s",
+			nixbase32.EncodeToString(bytes.Join([][]byte{reqHashPrefix[:], zerop[:]}, nil)),
+			nixbase32.EncodeToString(k))
+		return Sph{}, ""
+	}
 	return SphFromBytes(k), string(v)
 }
 

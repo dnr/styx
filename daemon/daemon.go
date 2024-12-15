@@ -1218,7 +1218,7 @@ func (s *Server) handleReadSlab(state *openFileState, ln, off uint64) (retErr er
 		if loc == nil {
 			return errors.New("missing digest->loc reference")
 		}
-		sphps = splitSphs(loc[6:])
+		sphps = splitSphps(loc[6:])
 		return nil
 	})
 	if err != nil {

@@ -137,23 +137,43 @@ func (s *Server) handleDebugReq(ctx context.Context, r *DebugReq) (*DebugResp, e
 		}
 
 		// chunks
-		if r.IncludeChunks {
+		if r.IncludeAllChunks || len(r.IncludeChunks) > 0 {
 			slabroot := tx.Bucket(slabBucket)
+			cb := tx.Bucket(chunkBucket)
 			res.Chunks = make(map[string]*DebugChunkInfo)
-			cur := tx.Bucket(chunkBucket).Cursor()
-			for k, v := cur.First(); k != nil; k, v = cur.Next() {
+
+			doChunk := func(k, v []byte) {
 				if len(k) < cdig.Bytes {
-					continue
+					log.Println("too short chunk key in bucket", k)
+					return
 				}
 				var ci DebugChunkInfo
 				loc := loadLoc(v)
 				ci.Slab, ci.Addr = loc.SlabId, loc.Addr
-				for _, sphp := range splitSphs(v[6:]) {
+				for _, sphp := range splitSphps(v[6:]) {
 					sph, name := s.catalogFindName(tx, sphp)
 					ci.StorePaths = append(ci.StorePaths, sph.String()+"-"+name)
 				}
 				ci.Present = slabroot.Bucket(slabKey(ci.Slab)).Get(addrKey(ci.Addr|presentMask)) != nil
 				res.Chunks[cdig.FromBytes(k).String()] = &ci
+			}
+
+			if r.IncludeAllChunks {
+				cur := cb.Cursor()
+				for k, v := cur.First(); k != nil; k, v = cur.Next() {
+					doChunk(k, v)
+				}
+			} else {
+				for _, cstr := range r.IncludeChunks {
+					dig, err := cdig.FromBase64(cstr)
+					if err != nil {
+						log.Println("debug chunk parse error", cstr, err)
+					} else if v := cb.Get(dig[:]); v == nil {
+						log.Println("debug chunk missing", cstr)
+					} else {
+						doChunk(dig[:], v)
+					}
+				}
 			}
 		}
 
