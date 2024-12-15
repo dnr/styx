@@ -67,7 +67,8 @@ func retryHttpRequest(ctx context.Context, method, url, cType string, body []byt
 			req.Header.Set("Content-Type", cType)
 			res, err := http.DefaultClient.Do(req)
 			if err == nil && res.StatusCode != http.StatusOK {
-				err = common.HttpError(res.StatusCode)
+				body, _ := io.ReadAll(io.LimitReader(res.Body, 1024))
+				err = common.NewHttpError(res.StatusCode, string(body))
 				res.Body.Close()
 			}
 			return common.ValOrErr(res, err)
@@ -78,7 +79,7 @@ func retryHttpRequest(ctx context.Context, method, url, cType string, body []byt
 		retry.RetryIf(func(err error) bool {
 			// retry on err or some 50x codes
 			if status, ok := err.(common.HttpError); ok {
-				switch status {
+				switch status.Code() {
 				case http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
 					return true
 				default:

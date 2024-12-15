@@ -105,18 +105,7 @@ func (s *server) handleManifest(w http.ResponseWriter, req *http.Request) {
 
 	if err != nil {
 		log.Println("build error:", err)
-		w.Header().Set("Content-Type", "text/plain")
-		switch {
-		case errors.Is(err, ErrReq):
-			w.WriteHeader(http.StatusExpectationFailed)
-		case errors.Is(err, ErrNotFound):
-			w.WriteHeader(http.StatusNotFound)
-		case errors.Is(err, ErrInternal):
-			w.WriteHeader(http.StatusInternalServerError)
-		default:
-			w.WriteHeader(http.StatusInternalServerError)
-		}
-		w.Write([]byte(err.Error()))
+		writeError(w, err)
 		return
 	}
 
@@ -158,14 +147,14 @@ func (s *server) handleChunkDiff(w http.ResponseWriter, req *http.Request) {
 	}()
 	// wait for both
 	wg.Wait()
-	if baseErr != nil {
-		log.Println("chunk read (base) error:", baseErr)
-	}
-	if reqErr != nil {
-		log.Println("chunk read (req) error:", reqErr)
-	}
 	if baseErr != nil || reqErr != nil {
-		w.WriteHeader(http.StatusInternalServerError)
+		if baseErr != nil {
+			log.Println("chunk read (base) error:", baseErr)
+		}
+		if reqErr != nil {
+			log.Println("chunk read (req) error:", reqErr)
+		}
+		writeError(w, errors.Join(baseErr, reqErr))
 		return
 	}
 	dlDone := time.Now()
@@ -347,4 +336,19 @@ func (s *server) Run() error {
 
 func (s *server) Stop() {
 	_ = s.httpServer.Close()
+}
+
+func writeError(w http.ResponseWriter, err error) {
+	w.Header().Set("Content-Type", "text/plain")
+	switch {
+	case errors.Is(err, ErrReq):
+		w.WriteHeader(http.StatusExpectationFailed)
+	case errors.Is(err, ErrNotFound), IsS3NotFound(err):
+		w.WriteHeader(http.StatusNotFound)
+	case errors.Is(err, ErrInternal):
+		w.WriteHeader(http.StatusInternalServerError)
+	default:
+		w.WriteHeader(http.StatusInternalServerError)
+	}
+	w.Write([]byte(err.Error()))
 }
