@@ -1,4 +1,11 @@
-{ pkgs ? import <nixpkgs> { config = {}; overlays = []; } }:
+let
+  nix-gocacheprog = fetchTarball {
+    url = "https://github.com/dnr/nix-gocacheprog/archive/08a919f49958.tar.gz";
+    sha256 = "1rfc3y3w1p0qcgyvsfl4mnxr17xraawzw2vh1sn7xz4wv5y5b9pp";
+  };
+  ngcp-overlay = import "${nix-gocacheprog}/overlay.nix";
+in
+{ pkgs ? import <nixpkgs> { config = {}; overlays = [ ngcp-overlay ]; } }:
 rec {
   base = {
     pname = "styx";
