@@ -107,6 +107,7 @@ func newS3ChunkStoreWrite(bucket string, zlevel int) (*s3ChunkStoreWrite, error)
 	}
 	s3client := s3.NewFromConfig(awscfg, func(o *s3.Options) {
 		o.EndpointOptions.DisableHTTPS = true
+		o.RetryMaxAttempts = 15
 	})
 	return &s3ChunkStoreWrite{
 		bucket:   bucket,
