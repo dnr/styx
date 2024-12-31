@@ -83,11 +83,6 @@ type (
 		startTime time.Time // non-zero when we scale up asg
 	}
 
-	pathInfoJson struct {
-		Path       string   `json:"path"`
-		NarSize    int64    `json:"narSize"`
-		Signatures []string `json:"signatures"`
-	}
 	manifestReq struct {
 		upstream  string
 		storePath string
@@ -583,7 +578,10 @@ func (a *heavyActivities) HeavyBuild(ctx context.Context, req *buildReq) (retBui
 		l.Error("get closure error", "error", err)
 		return nil, err
 	}
-	var pathInfo []pathInfoJson
+	var pathInfo map[string]struct {
+		NarSize    int64    `json:"narSize"`
+		Signatures []string `json:"signatures"`
+	}
 	if err := json.Unmarshal(j, &pathInfo); err != nil {
 		l.Error("get closure json unmarshal error", "error", err)
 		return nil, err
@@ -594,32 +592,32 @@ func (a *heavyActivities) HeavyBuild(ctx context.Context, req *buildReq) (retBui
 	names := make([]string, 0, len(pathInfo))
 	sphForRoot := make([]string, 0, len(pathInfo))
 
-	for _, pi := range pathInfo {
+	for piPath, pi := range pathInfo {
 		// add all to root record in case some of these filtered ones end up getting copied
-		sphForRoot = append(sphForRoot, pi.Path[11:43])
+		sphForRoot = append(sphForRoot, piPath[11:43])
 
 		// filter out tiny build-specific stuff
-		if strings.Contains(pi.Path, "-nixos-system-") ||
-			strings.Contains(pi.Path, "-security-wrapper-") ||
-			strings.Contains(pi.Path, "-unit-") ||
-			strings.Contains(pi.Path, "-etc-") {
+		if strings.Contains(piPath, "-nixos-system-") ||
+			strings.Contains(piPath, "-security-wrapper-") ||
+			strings.Contains(piPath, "-unit-") ||
+			strings.Contains(piPath, "-etc-") {
 			continue
 		}
 
-		names = append(names, pi.Path[44:])
-		public := pi.fromPublicCache()
+		names = append(names, piPath[44:])
+		public := fromPublicCache(pi.Signatures)
 		upstream := req.Args.PublicCacheUpstream
 		// only sign if not from public cache
 		if !public {
-			toSign.WriteString(pi.Path + "\n")
+			toSign.WriteString(piPath + "\n")
 			upstream = req.Args.ManifestUpstream
 		}
 		// copy is going to take closures anyway so just pass all to copy
-		toCopy.WriteString(pi.Path + "\n")
+		toCopy.WriteString(piPath + "\n")
 		// manifest everything
 		toManifest = append(toManifest, manifestReq{
 			upstream:  upstream,
-			storePath: pi.Path,
+			storePath: piPath,
 		})
 	}
 
@@ -832,8 +830,8 @@ var getS3Cli = sync.OnceValues(func() (*s3.Client, error) {
 	return s3.NewFromConfig(awscfg), nil
 })
 
-func (pi *pathInfoJson) fromPublicCache() bool {
-	for _, s := range pi.Signatures {
+func fromPublicCache(sigs []string) bool {
+	for _, s := range sigs {
 		if strings.HasPrefix(s, "cache.nixos.org-1:") {
 			return true
 		}
