@@ -45,7 +45,7 @@ func withStartConfig(c *cobra.Command) runE {
 	c.Flags().StringVar(&cfg.TemporalParams, "temporal_params", "keys/temporal-creds-charon.secret", "source for temporal params")
 
 	// might use these:
-	c.Flags().StringVar(&cfg.Args.Channel, "nix_channel", "nixos-24.05", "nix channel to watch/build")
+	c.Flags().StringVar(&cfg.Args.Channel, "nix_channel", "nixos-24.11", "nix channel to watch/build")
 	c.Flags().StringVar(&cfg.Args.StyxRepo.Branch, "styx_branch", "release", "branch of styx repo to watch/build")
 
 	// probably don't use these:

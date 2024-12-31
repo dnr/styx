@@ -70,7 +70,7 @@
     gnupg
     go
     gocryptfs
-    (google-chrome.override { speechd = snappy; })  # hack to avoid bringing in speech deps. non-redistributable?
+    (google-chrome.override { speechd-minimal = snappy; })  # hack to avoid bringing in speech deps. non-redistributable?
     guvcview
     hdparm
     hugin
@@ -82,10 +82,10 @@
     lsof
     ltrace
     luminanceHDR
-    lzma
     magic-wormhole
     moreutils
     mplayer
+    mpv
     nix-direnv
     nixos-option
     nixpkgs-fmt
@@ -108,8 +108,10 @@
     rsync
     screen
     scrot
+    signal-desktop
     smem
     socat
+    spacer
     spotify # non-redistributable?
     sqlite
     starship
@@ -133,6 +135,8 @@
     xsel
     xsettingsd
     xxd
+    xz
+    yt-dlp
     zip
     zoom-us # non-redistributable?
     zoxide
@@ -148,7 +152,7 @@
 
   fonts.packages = [
     pkgs.noto-fonts
-    pkgs.noto-fonts-cjk
+    pkgs.noto-fonts-cjk-sans
     pkgs.noto-fonts-emoji
     pkgs.ubuntu_font_family
     (pkgs.nerdfonts.override { fonts = [ "UbuntuMono" ]; })
@@ -156,5 +160,5 @@
 
   documentation.nixos.enable = false;
 
-  system.stateVersion = "24.05";
+  system.stateVersion = "24.11";
 }
