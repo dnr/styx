@@ -1,4 +1,4 @@
-commit 17d5e31e8703ee63b4c26a9f92ea1d1537074c0c
+commit 16a7145048289e5a6deb817b73b86a53450d8ec8
 Author: David Reiss <dnr@dnr.im>
 Date:   Sat Dec 14 15:36:35 2024 +0000
 
@@ -142,18 +142,18 @@ index a26eea820..9f571360d 100644
      maintainRunningSubstitutions.reset();
  
 diff --git a/src/libstore/gc.cc b/src/libstore/gc.cc
-index 1494712da..b6972c3d0 100644
+index 5ab21bf85..b30bc788d 100644
 --- a/src/libstore/gc.cc
 +++ b/src/libstore/gc.cc
-@@ -4,6 +4,7 @@
- #include "finally.hh"
+@@ -5,6 +5,7 @@
  #include "unix-domain-socket.hh"
  #include "signals.hh"
+ #include "posix-fs-canonicalise.hh"
 +#include "styx.hh"
  
  #if !defined(__linux__)
  // For shelling out to lsof
-@@ -647,6 +648,9 @@ void LocalStore::collectGarbage(const GCOptions & options, GCResults & results)
+@@ -648,6 +649,9 @@ void LocalStore::collectGarbage(const GCOptions & options, GCResults & results)
  
          printInfo("deleting '%1%'", path);
  

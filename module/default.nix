@@ -20,11 +20,7 @@ in with lib; {
 
   config = mkMerge [
     (mkIf (cfg.enable || cfg.enablePatchedNix) {
-      # TODO: switch to nixVersions.stable
-      nix.package = pkgs.nixVersions.nix_2_24.overrideAttrs (prev: {
-        patches = prev.patches ++ [ ./patches/nix_2_24.patch ];
-        doInstallCheck = false; # broke tests/ca, ignore for now
-      });
+      nix.package = styx.patchedNix;
     })
 
     (mkIf (cfg.enable || cfg.enableNixSettings) {
