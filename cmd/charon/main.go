@@ -3,12 +3,30 @@ package main
 import (
 	"fmt"
 	"log"
+	"log/slog"
 	"time"
 
+	axiom_slog_adapter "github.com/axiomhq/axiom-go/adapters/slog"
 	"github.com/spf13/cobra"
 
 	"github.com/dnr/styx/ci"
 )
+
+func withAxiomLogs(c *cobra.Command) runE {
+	useAxiom := c.Flags().Bool("log_axiom", false, "")
+
+	return func(c *cobra.Command, args []string) error {
+		if *useAxiom {
+			h, err := axiom_slog_adapter.New()
+			if err != nil {
+				return err
+			}
+			c.PostRunE = chainRunE(c.PostRunE, func(*cobra.Command, []string) error { h.Close(); return nil })
+			slog.SetDefault(slog.New(h))
+		}
+		return nil
+	}
+}
 
 func withWorkerConfig(c *cobra.Command) runE {
 	var cfg ci.WorkerConfig
@@ -85,6 +103,7 @@ func main() {
 		},
 		cmd(
 			&cobra.Command{Use: "worker", Short: "act as temporal worker"},
+			withAxiomLogs,
 			withWorkerConfig,
 			func(c *cobra.Command, args []string) error {
 				return ci.RunWorker(c.Context(), get[ci.WorkerConfig](c))

@@ -141,6 +141,14 @@ resource "aws_lambda_function" "manifester" {
       # "--nix_pubkey=${trimspace(file("../keys/styx-nixcache-test-1.public"))}",
     ]
   }
+
+  # logging and metrics with axiom
+  environment {
+    variables = {
+      AXIOM_TOKEN   = trimspace(file("../keys/axiom-styx-lambda.secret"))
+      AXIOM_DATASET = "styx"
+    }
+  }
 }
 
 resource "aws_lambda_function_url" "manifester" {

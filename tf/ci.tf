@@ -123,7 +123,7 @@ data "aws_ami" "nixos_x86_64" {
   most_recent = true
   filter {
     name   = "name"
-    values = ["nixos/24.05*"]
+    values = ["nixos/24.11*"]
   }
   filter {
     name   = "architecture"
@@ -132,7 +132,6 @@ data "aws_ami" "nixos_x86_64" {
 }
 
 variable "charon_storepath" {}
-variable "charon_logdest" {}
 
 resource "aws_launch_template" "charon_worker" {
   name_prefix          = "charon-worker"
@@ -143,15 +142,16 @@ resource "aws_launch_template" "charon_worker" {
   }
   key_name = aws_key_pair.my_ssh_key.id
   user_data = base64encode(templatefile("charon-worker-ud.nix", {
-    sub      = "https://${aws_s3_bucket.styx.id}.s3.amazonaws.com/nixcache/"
-    pubkey   = trimspace(file("../keys/styx-nixcache-test-1.public"))
-    charon   = var.charon_storepath
-    tmpssm   = aws_ssm_parameter.charon_temporal_params.name
-    cachessm = aws_ssm_parameter.charon_signkey.id
-    bucket   = aws_s3_bucket.styx.id
-    styxssm  = aws_ssm_parameter.manifester_signkey.name
-    nixoskey = "cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY="
-    logdest  = var.charon_logdest
+    sub           = "https://${aws_s3_bucket.styx.id}.s3.amazonaws.com/nixcache/"
+    pubkey        = trimspace(file("../keys/styx-nixcache-test-1.public"))
+    charon        = var.charon_storepath
+    tmpssm        = aws_ssm_parameter.charon_temporal_params.name
+    cachessm      = aws_ssm_parameter.charon_signkey.id
+    bucket        = aws_s3_bucket.styx.id
+    styxssm       = aws_ssm_parameter.manifester_signkey.name
+    nixoskey      = "cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY="
+    axiom_dataset = "styx"
+    axiom_token   = trimspace(file("../keys/axiom-styx-charon-heavy.secret"))
   }))
   block_device_mappings {
     device_name = "/dev/xvda"
