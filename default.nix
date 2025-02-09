@@ -1,11 +1,12 @@
 let
-  nix-gocacheprog = fetchTarball {
-    url = "https://github.com/dnr/nix-gocacheprog/archive/08a919f49958.tar.gz";
-    sha256 = "1rfc3y3w1p0qcgyvsfl4mnxr17xraawzw2vh1sn7xz4wv5y5b9pp";
-  };
-  ngcp-overlay = import "${nix-gocacheprog}/overlay.nix";
+  overlays = if builtins.getEnv "USE_NIX_GOCACHEPROG" == "" then [] else [
+    ( import "${fetchTarball {
+        url = "https://github.com/dnr/nix-gocacheprog/archive/aa71e7bb111b.tar.gz";
+        sha256 = "004sf8z1rl701rg1wr0izz6kg68bp7ck9xs419k5yabsqv8agrvx";
+      }}/overlay.nix" )
+  ];
 in
-{ pkgs ? import <nixpkgs> { config = {}; overlays = [ ngcp-overlay ]; } }:
+{ pkgs ? import <nixpkgs> { config = {}; overlays = overlays; } }:
 rec {
   base = {
     pname = "styx";
