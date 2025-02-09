@@ -39,8 +39,6 @@ nix copy -v --to "$store" "$charon"
 
 export TF_VAR_charon_storepath="$charon"
 
-export TF_VAR_charon_logdest=$(jq -r <<<$CHARON_SYSLOG_DEST | sed 's|^.*://||;s|:| |')
-
 terraform -chdir=tf apply
 
 # light worker:

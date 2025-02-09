@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"errors"
+	"log/slog"
 	"maps"
 	"slices"
 	"strings"
@@ -11,6 +12,7 @@ import (
 	commonpb "go.temporal.io/api/common/v1"
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/converter"
+	"go.temporal.io/sdk/log"
 	"go.temporal.io/sdk/temporal"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/metadata"
@@ -37,6 +39,7 @@ func getTemporalClient(ctx context.Context, paramSrc string) (client.Client, str
 		Namespace:        namespace,
 		DataConverter:    dc,
 		FailureConverter: fc,
+		Logger:           log.NewStructuredLogger(slog.Default()),
 	}
 	if apiKey != "" {
 		co.Credentials = client.NewAPIKeyStaticCredentials(apiKey)

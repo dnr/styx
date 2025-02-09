@@ -19,17 +19,20 @@
     };
   };
 
-  systemd.services.remotelog = {
-    description = "log to remote syslog";
-    after = [ "systemd-journald.service" ];
-    requires = [ "systemd-journald.service" ];
-    wantedBy = [ "multi-user.target" ];
-    serviceConfig = {
-      # this is kind of gross, but it was the suggested approach
-      ExecStart = ''/bin/sh -c "journalctl -f | $${pkgs.nmap}/bin/ncat --ssl ${logdest}"'';
-      TimeoutStartSec = "0";
-      Restart = "on-failure";
-      RestartSec = "5s";
+  services.vector = {
+    enable = true;
+    journaldAccess = true;
+    settings = {
+      sources.journald = {
+        type = "journald";
+        exclude_matches.SYSLOG_IDENTIFIER = [ "kernel" ];
+      };
+      sinks.axiom = {
+        type = "axiom";
+        inputs = [ "journald" ];
+        dataset = "${axiom_dataset}";
+        token = "${axiom_token}";
+      };
     };
   };
 

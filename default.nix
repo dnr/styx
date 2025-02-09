@@ -11,7 +11,7 @@ rec {
   base = {
     pname = "styx";
     version = "0.0.11";
-    vendorHash = "sha256-Enhe29MNy+Nqim7OelHl5gv+vcrHSx51FzGgs/6Hy4A=";
+    vendorHash = "sha256-WJtuxe8A6VCxUVgvEoLp1XQhpSOk1W99/w56mtodLRA=";
     src = pkgs.lib.sourceByRegex ./. [
       "^go\\.(mod|sum)$"
       "^(ci|cmd|common|daemon|erofs|manifester|pb|keys|tests)($|/.*)"
@@ -131,6 +131,7 @@ rec {
     # architecture = "arm64";
     contents = [
       pkgs.cacert
+      axiom-lambda-extension
     ];
     config = {
       User = "1000:1000";
@@ -148,6 +149,25 @@ rec {
       User = "1000:1000";
       Entrypoint = [ "${charon-light}/bin/charon" ];
     };
+  };
+
+  # axiom lambda extension
+  # TODO: maybe we can build this into our binary to reduce the total size?
+  axiom-lambda-extension = let version = "v11"; in pkgs.buildGoModule {
+    pname = "axiom-lambda-extension";
+    inherit version;
+    vendorHash = "sha256-f+Z5ETHFNuM+QimZFySmFtSVG0Qaw5HAI9032rNyXqc=";
+    src = pkgs.fetchFromGitHub {
+      owner = "axiomhq";
+      repo = "axiom-lambda-extension";
+      rev = version;
+      hash = "sha256-lax5MvyF0u6susJNjddIFQuciYEhQxuYmdYelcdupb0=";
+    };
+    postInstall = ''
+      cd $out
+      mkdir opt
+      mv bin opt/extensions
+    '';
   };
 
   # helper to initialize styx with "test-1" params

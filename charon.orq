@@ -9,17 +9,16 @@
     "argv": [
       "worker",
       "--worker",
+      "--log_axiom",
       "--temporal_params=/secrets/temporal-creds-charon.secret",
       "--smtp_params=/secrets/smtp-creds-charon.secret",
       "--scale_group_name=charon-asg"
     ],
     "env": {
       "AWS_SHARED_CREDENTIALS_FILE": "/secrets/charon-asg-scaler-creds.secret",
-      "AWS_REGION": "us-east-1"
-    },
-    "syslog": {
-      "syslog-address": ^^^CHARON_SYSLOG_DEST,
-      "tag": "{{.Name}}"
+      "AWS_REGION": "us-east-1",
+      "AXIOM_DATASET": "styx",
+      "AXIOM_TOKEN": ^^^CHARON_AXIOM_TOKEN
     },
     "host": "dd5"
   }
