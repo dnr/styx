@@ -803,8 +803,8 @@ func (s *Server) Start() error {
 		// don't exit here, we can operate, just without diffing
 	}
 	log.Println("cachefiles server ready, using", s.cfg.CachePath)
-	s.cfg.FdStore.Ready()
 	s.restoreMounts()
+	s.cfg.FdStore.Ready()
 	return nil
 }
 
