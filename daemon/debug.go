@@ -150,7 +150,7 @@ func (s *Server) handleDebugReq(ctx context.Context, r *DebugReq) (*DebugResp, e
 				var ci DebugChunkInfo
 				loc := loadLoc(v)
 				ci.Slab, ci.Addr = loc.SlabId, loc.Addr
-				for _, sphp := range splitSphps(v[6:]) {
+				for _, sphp := range sphpsFromLoc(v) {
 					sph, name := s.catalogFindName(tx, sphp)
 					ci.StorePaths = append(ci.StorePaths, sph.String()+"-"+name)
 				}

@@ -30,7 +30,8 @@ func verifyParams(p *pb.GlobalParams) error {
 	return nil
 }
 
-func splitSphps(b []byte) []SphPrefix {
+func sphpsFromLoc(b []byte) []SphPrefix {
+	b = b[6:]
 	out := make([]SphPrefix, len(b)/sphPrefixBytes)
 	for i := range out {
 		out[i] = SphPrefixFromBytes(b[i*sphPrefixBytes : (i+1)*sphPrefixBytes])
@@ -67,8 +68,7 @@ func retryHttpRequest(ctx context.Context, method, url, cType string, body []byt
 			req.Header.Set("Content-Type", cType)
 			res, err := http.DefaultClient.Do(req)
 			if err == nil && res.StatusCode != http.StatusOK {
-				body, _ := io.ReadAll(io.LimitReader(res.Body, 1024))
-				err = common.NewHttpError(res.StatusCode, string(body))
+				err = common.HttpErrorFromRes(res)
 				res.Body.Close()
 			}
 			return common.ValOrErr(res, err)

@@ -591,6 +591,7 @@ func (s *Server) handleMountReq(ctx context.Context, r *MountReq) (*Status, erro
 		img.MountState = pb.MountState_Requested
 		img.MountPoint = r.MountPoint
 		img.LastMountError = ""
+		img.NarSize = r.NarSize
 		haveImageSize = img.ImageSize
 		haveIsBare = img.IsBare
 		return nil
@@ -1218,7 +1219,7 @@ func (s *Server) handleReadSlab(state *openFileState, ln, off uint64) (retErr er
 		if loc == nil {
 			return errors.New("missing digest->loc reference")
 		}
-		sphps = splitSphps(loc[6:])
+		sphps = sphpsFromLoc(loc)
 		return nil
 	})
 	if err != nil {

@@ -46,6 +46,9 @@ message DbImage {
   int64 image_size = 1;
   bool is_bare = 10;
 
+  // nar size, if known
+  int64 nar_size = 11;
+
   reserved 8 to 9;
 }
 

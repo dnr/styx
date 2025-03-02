@@ -145,8 +145,7 @@ func internalCmd() *cobra.Command {
 				res, err := http.DefaultClient.Do(hReq)
 				if err == nil {
 					if res.StatusCode != http.StatusOK {
-						body, _ := io.ReadAll(io.LimitReader(res.Body, 1024))
-						err = common.NewHttpError(res.StatusCode, string(body))
+						err = common.HttpErrorFromRes(res)
 					}
 					res.Body.Close()
 				}

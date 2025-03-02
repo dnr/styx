@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
+	"sync/atomic"
 	"time"
 	"unsafe"
 
@@ -22,6 +23,7 @@ import (
 
 	"github.com/dnr/styx/common"
 	"github.com/dnr/styx/common/cdig"
+	"github.com/dnr/styx/common/errgroup"
 	"github.com/dnr/styx/common/shift"
 	"github.com/dnr/styx/erofs"
 	"github.com/dnr/styx/manifester"
@@ -69,6 +71,8 @@ type (
 		baseTotalSize, reqTotalSize int32
 		recompress                  []string
 
+		usingSph map[Sph]struct{}
+
 		// shared with all ops in opSet.
 		// the contents of the recentReads are under diffLock.
 		rrs *[MaxSources * 2]*recentRead
@@ -99,6 +103,8 @@ type (
 		when  time.Time
 		reads int
 	}
+
+	triedRemanifest struct{}
 )
 
 func (s *Server) requestChunk(ctx context.Context, loc erofs.SlabLoc, digest cdig.CDig, sphps []SphPrefix) error {
@@ -149,6 +155,22 @@ func (s *Server) requestChunk(ctx context.Context, loc erofs.SlabLoc, digest cdi
 	// return when either is done
 
 	err := op.wait()
+
+	if common.IsNotFound(err) && ctx.Value(triedRemanifest{}) == nil {
+		// some required chunk was not found, maybe we can recover by remanifesting
+		log.Println("diff failed due to not found, remanifesting")
+		if s.remanifestOp(ctx, op) != nil {
+			return err // don't log; remanifestOp logs failures individually
+		}
+		// If the set had multiple ops, this one probably finished first and the others are
+		// probably still pending, so if we rerequest this now we won't include those. The
+		// others are likely to fail for the same reason as this one, so it would be nice to
+		// include them. It's too hard to wait on the whole set, so we'll just let the chunks
+		// get rerequested directly.
+		ctx = context.WithValue(ctx, triedRemanifest{}, true)
+		return s.requestChunk(ctx, loc, digest, sphps)
+	}
+
 	if err != nil {
 		if _, ok := op.(*singleOp); !ok {
 			log.Printf("diff failed (%v), doing plain read", err)
@@ -208,7 +230,7 @@ func (s *Server) buildAndStartPrefetch(ctx context.Context, reqs []cdig.CDig) ([
 			continue
 		}
 		// build new requests
-		sphps := splitSphps(loc[6:])
+		sphps := sphpsFromLoc(loc)
 		if len(sphps) == 0 {
 			return nil, errors.New("missing sph references")
 		}
@@ -404,7 +426,7 @@ func (s *Server) startDiffOp(ctx context.Context, op *diffOp) {
 func (s *Server) doDiffOp(ctx context.Context, op *diffOp) error {
 	diff, err := s.getChunkDiff(ctx, op.baseDigests, op.reqDigests, op.recompress)
 	if err != nil {
-		return fmt.Errorf("getChunkDiff error: %w", err)
+		return fmt.Errorf("getChunkDiff: %w", err)
 	}
 	defer diff.Close()
 
@@ -748,6 +770,73 @@ func (s *Server) pruneRecentReads() {
 	}
 }
 
+func (s *Server) remanifestOp(ctx context.Context, op reqOp) error {
+	getSphsFromOp := func(tx *bbolt.Tx) map[Sph]struct{} {
+		switch op := op.(type) {
+		case *singleOp:
+			// we didn't look up sph before, so do it now
+			loc := tx.Bucket(chunkBucket).Get(op.digest[:])
+			if loc == nil {
+				return nil
+			}
+			for _, sphp := range sphpsFromLoc(loc) {
+				sph, name := s.catalogFindName(tx, sphp)
+				if name != "" {
+					// any one should work, so take first
+					return map[Sph]struct{}{sph: struct{}{}}
+				}
+			}
+		case *diffOp:
+			return op.usingSph
+		}
+		return nil
+	}
+
+	var reqs []MountReq
+	err := s.db.View(func(tx *bbolt.Tx) error {
+		ib := tx.Bucket(imageBucket)
+		for sph := range getSphsFromOp(tx) {
+			var img pb.DbImage
+			sphStr := sph.String()
+			if buf := ib.Get([]byte(sphStr)); buf != nil {
+				if err := proto.Unmarshal(buf, &img); err != nil {
+					return fmt.Errorf("image unmarshal: %w", err)
+				}
+			}
+			reqs = append(reqs, MountReq{
+				StorePath: sphStr,
+				Upstream:  img.Upstream,
+				NarSize:   img.NarSize,
+			})
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	} else if len(reqs) == 0 {
+		return errors.New("couldn't find any images to remanifest")
+	}
+
+	eg := errgroup.WithContext(ctx)
+	eg.SetLimit(5)
+	var success atomic.Int64
+	for _, req := range reqs {
+		eg.Go(func() error {
+			_, err := s.getManifestFromManifester(ctx, req.Upstream, req.StorePath, req.NarSize)
+			if err == nil {
+				success.Add(1)
+			} else {
+				log.Printf("remanifest of %s failed: %v", req.StorePath, err)
+			}
+			return nil // don't cancel others
+		})
+	}
+	if eg.Wait(); success.Load() == 0 {
+		return errors.New("no remanifest succeeded")
+	}
+	return nil
+}
+
 // single op
 
 func (op *singleOp) wait() error {
@@ -780,13 +869,15 @@ func (op *diffOp) resetDiff() {
 	op.recompress = nil
 }
 
-func (op *diffOp) addBase(digest cdig.CDig, size int32, loc erofs.SlabLoc) {
+func (op *diffOp) addBase(sph Sph, digest cdig.CDig, size int32, loc erofs.SlabLoc) {
+	op.usingSph[sph] = struct{}{}
 	op.baseDigests = append(op.baseDigests, digest)
 	op.baseInfo = append(op.baseInfo, info{size, loc})
 	op.baseTotalSize += size
 }
 
-func (op *diffOp) addReq(digest cdig.CDig, size int32, loc erofs.SlabLoc) {
+func (op *diffOp) addReq(sph Sph, digest cdig.CDig, size int32, loc erofs.SlabLoc) {
+	op.usingSph[sph] = struct{}{}
 	op.reqDigests = append(op.reqDigests, digest)
 	op.reqInfo = append(op.reqInfo, info{size, loc})
 	op.reqTotalSize += size
@@ -847,8 +938,9 @@ func (set *opSet) markUsing(dig cdig.CDig) {
 
 func (set *opSet) newOp() {
 	op := &diffOp{
-		done: make(chan struct{}),
-		rrs:  set.rrs,
+		done:     make(chan struct{}),
+		usingSph: make(map[Sph]struct{}),
+		rrs:      set.rrs,
 	}
 	set.ops = append(set.ops, op)
 	set.op = op
@@ -893,8 +985,8 @@ func (set *opSet) buildDiff(
 	}
 
 	// can't find any base, diff latest against nothing
-	sph := sphps[len(sphps)-1]
-	foundSph, name := set.s.catalogFindName(tx, sph)
+	sphp := sphps[len(sphps)-1]
+	foundSph, name := set.s.catalogFindName(tx, sphp)
 	if len(name) == 0 {
 		return errors.New("store path hash not found")
 	}
@@ -994,7 +1086,7 @@ func (set *opSet) buildExtendDiff(
 			if !reqPresent && reqLoc.Addr > 0 && set.s.diffMap[reqLoc] == nil {
 				set.markUsing(reqDigest)
 				set.checkReq()
-				set.op.addReq(reqDigest, reqIter.size(), reqLoc)
+				set.op.addReq(res.reqHash, reqDigest, reqIter.size(), reqLoc)
 				set.s.diffMap[reqLoc] = set.op
 				changed = true
 			}
@@ -1006,7 +1098,7 @@ func (set *opSet) buildExtendDiff(
 			baseLoc, basePresent := set.s.digestPresent(tx, baseDigest)
 			if basePresent {
 				set.markUsing(baseDigest)
-				set.op.addBase(baseDigest, baseIter.size(), baseLoc)
+				set.op.addBase(res.baseHash, baseDigest, baseIter.size(), baseLoc)
 				changed = true
 			}
 		}
@@ -1077,7 +1169,7 @@ func (set *opSet) buildRecompress(
 			// Base is not present, don't bother with recompress (data is already compressed).
 			return errors.New("base chunk not present")
 		}
-		set.op.addBase(baseDigest, baseIter.size(), baseLoc)
+		set.op.addBase(res.baseHash, baseDigest, baseIter.size(), baseLoc)
 	}
 
 	// diff with expanding and recompression
@@ -1087,7 +1179,7 @@ func (set *opSet) buildRecompress(
 		if reqLoc.Addr == 0 {
 			return errors.New("digest in entry of req digest is not mapped")
 		}
-		set.op.addReq(reqDigest, reqIter.size(), reqLoc)
+		set.op.addReq(res.reqHash, reqDigest, reqIter.size(), reqLoc)
 	}
 
 	// No errors, we can enter into diff map. For recompress diff we need to ask for the

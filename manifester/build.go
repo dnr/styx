@@ -92,7 +92,7 @@ type (
 
 var (
 	ErrReq      = errors.New("request err")
-	ErrNotFound = errors.New("not found")
+	ErrNotFound = wrapNotFoundErr{errors.New("not found")}
 	ErrInternal = errors.New("internal err")
 )
 

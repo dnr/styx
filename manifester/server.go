@@ -343,7 +343,7 @@ func writeError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, ErrReq):
 		w.WriteHeader(http.StatusExpectationFailed)
-	case errors.Is(err, ErrNotFound), IsS3NotFound(err):
+	case common.IsNotFound(err):
 		w.WriteHeader(http.StatusNotFound)
 	case errors.Is(err, ErrInternal):
 		w.WriteHeader(http.StatusInternalServerError)

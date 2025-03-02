@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/http"
 	"os"
 	"path"
@@ -93,7 +94,7 @@ func (l *localChunkStoreWrite) Get(ctx context.Context, path_, key string, data 
 	// ignore path! mix chunks and manifests in same directory
 	b, err := os.ReadFile(path.Join(l.dir, key))
 	if err != nil {
-		return nil, err
+		return nil, wrapNotFound(err)
 	}
 	z := l.zp.Get()
 	defer l.zp.Put(z)
@@ -154,7 +155,7 @@ func (s *s3ChunkStoreWrite) Get(ctx context.Context, path, key string, data []by
 		Key:    &key,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("get(%q): %w", key, err)
+		return nil, fmt.Errorf("get(%q): %w", key, wrapNotFound(err))
 	}
 	defer res.Body.Close()
 	b, err := io.ReadAll(res.Body)
@@ -194,7 +195,7 @@ func (s *urlChunkStoreRead) Get(ctx context.Context, key string, dst []byte) ([]
 	}
 	defer res.Body.Close()
 	if res.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("http error: %s", res.Status)
+		return nil, common.HttpErrorFromRes(res)
 	}
 	b, err := io.ReadAll(res.Body)
 	if err != nil {
@@ -218,6 +219,19 @@ func (s *urlChunkStoreRead) Get(ctx context.Context, key string, dst []byte) ([]
 	} else {
 		return append(dst, b...), nil
 	}
+}
+
+type wrapNotFoundErr struct{ error }
+
+var _ common.NotFoundable = wrapNotFoundErr{}
+
+func (wrapNotFoundErr) IsNotFound() bool { return true }
+
+func wrapNotFound(err error) error {
+	if errors.Is(err, fs.ErrNotExist) || IsS3NotFound(err) {
+		return wrapNotFoundErr{err}
+	}
+	return err
 }
 
 func IsS3NotFound(err error) bool {
