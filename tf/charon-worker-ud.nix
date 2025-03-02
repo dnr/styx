@@ -1,6 +1,6 @@
-# This file is copied to /etc/nixos/configuration.nix and the config is build and activated.
+# This file is copied to /etc/nixos/configuration.nix and the config is built and activated.
 # Note this is templated by terraform, $ {} is TF, $${} is Nix.
-{ config, pkgs, ... }:
+{ config, pkgs, utils, ... }:
 {
   imports = [ <nixpkgs/nixos/modules/virtualisation/amazon-image.nix> ];
 
@@ -13,8 +13,18 @@
     serviceConfig = {
       # TODO: this works but it feels weird. should it use builtins.storePath?
       # but how do we set the cache and trusted key in that case?
-      ExecStartPre = "$${pkgs.nix}/bin/nix-store --realize ${charon}";
-      ExecStart = "${charon}/bin/charon worker --heavy --temporal_params ${tmpssm} --cache_signkey_ssm ${cachessm} --chunkbucket ${bucket} --nix_pubkey ${pubkey} --nix_pubkey ${nixoskey} --styx_signkey_ssm ${styxssm}";
+      ExecStartPre = utils.escapeSystemdExecArgs [
+        "$${pkgs.nix}/bin/nix-store" "--realize" "${charon}"
+      ];
+      ExecStart =  utils.escapeSystemdExecArgs [
+        "${charon}/bin/charon" "worker" "--heavy"
+        "--temporal_params" "${tmpssm}"
+        "--cache_signkey_ssm" "${cachessm}"
+        "--chunkbucket" "${bucket}"
+        "--nix_pubkey" "${pubkey}"
+        "--nix_pubkey" "${nixoskey}"
+        "--styx_signkey_ssm" "${styxssm}"
+      ];
       Restart = "always";
     };
   };
