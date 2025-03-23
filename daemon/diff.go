@@ -33,7 +33,8 @@ import (
 )
 
 const (
-	recentReadExpiry = 30 * time.Second
+	recentReadExpiry      = 30 * time.Second
+	remanifestCacheExpiry = time.Minute
 
 	// only public so they can be referenced by tests
 	InitOpSize = 8
@@ -106,11 +107,17 @@ type (
 		reads int
 	}
 
+	remanifestCacheEntry struct {
+		when time.Time
+		err  error         // only read after done is closed
+		done chan struct{} // closed after writing err
+	}
+
 	triedRemanifest struct{}
 )
 
 func (s *Server) requestChunk(ctx context.Context, loc erofs.SlabLoc, digest cdig.CDig, sphps []SphPrefix) error {
-	if _, ok := s.readKnownMap.Get(loc); ok {
+	if s.readKnownMap.Has(loc) {
 		// We think we have this chunk and are trying to use it as a base, but we got asked for
 		// it again. This shouldn't happen, but at least try to recover by doing a single read
 		// instead of diffing more.
@@ -614,7 +621,7 @@ func (s *Server) gotNewChunk(loc erofs.SlabLoc, digest cdig.CDig, b []byte) erro
 			return sb.Put(addrKey(presentMask|loc.Addr), []byte{})
 		})
 		if err == nil {
-			s.presentMap.Del(loc)
+			s.presentMap.Delete(loc)
 		}
 	}()
 
@@ -723,17 +730,15 @@ func (s *Server) getKnownChunk(loc erofs.SlabLoc, buf []byte) error {
 	}
 
 	// record that we're reading this out of the slab
-	// TODO: use a real refcount
-	if s.readKnownMap.PutIfNotPresent(loc, struct{}{}) {
-		defer s.readKnownMap.Del(loc)
-	}
+	s.readKnownMap.Modify(loc, func(i int, _ bool) (int, bool) { return i + 1, true })
+	defer s.readKnownMap.Modify(loc, func(i int, _ bool) (int, bool) { return i - 1, i > 1 })
 
 	_, err = unix.Pread(readFd, buf, int64(loc.Addr)<<s.blockShift)
 	return err
 }
 
 func (s *Server) locPresent(tx *bbolt.Tx, loc erofs.SlabLoc) bool {
-	if _, ok := s.presentMap.Get(loc); ok {
+	if s.presentMap.Has(loc) {
 		return true
 	}
 	sb := tx.Bucket(slabBucket).Bucket(slabKey(loc.SlabId))
@@ -770,8 +775,8 @@ func (s *Server) findRecentRead(reqHash Sph, path string) *recentRead {
 	return rr
 }
 
-func (s *Server) pruneRecentReads() {
-	t := time.NewTicker(recentReadExpiry / 2)
+func (s *Server) pruneRecentCaches() {
+	t := time.NewTicker(min(recentReadExpiry, remanifestCacheExpiry) / 2)
 	defer t.Stop()
 	for range t.C {
 		s.diffLock.Lock()
@@ -780,6 +785,9 @@ func (s *Server) pruneRecentReads() {
 			return now.Sub(rr.when) > recentReadExpiry
 		})
 		s.diffLock.Unlock()
+		s.remanifestCache.DeleteFunc(func(key string, rr *remanifestCacheEntry) bool {
+			return now.Sub(rr.when) > remanifestCacheExpiry
+		})
 	}
 }
 
@@ -841,7 +849,24 @@ func (s *Server) doRemanifestReqs(ctx context.Context, reqs []MountReq) error {
 	var success atomic.Int64
 	for _, req := range reqs {
 		eg.Go(func() error {
+			rr, ok := s.remanifestCache.GetOrPut(req.StorePath, &remanifestCacheEntry{
+				when: time.Now(),
+				done: make(chan struct{}),
+			})
+			if ok {
+				<-rr.done
+				if rr.err == nil {
+					success.Add(1)
+				}
+				return nil
+			}
+
 			_, err := s.getManifestFromManifester(ctx, req.Upstream, req.StorePath, req.NarSize)
+
+			rr.err = err
+			close(rr.done)
+			s.remanifestCache.WithValue(req.StorePath, func(rr *remanifestCacheEntry) { rr.when = time.Now() })
+
 			if err == nil {
 				success.Add(1)
 			} else {

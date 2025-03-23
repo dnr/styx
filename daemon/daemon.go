@@ -82,7 +82,7 @@ type (
 		presentMap common.SimpleSyncMap[erofs.SlabLoc, struct{}]
 
 		// tracks reads for chunks that we should have, to detect bugs
-		readKnownMap common.SimpleSyncMap[erofs.SlabLoc, struct{}]
+		readKnownMap common.SimpleSyncMap[erofs.SlabLoc, int]
 
 		// connect context for mount request to cachefiles request
 		mountCtxMap common.SimpleSyncMap[string, context.Context]
@@ -94,6 +94,8 @@ type (
 		diffMap     map[erofs.SlabLoc]reqOp
 		recentReads map[string]*recentRead
 		diffSem     *semaphore.Weighted
+
+		remanifestCache common.SimpleSyncMap[string, *remanifestCacheEntry]
 
 		shutdownChan chan struct{}
 		shutdownWait sync.WaitGroup
@@ -146,21 +148,22 @@ var errAlreadyMountedElsewhere = errors.New("already mounted on another mountpoi
 
 func NewServer(cfg Config) *Server {
 	return &Server{
-		cfg:          &cfg,
-		blockShift:   shift.Shift(cfg.ErofsBlockShift),
-		msgPool:      &sync.Pool{New: func() any { return make([]byte, CACHEFILES_MSG_MAX_SIZE) }},
-		chunkPool:    common.NewChunkPool(),
-		builder:      erofs.NewBuilder(erofs.BuilderConfig{BlockShift: cfg.ErofsBlockShift}),
-		cacheState:   make(map[uint32]*openFileState),
-		stateBySlab:  make(map[uint16]*openFileState),
-		readfdBySlab: make(map[uint16]slabFds),
-		presentMap:   *common.NewSimpleSyncMap[erofs.SlabLoc, struct{}](),
-		readKnownMap: *common.NewSimpleSyncMap[erofs.SlabLoc, struct{}](),
-		mountCtxMap:  *common.NewSimpleSyncMap[string, context.Context](),
-		diffMap:      make(map[erofs.SlabLoc]reqOp),
-		recentReads:  make(map[string]*recentRead),
-		diffSem:      semaphore.NewWeighted(int64(cfg.Workers)),
-		shutdownChan: make(chan struct{}),
+		cfg:             &cfg,
+		blockShift:      shift.Shift(cfg.ErofsBlockShift),
+		msgPool:         &sync.Pool{New: func() any { return make([]byte, CACHEFILES_MSG_MAX_SIZE) }},
+		chunkPool:       common.NewChunkPool(),
+		builder:         erofs.NewBuilder(erofs.BuilderConfig{BlockShift: cfg.ErofsBlockShift}),
+		cacheState:      make(map[uint32]*openFileState),
+		stateBySlab:     make(map[uint16]*openFileState),
+		readfdBySlab:    make(map[uint16]slabFds),
+		presentMap:      *common.NewSimpleSyncMap[erofs.SlabLoc, struct{}](),
+		readKnownMap:    *common.NewSimpleSyncMap[erofs.SlabLoc, int](),
+		mountCtxMap:     *common.NewSimpleSyncMap[string, context.Context](),
+		diffMap:         make(map[erofs.SlabLoc]reqOp),
+		recentReads:     make(map[string]*recentRead),
+		diffSem:         semaphore.NewWeighted(int64(cfg.Workers)),
+		remanifestCache: *common.NewSimpleSyncMap[string, *remanifestCacheEntry](),
+		shutdownChan:    make(chan struct{}),
 	}
 }
 
@@ -612,11 +615,10 @@ func (s *Server) tryMount(ctx context.Context, req *MountReq, haveImageSize int6
 	mountCtx := &mountContext{}
 	ctx = withMountContext(ctx, mountCtx)
 
-	ok := s.mountCtxMap.PutIfNotPresent(sphStr, ctx)
-	if !ok {
+	if _, ok := s.mountCtxMap.GetOrPut(sphStr, ctx); ok {
 		return errors.New("another mount is in progress for this store path")
 	}
-	defer s.mountCtxMap.Del(sphStr)
+	defer s.mountCtxMap.Delete(sphStr)
 
 	if haveImageSize > 0 {
 		// if we have an image we can proceed right to mounting
@@ -796,7 +798,7 @@ func (s *Server) Start() error {
 	if err := s.startSocketServer(); err != nil {
 		return err
 	}
-	go s.pruneRecentReads()
+	go s.pruneRecentCaches()
 	go s.cachefilesServer()
 	// TODO: get number of slabs from db and mount them all
 	if err := s.mountSlabImage(0); err != nil {
