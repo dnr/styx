@@ -9,7 +9,6 @@ in with lib; {
       enablePatchedNix = mkEnableOption "Patched Nix for Styx";
       enableNixSettings = mkEnableOption "nix.conf settings for Styx";
       enableStyxNixCache = mkEnableOption "Add binary cache for Styx and related packages";
-      enableKernelOptions = mkEnableOption "Enable required kernel config for Styx (erofs+cachefiles)";
       package = mkOption {
         description = "Styx package";
         type = types.package;
@@ -41,19 +40,10 @@ in with lib; {
       };
     })
 
-    (mkIf (cfg.enable || cfg.enableKernelOptions) {
-      # Need to turn on these kernel config options:
+    (mkIf cfg.enable {
       assertions = [ {
-          assertion = lib.versionAtLeast config.boot.kernelPackages.kernel.version "6.8";
-          message = "Styx requires at least a 6.8 kernel";
-      } ];
-      boot.kernelPatches = [ {
-        name = "styx";
-        patch = null;
-        extraStructuredConfig = {
-          CACHEFILES_ONDEMAND = lib.kernel.yes;
-          EROFS_FS_ONDEMAND = lib.kernel.yes;
-        };
+          assertion = lib.versionAtLeast config.boot.kernelPackages.kernel.version "6.14";
+          message = "Styx requires at least a 6.14 kernel";
       } ];
     })
 
@@ -73,12 +63,8 @@ in with lib; {
         wantedBy = [ "sysinit.target" ];
         before = [ "sysinit.target" "shutdown.target" ];
         conflicts = [ "shutdown.target" ];
-        requires = [
-          "modprobe@cachefiles.service"
-        ];
         after = [
           "local-fs.target"
-          "modprobe@cachefiles.service"
         ];
         # TODO: restartTriggers?
         unitConfig = {
@@ -92,8 +78,8 @@ in with lib; {
           SyslogIdentifier = "styx";
           Type = "notify";
           NotifyAccess = "all";
-          FileDescriptorStoreMax = "1";
-          FileDescriptorStorePreserve = "yes";
+          # FileDescriptorStoreMax = "1"; // FIXME: can remove?
+          # FileDescriptorStorePreserve = "yes";
           LimitNOFILE = "500000";
           Restart = "on-failure";
         };

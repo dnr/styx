@@ -200,7 +200,7 @@ func (s *Server) materializeFile(
 	path string,
 	ent *pb.Entry,
 	locs map[cdig.CDig]erofs.SlabLoc,
-	readFds map[uint16]slabFds,
+	readFds map[uint16]int,
 	tryClone *bool,
 ) (retErr error) {
 	var dst *os.File
@@ -230,7 +230,7 @@ tryAgain:
 		loc := locs[dig]
 		size := cshift.FileChunkSize(ent.Size, i == len(digs)-1)
 		if *tryClone {
-			if cfd := readFds[loc.SlabId].cacheFd; cfd > 0 {
+			if cfd := readFds[loc.SlabId]; cfd > 0 {
 				sizeUp := int(s.blockShift.Roundup(size))
 				roundedUp = sizeUp != int(size)
 				roff := int64(loc.Addr) << s.blockShift

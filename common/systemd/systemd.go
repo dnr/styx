@@ -16,6 +16,7 @@ import (
 type (
 	FdStore interface {
 		Ready()
+		// FIXME: can probably delete this
 		GetFd(name string) (int, error)
 		SaveFd(name string, fd int)
 		RemoveFd(name string)
