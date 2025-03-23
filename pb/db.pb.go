@@ -99,9 +99,6 @@ type DbImage struct {
 	MountState     MountState `protobuf:"varint,5,opt,name=mount_state,json=mountState,proto3,enum=pb.MountState" json:"mount_state,omitempty"`
 	MountPoint     string     `protobuf:"bytes,6,opt,name=mount_point,json=mountPoint,proto3" json:"mount_point,omitempty"`
 	LastMountError string     `protobuf:"bytes,7,opt,name=last_mount_error,json=lastMountError,proto3" json:"last_mount_error,omitempty"`
-	// size of erofs image
-	ImageSize int64 `protobuf:"varint,1,opt,name=image_size,json=imageSize,proto3" json:"image_size,omitempty"`
-	IsBare    bool  `protobuf:"varint,10,opt,name=is_bare,json=isBare,proto3" json:"is_bare,omitempty"`
 	// nar size, if known
 	NarSize       int64 `protobuf:"varint,11,opt,name=nar_size,json=narSize,proto3" json:"nar_size,omitempty"`
 	unknownFields protoimpl.UnknownFields
@@ -180,20 +177,6 @@ func (x *DbImage) GetLastMountError() string {
 	return ""
 }
 
-func (x *DbImage) GetImageSize() int64 {
-	if x != nil {
-		return x.ImageSize
-	}
-	return 0
-}
-
-func (x *DbImage) GetIsBare() bool {
-	if x != nil {
-		return x.IsBare
-	}
-	return false
-}
-
 func (x *DbImage) GetNarSize() int64 {
 	if x != nil {
 		return x.NarSize
@@ -258,7 +241,7 @@ var File_db_proto protoreflect.FileDescriptor
 
 const file_db_proto_rawDesc = "" +
 	"\n" +
-	"\bdb.proto\x12\x02pb\x1a\fparams.proto\"\xc6\x02\n" +
+	"\bdb.proto\x12\x02pb\x1a\fparams.proto\"\x94\x02\n" +
 	"\aDbImage\x12\x1d\n" +
 	"\n" +
 	"store_path\x18\x02 \x01(\tR\tstorePath\x12\x1a\n" +
@@ -268,13 +251,8 @@ const file_db_proto_rawDesc = "" +
 	"mountState\x12\x1f\n" +
 	"\vmount_point\x18\x06 \x01(\tR\n" +
 	"mountPoint\x12(\n" +
-	"\x10last_mount_error\x18\a \x01(\tR\x0elastMountError\x12\x1d\n" +
-	"\n" +
-	"image_size\x18\x01 \x01(\x03R\timageSize\x12\x17\n" +
-	"\ais_bare\x18\n" +
-	" \x01(\bR\x06isBare\x12\x19\n" +
-	"\bnar_size\x18\v \x01(\x03R\anarSizeJ\x04\b\b\x10\n" +
-	"\"L\n" +
+	"\x10last_mount_error\x18\a \x01(\tR\x0elastMountError\x12\x19\n" +
+	"\bnar_size\x18\v \x01(\x03R\anarSizeJ\x04\b\x01\x10\x02J\x04\b\b\x10\v\"L\n" +
 	"\bDbParams\x12(\n" +
 	"\x06params\x18\x01 \x01(\v2\x10.pb.DaemonParamsR\x06params\x12\x16\n" +
 	"\x06pubkey\x18\x02 \x03(\tR\x06pubkey*\x89\x01\n" +

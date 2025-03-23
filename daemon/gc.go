@@ -281,7 +281,7 @@ func (s *Server) handleGcReq(ctx context.Context, r *GcReq) (*GcResp, error) {
 		readFds := maps.Clone(s.readfdBySlab)
 		s.stateLock.Unlock()
 		for i, le := range punchLocs {
-			if cfd := readFds[le.SlabId].cacheFd; cfd > 0 {
+			if cfd := readFds[le.SlabId]; cfd > 0 {
 				err := unix.Fallocate(
 					cfd,
 					unix.FALLOC_FL_PUNCH_HOLE|unix.FALLOC_FL_KEEP_SIZE,

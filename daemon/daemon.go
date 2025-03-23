@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -30,7 +31,6 @@ import (
 	"github.com/dnr/styx/common"
 	"github.com/dnr/styx/common/cdig"
 	"github.com/dnr/styx/common/shift"
-	"github.com/dnr/styx/common/systemd"
 	"github.com/dnr/styx/erofs"
 	"github.com/dnr/styx/manifester"
 	"github.com/dnr/styx/pb"
@@ -51,8 +51,7 @@ const (
 )
 
 const (
-	savedFdName = "devnode"
-	// preCreatedSlabs    = 1
+	// savedFdName = "devnode" // FIXME
 	presentMask        = 1 << 31
 	reservedBlocks     = 4 // reserved at beginning of slab
 	manifestSlabOffset = 10000
@@ -67,25 +66,23 @@ type (
 		msgPool    *sync.Pool
 		chunkPool  *common.ChunkPool
 		builder    *erofs.Builder
-		devnode    atomic.Int32
-		stats      daemonStats
+		// devnode    atomic.Int32 // FIXME: notify state?
+		stats daemonStats
 
 		stateLock    sync.Mutex
 		cacheState   map[uint32]*openFileState // object id -> state
 		stateBySlab  map[uint16]*openFileState // slab id -> state
-		readfdBySlab map[uint16]slabFds        // slab id -> readfd, cachefd
+		readfdBySlab map[uint16]int            // slab id -> readfd
 		// readfds are kept in a separate map because after a restore, we may load the slab
-		// image and readfd before the slab is loaded by erofs/cachefiles. this doesn't make
+		// image and readfd before the slab is loaded by erofs. this doesn't make
 		// sense but it seems to work that way.
+		// FIXME: revisit this? we can consolidate...
 
 		// keeps track of locs that we know are present before we persist them
 		presentMap common.SimpleSyncMap[erofs.SlabLoc, struct{}]
 
 		// tracks reads for chunks that we should have, to detect bugs
 		readKnownMap common.SimpleSyncMap[erofs.SlabLoc, int]
-
-		// connect context for mount request to cachefiles request
-		mountCtxMap common.SimpleSyncMap[string, context.Context]
 
 		// keeps track of pending diff/fetch state
 		// note: we open a read-only transaction inside of diffLock.
@@ -115,28 +112,18 @@ type (
 
 		// for slabs, slab images, and manifest slabs
 		slabId uint16
-
-		// for store images
-		imageData []byte // data from manifester to be written
-	}
-
-	slabFds struct {
-		readFd, cacheFd int
 	}
 
 	Config struct {
-		DevPath     string
-		CachePath   string
-		CacheTag    string
-		CacheDomain string
+		CachePath string
 
 		ErofsBlockShift int
 		// SmallFileCutoff int
 
-		Workers int
+		Workers int // FIXME: still needed?
 
 		IsTesting bool
-		FdStore   systemd.FdStore
+		// FdStore systemd.FdStore // FIXME: delete?
 	}
 )
 
@@ -150,15 +137,14 @@ func NewServer(cfg Config) *Server {
 	return &Server{
 		cfg:             &cfg,
 		blockShift:      shift.Shift(cfg.ErofsBlockShift),
-		msgPool:         &sync.Pool{New: func() any { return make([]byte, CACHEFILES_MSG_MAX_SIZE) }},
+		msgPool:         &sync.Pool{New: func() any { return make([]byte, FANOTIFY_MSG_MAX_SIZE) }},
 		chunkPool:       common.NewChunkPool(),
 		builder:         erofs.NewBuilder(erofs.BuilderConfig{BlockShift: cfg.ErofsBlockShift}),
 		cacheState:      make(map[uint32]*openFileState),
 		stateBySlab:     make(map[uint16]*openFileState),
-		readfdBySlab:    make(map[uint16]slabFds),
+		readfdBySlab:    make(map[uint16]int),
 		presentMap:      *common.NewSimpleSyncMap[erofs.SlabLoc, struct{}](),
 		readKnownMap:    *common.NewSimpleSyncMap[erofs.SlabLoc, int](),
-		mountCtxMap:     *common.NewSimpleSyncMap[string, context.Context](),
 		diffMap:         make(map[erofs.SlabLoc]reqOp),
 		recentReads:     make(map[string]*recentRead),
 		diffSem:         semaphore.NewWeighted(int64(cfg.Workers)),
@@ -328,12 +314,13 @@ func (s *Server) setupMounts() error {
 	return nil
 }
 
+// FIXME: consolidate with openSlabFile
 func (s *Server) setupManifestSlab() error {
 	var id uint16 = manifestSlabOffset
-	mfSlabPath := filepath.Join(s.cfg.CachePath, manifestSlabPrefix+strconv.Itoa(int(id)))
-	fd, err := unix.Open(mfSlabPath, unix.O_RDWR|unix.O_CREAT, 0600)
+	path := filepath.Join(s.cfg.CachePath, "slab", strconv.Itoa(int(id)))
+	fd, err := unix.Open(path, unix.O_RDWR|unix.O_CREAT, 0o600)
 	if err != nil {
-		log.Println("open manifest slab", mfSlabPath, err)
+		log.Println("open manifest slab", path, err)
 		return err
 	}
 
@@ -345,50 +332,13 @@ func (s *Server) setupManifestSlab() error {
 		slabId:  id,
 	}
 	s.stateBySlab[id] = state
-	s.readfdBySlab[id] = slabFds{fd, fd}
+	s.readfdBySlab[id] = fd
 	return nil
 }
 
-func (s *Server) openDevNode() (int, error) {
-	// udev should have created this when the cachefiles module was loaded
-	fd, err := unix.Open(s.cfg.DevPath, unix.O_RDWR, 0600)
-	if err != nil {
-		return 0, fmt.Errorf("error opening %s: %w  (is the cachefiles module loaded?)", s.cfg.DevPath, err)
-	} else if _, err = unix.Write(fd, []byte("dir "+s.cfg.CachePath)); err != nil {
-		unix.Close(fd)
-		return 0, fmt.Errorf("error setting up cachefiles: %w", err)
-	} else if _, err = unix.Write(fd, []byte("tag "+s.cfg.CacheTag)); err != nil {
-		unix.Close(fd)
-		return 0, fmt.Errorf("error setting up cachefiles: %w", err)
-	} else if _, err = unix.Write(fd, []byte("bind ondemand")); err != nil {
-		unix.Close(fd)
-		return 0, fmt.Errorf("error setting up cachefiles ondemand: %w  (is the kernel built with CACHEFILES_ONDEMAND?)", err)
-	}
-	return fd, nil
-}
-
-func (s *Server) setupDevNode() error {
-	fd, err := s.cfg.FdStore.GetFd(savedFdName)
-	if err == nil {
-		if _, err = unix.Write(fd, []byte("restore")); err != nil {
-			s.cfg.FdStore.RemoveFd(savedFdName)
-			unix.Close(fd)
-			// instead of trying to recover, just let systemd restart the process
-			// and next time we won't have a saved fd.
-			return fmt.Errorf("cachefiles 'restore' failed: %w", err)
-		}
-		s.devnode.Store(int32(fd))
-		log.Println("restored cachefiles device")
-		return nil
-	}
-
-	fd, err = s.openDevNode()
-	if err != nil {
-		return err
-	}
-	s.devnode.Store(int32(fd))
-	s.cfg.FdStore.SaveFd(savedFdName, fd)
-	log.Println("set up cachefiles device")
+func (s *Server) setupNotify() error {
+	// FIXME
+	log.Println("set up fanotify")
 	return nil
 }
 
@@ -578,8 +528,6 @@ func (s *Server) handleMountReq(ctx context.Context, r *MountReq) (*Status, erro
 
 	common.NormalizeUpstream(&r.Upstream)
 
-	var haveImageSize int64
-	var haveIsBare bool
 	err = s.imageTx(sphStr, func(img *pb.DbImage) error {
 		if img.MountState == pb.MountState_Mounted {
 			if img.MountPoint == r.MountPoint {
@@ -595,8 +543,6 @@ func (s *Server) handleMountReq(ctx context.Context, r *MountReq) (*Status, erro
 		img.MountPoint = r.MountPoint
 		img.LastMountError = ""
 		img.NarSize = r.NarSize
-		haveImageSize = img.ImageSize
-		haveIsBare = img.IsBare
 		return nil
 	})
 	if err != nil {
@@ -606,91 +552,81 @@ func (s *Server) handleMountReq(ctx context.Context, r *MountReq) (*Status, erro
 		return nil, err
 	}
 
-	return nil, s.tryMount(ctx, r, haveImageSize, haveIsBare)
+	return nil, s.tryMount(ctx, r)
 }
 
-func (s *Server) tryMount(ctx context.Context, req *MountReq, haveImageSize int64, haveIsBare bool) error {
+func (s *Server) tryMount(ctx context.Context, req *MountReq) error {
 	_, sphStr, _ := ParseSph(req.StorePath)
 
-	mountCtx := &mountContext{}
-	ctx = withMountContext(ctx, mountCtx)
+	path := filepath.Join(s.cfg.CachePath, "image", sphStr)
 
-	if _, ok := s.mountCtxMap.GetOrPut(sphStr, ctx); ok {
-		return errors.New("another mount is in progress for this store path")
-	}
-	defer s.mountCtxMap.Delete(sphStr)
-
-	if haveImageSize > 0 {
+	var imagePrefix []byte
+	if f, err := os.Open(path); err == nil {
 		// if we have an image we can proceed right to mounting
-		mountCtx.imageSize = haveImageSize
-		mountCtx.isBare = haveIsBare
+		imagePrefix, err = io.ReadAll(io.LimitReader(f, 4096))
+		if err != nil {
+			f.Close()
+			return err
+		}
+		f.Close()
 	} else {
 		// if no image yet, get the manifest and build it
 		_, image, err := s.getManifestAndBuildImage(ctx, req)
 		if err != nil {
 			return err
 		}
-		mountCtx.imageSize = int64(len(image))
-		mountCtx.isBare = erofs.IsBare(image)
-		mountCtx.imageData = image
-	}
-
-	var mountErr error
-	opts := fmt.Sprintf("domain_id=%s,fsid=%s", s.cfg.CacheDomain, sphStr)
-
-	if mountCtx.imageData != nil {
-		// first mount somewhere private, then unmount to force cachefiles to flush the image to disk.
-		// this is gross, there should be a better way to control cachefiles flushing.
-		firstMp := filepath.Join(s.cfg.CachePath, "initial", sphStr)
-		_ = os.MkdirAll(firstMp, 0o755)
-		mountErr = unix.Mount("none", firstMp, "erofs", 0, opts)
-		_ = unix.Unmount(firstMp, 0)
-		_ = os.Remove(firstMp)
-	}
-
-	if mountErr == nil {
-		// now do real mount
-		if mountCtx.isBare {
-			// set up empty file on target mount point
-			if st, err := os.Lstat(req.MountPoint); err != nil || !st.Mode().IsRegular() {
-				if err = os.RemoveAll(req.MountPoint); err != nil {
-					return fmt.Errorf("error clearing mount point for bare file: %w", err)
-				} else if err = os.WriteFile(req.MountPoint, nil, 0o644); err != nil {
-					return fmt.Errorf("error creating mount point for bare file: %w", err)
-				}
-			}
-			// mount to private dir
-			privateMp := filepath.Join(s.cfg.CachePath, "bare", sphStr)
-			_ = os.MkdirAll(privateMp, 0o755)
-			mountErr = unix.Mount("none", privateMp, "erofs", 0, opts)
-			if mountErr == nil {
-				// now bind the bare file where it should go
-				mountErr = unix.Mount(privateMp+erofs.BarePath, req.MountPoint, "none", unix.MS_BIND, "")
-			}
-			// whether we succeeded or failed, unmount the original and clean up
-			_ = unix.Unmount(privateMp, 0)
-			_ = os.Remove(privateMp)
-		} else {
-			_ = os.MkdirAll(req.MountPoint, 0o755)
-			mountErr = unix.Mount("none", req.MountPoint, "erofs", 0, opts)
+		if err = os.WriteFile(path+".tmp", image, 0o644); err != nil {
+			os.Remove(path + ".tmp")
+			return err
+		} else if err = os.Rename(path+".tmp", path); err != nil {
+			os.Remove(path + ".tmp")
+			return err
 		}
+		imagePrefix = image[:4096]
+	}
+
+	// do real mount
+	var mountErr error
+	isBare := erofs.IsBare(imagePrefix)
+	if isBare {
+		// set up empty file on target mount point
+		if st, err := os.Lstat(req.MountPoint); err != nil || !st.Mode().IsRegular() {
+			if err = os.RemoveAll(req.MountPoint); err != nil {
+				return fmt.Errorf("error clearing mount point for bare file: %w", err)
+			} else if err = os.WriteFile(req.MountPoint, nil, 0o644); err != nil {
+				return fmt.Errorf("error creating mount point for bare file: %w", err)
+			}
+		}
+		// mount to private dir
+		privateMp := filepath.Join(s.cfg.CachePath, "bare", sphStr)
+		_ = os.MkdirAll(privateMp, 0o755)
+		mountErr = unix.Mount(path, privateMp, "erofs", 0, "")
+		if mountErr == nil {
+			// now bind the bare file where it should go
+			mountErr = unix.Mount(privateMp+erofs.BarePath, req.MountPoint, "none", unix.MS_BIND, "")
+		}
+		// whether we succeeded or failed, unmount the original and clean up
+		_ = unix.Unmount(privateMp, 0)
+		_ = os.Remove(privateMp)
+	} else {
+		_ = os.MkdirAll(req.MountPoint, 0o755)
+		mountErr = unix.Mount(path, req.MountPoint, "erofs", 0, "")
 	}
 
 	_ = s.imageTx(sphStr, func(img *pb.DbImage) error {
 		if mountErr == nil {
 			img.MountState = pb.MountState_Mounted
 			img.LastMountError = ""
-			// if the mount succeeded then we must have written the image.
-			// record size here so we skip it next time.
-			img.ImageSize = mountCtx.imageSize
-			img.IsBare = mountCtx.isBare
 		} else {
 			img.MountState = pb.MountState_MountError
 			img.LastMountError = mountErr.Error()
-			img.ImageSize = 0 // force refetch/rebuild
 		}
 		return nil
 	})
+
+	if mountErr != nil {
+		os.Remove(path) // force refetch/rebuild
+	}
 
 	return mountErr
 }
@@ -753,10 +689,6 @@ func (s *Server) restoreMounts() {
 			// 	continue
 			// }
 			if img.MountState == pb.MountState_Mounted {
-				if img.ImageSize == 0 {
-					log.Print("found mounted image without size", img.StorePath)
-					continue
-				}
 				toRestore = append(toRestore, &img)
 			}
 		}
@@ -771,7 +703,7 @@ func (s *Server) restoreMounts() {
 			StorePath:  img.StorePath,
 			MountPoint: img.MountPoint,
 			// the image has been written so we don't need upstream/narsize
-		}, img.ImageSize, img.IsBare)
+		})
 		if err == nil {
 			log.Print("restoring: ", img.StorePath, " restored to ", img.MountPoint)
 		} else {
@@ -780,7 +712,7 @@ func (s *Server) restoreMounts() {
 	}
 }
 
-// cachefiles server
+// main server
 
 func (s *Server) Start() error {
 	if err := s.setupMounts(); err != nil {
@@ -792,20 +724,21 @@ func (s *Server) Start() error {
 	if err := s.setupManifestSlab(); err != nil {
 		return fmt.Errorf("error setting up manifest slab: %w", err)
 	}
-	if err := s.setupDevNode(); err != nil {
+	if err := s.setupNotify(); err != nil {
 		return err
 	}
 	if err := s.startSocketServer(); err != nil {
 		return err
 	}
 	go s.pruneRecentCaches()
-	go s.cachefilesServer()
+	go s.notifyServer()
 	// TODO: get number of slabs from db and mount them all
-	if err := s.mountSlabImage(0); err != nil {
+	// FIXME: do we need to do the proactively anymore?
+	if err := s.openSlabFile(0); err != nil {
 		log.Print(err)
 		// don't exit here, we can operate, just without diffing
 	}
-	log.Println("cachefiles server ready, using", s.cfg.CachePath)
+	log.Println("notify server ready, using", s.cfg.CachePath)
 	s.restoreMounts()
 	s.cfg.FdStore.Ready()
 	return nil
@@ -817,15 +750,15 @@ func (s *Server) Stop(closeDevnode bool) {
 	log.Print("stopping daemon...")
 	close(s.shutdownChan) // stops the socket server
 
-	// signal to cachefiles server and workers to stop
-	fd := s.devnode.Swap(0)
+	// signal to notify server and workers to stop
+	// fd := s.devnode.Swap(0) // FIXME
 	// wait for workers to stop
 	s.shutdownWait.Wait()
 	// close fds of open objects
 	s.closeAllFds()
 	// maybe close devnode too
 	if closeDevnode {
-		unix.Close(int(fd))
+		// unix.Close(int(fd)) // FIXME: notify fd?
 		s.cfg.FdStore.RemoveFd(savedFdName)
 	}
 
@@ -838,16 +771,16 @@ func (s *Server) closeAllFds() {
 	s.stateLock.Lock()
 	defer s.stateLock.Unlock()
 	for _, state := range s.cacheState {
-		var fds slabFds
+		var readFd int
 		switch state.tp {
 		case typeSlab, typeManifestSlab:
-			fds = s.readfdBySlab[state.slabId]
+			readFd = s.readfdBySlab[state.slabId]
 		}
-		s.closeState(state, fds)
+		s.closeState(state, readFd)
 	}
 }
 
-func (s *Server) cachefilesServer() {
+func (s *Server) notifyServer() {
 	s.shutdownWait.Add(1)
 	defer s.shutdownWait.Done()
 
@@ -862,6 +795,20 @@ func (s *Server) cachefilesServer() {
 		}()
 	}
 
+	fd, err := unix.FanotifyInit(unix.FAN_CLASS_PRE_CONTENT, O_RDONLY)
+	if err != nil {
+		// FIXME: init fanotify ahead of time so we can get error
+		panic("init fanotifiy failed: " + err.Error())
+	}
+	slab1, err := unix.FanotifyMark(
+		fd,
+		unix.FAN_MARK_ADD,
+		0,
+		unix.AT_FDCWD,
+		filepath.Join(s.cfg.CachePath, "slab", strconv.Itoa(0)),
+	)
+	// FIXME
+
 	fds := make([]unix.PollFd, 1)
 	errors := 0
 	for {
@@ -869,10 +816,10 @@ func (s *Server) cachefilesServer() {
 			// we might be spinning somehow, slow down
 			time.Sleep(time.Duration(errors) * time.Millisecond)
 		}
-		fd := s.devnode.Load()
-		if fd == 0 {
-			break
-		}
+		// fd := s.devnode.Load() // FIXME
+		// if fd == 0 {
+		// 	break
+		// }
 		fds[0] = unix.PollFd{Fd: fd, Events: unix.POLLIN}
 		timeout := 3600 * 1000
 		if s.cfg.IsTesting {
@@ -927,7 +874,7 @@ func (s *Server) handleMessage(buf []byte) (retErr error) {
 		if retErr != nil {
 			log.Printf("error handling message: %v", retErr)
 		}
-		s.msgPool.Put(buf[0:CACHEFILES_MSG_MAX_SIZE])
+		s.msgPool.Put(buf[0:FANOTIFY_MSG_MAX_SIZE])
 	}()
 
 	var r bytes.Reader
@@ -1075,22 +1022,22 @@ func (s *Server) handleClose(msgId, objectId uint32) error {
 	if state.tp == typeSlab {
 		delete(s.stateBySlab, state.slabId)
 	}
-	var fds slabFds
+	var readFd int
 	switch state.tp {
 	case typeSlab, typeManifestSlab:
-		fds = s.readfdBySlab[state.slabId]
+		readFd = s.readfdBySlab[state.slabId]
 		delete(s.readfdBySlab, state.slabId)
 	}
 	delete(s.cacheState, objectId)
 	s.stateLock.Unlock()
 
 	// do rest of cleanup outside lock
-	s.closeState(state, fds)
+	s.closeState(state, readFd)
 	return nil
 }
 
-func (s *Server) closeState(state *openFileState, slabFds slabFds) {
-	fds := []int{int(state.writeFd), slabFds.readFd, slabFds.cacheFd}
+func (s *Server) closeState(state *openFileState, readFd int) {
+	fds := []int{int(state.writeFd), readFd}
 	slices.Sort(fds)
 	fds = slices.Compact(fds)
 	if fds[0] == 0 {
@@ -1236,72 +1183,27 @@ func (s *Server) handleReadSlab(state *openFileState, ln, off uint64) (retErr er
 	return s.requestChunk(ctx, erofs.SlabLoc{slabId, addr}, digest, sphps)
 }
 
-func (s *Server) mountSlabImage(slabId uint16) error {
-	fsid := slabImagePrefix + strconv.Itoa(int(slabId))
-	mountPoint := filepath.Join(s.cfg.CachePath, fsid)
-	logMsg := "opened slab image file for"
-
-	if mounted, err := isErofsMount(mountPoint); err != nil || !mounted {
-		if err = os.MkdirAll(mountPoint, 0755); err != nil {
-			return fmt.Errorf("error mkdir on slab image mountpoint %s: %w", mountPoint, err)
-		}
-		opts := fmt.Sprintf("domain_id=%s,fsid=%s", s.cfg.CacheDomain, fsid)
-		if err = unix.Mount("none", mountPoint, "erofs", 0, opts); err != nil {
-			return fmt.Errorf("error mounting slab image %s on %s: %w  (is the kernel built with EROFS_FS_ONDEMAND?)", fsid, mountPoint, err)
-		}
-		// unmount and mount again to force slab to be flushed to disk.
-		// if anything else is mounted already this won't work, though it won't hurt either.
-		// in that case, we assume this happened the first time.
-		if err = unix.Unmount(mountPoint, 0); err != nil {
-			return fmt.Errorf("error unmounting slab image %s on %s: %w", fsid, mountPoint, err)
-		}
-		if err = unix.Mount("none", mountPoint, "erofs", 0, opts); err != nil {
-			return fmt.Errorf("error mounting slab image %s on %s: %w", fsid, mountPoint, err)
-		}
-		logMsg = "mounted and " + logMsg
-	}
-
-	slabFd, err := s.openSlabImageFile(mountPoint)
+// FIXME: consolidate with setupManifestSlab
+func (s *Server) openSlabFile(slabId uint16) error {
+	path := filepath.Join(s.cfg.CachePath, "slab", strconv.Itoa(int(slabId)))
+	slabFd, err := unix.Open(path, unix.O_RDWR|unix.O_CREAT, 0o600)
 	if err != nil {
-		_ = unix.Unmount(mountPoint, 0)
-		return fmt.Errorf("error opening slab image file %s: %w", mountPoint, err)
-	}
-
-	cacheFd, err := s.openSlabBackingFile(slabId)
-	if err != nil {
-		_ = unix.Close(slabFd)
-		_ = unix.Unmount(mountPoint, 0)
-		return fmt.Errorf("error opening slab backing file %s: %w", mountPoint, err)
-	}
-
-	s.stateLock.Lock()
-	s.readfdBySlab[common.TruncU16(slabId)] = slabFds{slabFd, cacheFd}
-	s.stateLock.Unlock()
-
-	log.Println(logMsg, fsid)
-	return nil
-}
-
-func (s *Server) openSlabImageFile(mountPoint string) (int, error) {
-	slabFile := filepath.Join(mountPoint, "slab")
-	slabFd, err := unix.Open(slabFile, unix.O_RDONLY, 0)
-	if err != nil {
-		return 0, err
+		return fmt.Errorf("error opening slab file %s: %w", path, err)
 	}
 
 	// disable readahead so we don't get requests for parts we haven't written
+	// FIXME: still needed?
 	if err = unix.Fadvise(slabFd, 0, 0, unix.FADV_RANDOM); err != nil {
 		_ = unix.Close(slabFd)
 		return 0, fmt.Errorf("fadvise: %w", err)
 	}
 
-	return slabFd, nil
-}
+	s.stateLock.Lock()
+	s.readfdBySlab[common.TruncU16(slabId)] = slabFd
+	s.stateLock.Unlock()
 
-func (s *Server) openSlabBackingFile(slabId uint16) (int, error) {
-	tag, _ := s.SlabInfo(slabId)
-	backingPath := filepath.Join(s.cfg.CachePath, fscachePath(s.cfg.CacheDomain, tag))
-	return unix.Open(backingPath, unix.O_RDWR, 0)
+	log.Println("opened slab file", slabId)
+	return nil
 }
 
 // slab manager

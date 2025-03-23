@@ -565,7 +565,7 @@ func (s *Server) getWriteFdForSlab(slabId uint16) (int, error) {
 func (s *Server) getReadFdForSlab(slabId uint16) (int, error) {
 	s.stateLock.Lock()
 	defer s.stateLock.Unlock()
-	if readFd := s.readfdBySlab[slabId].readFd; readFd > 0 {
+	if readFd := s.readfdBySlab[slabId]; readFd > 0 {
 		return readFd, nil
 	}
 	return 0, errors.New("slab not loaded or missing read fd")
@@ -578,19 +578,6 @@ func (s *Server) gotNewChunk(loc erofs.SlabLoc, digest cdig.CDig, b []byte) erro
 	}
 
 	writeFd, err := s.getWriteFdForSlab(loc.SlabId)
-	if err != nil {
-		// try reading the loc to force cachefiles to load the slab. we haven't
-		// written it yet so this will block waiting for whatever diff op is
-		// calling us. do it in a new goroutine to avoid a deadlock.
-		if readFd, rerr := s.getReadFdForSlab(loc.SlabId); rerr == nil {
-			log.Println("forcing reopen on slab", loc.SlabId)
-			go unix.Pread(readFd, make([]byte, 1), int64(loc.Addr)<<s.blockShift)
-			for i := 0; i < 10 && err != nil; i++ {
-				time.Sleep(50 * time.Duration(i+1) * time.Millisecond)
-				writeFd, err = s.getWriteFdForSlab(loc.SlabId)
-			}
-		}
-	}
 	if err != nil {
 		return err
 	}
