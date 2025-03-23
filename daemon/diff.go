@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -11,6 +12,7 @@ import (
 	"maps"
 	"net/http"
 	"regexp"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -158,8 +160,8 @@ func (s *Server) requestChunk(ctx context.Context, loc erofs.SlabLoc, digest cdi
 
 	if common.IsNotFound(err) && ctx.Value(triedRemanifest{}) == nil {
 		// some required chunk was not found, maybe we can recover by remanifesting
-		log.Println("diff failed due to not found, remanifesting")
-		if s.remanifestOp(ctx, op) != nil {
+		log.Println("chunk not found, remanifesting")
+		if s.doRemanifestReqs(ctx, s.appendRemanifestReqs(nil, op)) != nil {
 			return err // don't log; remanifestOp logs failures individually
 		}
 		// If the set had multiple ops, this one probably finished first and the others are
@@ -186,17 +188,28 @@ func (s *Server) requestPrefetch(ctx context.Context, reqs []cdig.CDig) error {
 	if err != nil {
 		return err
 	}
+
+	var remanifestReqs []MountReq
 	for _, op := range ops {
-		if err := op.wait(); err != nil {
-			log.Printf("prefetch request failed (%v)", err)
+		if opErr := op.wait(); opErr != nil {
+			err = cmp.Or(err, opErr)
+			log.Printf("prefetch request failed (%v)", opErr)
+			if common.IsNotFound(opErr) && ctx.Value(triedRemanifest{}) == nil {
+				// some required chunk was not found, maybe we can recover by remanifesting
+				remanifestReqs = s.appendRemanifestReqs(remanifestReqs, op)
+			}
 		}
 	}
-	for _, op := range ops {
-		if err := op.wait(); err != nil {
-			return err
+
+	if len(remanifestReqs) > 0 {
+		log.Println("chunk not found, remanifesting")
+		if s.doRemanifestReqs(ctx, remanifestReqs) == nil {
+			ctx = context.WithValue(ctx, triedRemanifest{}, true)
+			return s.requestPrefetch(ctx, reqs)
 		}
 	}
-	return nil
+
+	return err
 }
 
 func (s *Server) buildAndStartPrefetch(ctx context.Context, reqs []cdig.CDig) ([]reqOp, error) {
@@ -770,7 +783,7 @@ func (s *Server) pruneRecentReads() {
 	}
 }
 
-func (s *Server) remanifestOp(ctx context.Context, op reqOp) error {
+func (s *Server) appendRemanifestReqs(reqs []MountReq, op reqOp) []MountReq {
 	getSphsFromOp := func(tx *bbolt.Tx) map[Sph]struct{} {
 		switch op := op.(type) {
 		case *singleOp:
@@ -792,15 +805,18 @@ func (s *Server) remanifestOp(ctx context.Context, op reqOp) error {
 		return nil
 	}
 
-	var reqs []MountReq
-	err := s.db.View(func(tx *bbolt.Tx) error {
+	_ = s.db.View(func(tx *bbolt.Tx) error {
 		ib := tx.Bucket(imageBucket)
 		for sph := range getSphsFromOp(tx) {
-			var img pb.DbImage
 			sphStr := sph.String()
+			if slices.ContainsFunc(reqs, func(r MountReq) bool { return r.StorePath == sphStr }) {
+				continue
+			}
+			var img pb.DbImage
 			if buf := ib.Get([]byte(sphStr)); buf != nil {
 				if err := proto.Unmarshal(buf, &img); err != nil {
-					return fmt.Errorf("image unmarshal: %w", err)
+					log.Println("image unmarshal:", err)
+					continue
 				}
 			}
 			reqs = append(reqs, MountReq{
@@ -811,9 +827,12 @@ func (s *Server) remanifestOp(ctx context.Context, op reqOp) error {
 		}
 		return nil
 	})
-	if err != nil {
-		return err
-	} else if len(reqs) == 0 {
+
+	return reqs
+}
+
+func (s *Server) doRemanifestReqs(ctx context.Context, reqs []MountReq) error {
+	if len(reqs) == 0 {
 		return errors.New("couldn't find any images to remanifest")
 	}
 
