@@ -81,7 +81,6 @@
     lm_sensors
     lsof
     ltrace
-    luminanceHDR
     magic-wormhole
     moreutils
     mplayer
@@ -155,10 +154,10 @@
     pkgs.noto-fonts-cjk-sans
     pkgs.noto-fonts-emoji
     pkgs.ubuntu_font_family
-    (pkgs.nerdfonts.override { fonts = [ "UbuntuMono" ]; })
+    pkgs.nerd-fonts.ubuntu-mono
   ];
 
   documentation.nixos.enable = false;
 
-  system.stateVersion = "24.11";
+  system.stateVersion = "25.05";
 }

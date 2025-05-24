@@ -66,12 +66,4 @@ final: prev: {
         '')
     ];
   });
-
-  # Just use LD_PRELOAD here since we can't patch it.
-  zoom-us = prev.zoom-us.overrideAttrs (old: {
-    postFixup = builtins.replaceStrings
-      ["--prefix LD_LIBRARY_PATH"]
-      ["--set LD_PRELOAD ${final.xorg.libXcursor}/lib/libXcursor.so.1 --prefix LD_LIBRARY_PATH"]
-      old.postFixup;
-  });
 }
