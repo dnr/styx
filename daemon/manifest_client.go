@@ -203,7 +203,7 @@ func (s *Server) getNewManifest(ctx context.Context, url string, req manifester.
 			if err != nil {
 				return err
 			}
-			res, err := retryHttpRequest(egCtx, http.MethodPost, url, "application/json", reqBytes)
+			res, err := common.RetryHttpRequest(egCtx, http.MethodPost, url, "application/json", reqBytes)
 			if err != nil {
 				return fmt.Errorf("manifester http error: %w", err)
 			}

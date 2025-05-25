@@ -189,7 +189,7 @@ func NewChunkStoreReadUrl(url, path string) ChunkStoreRead {
 
 func (s *urlChunkStoreRead) Get(ctx context.Context, key string, dst []byte) ([]byte, error) {
 	url := s.url + key
-	res, err := http.Get(url)
+	res, err := common.RetryHttpRequest(ctx, http.MethodGet, url, "", nil)
 	if err != nil {
 		return nil, err
 	}

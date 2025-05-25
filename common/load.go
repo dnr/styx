@@ -1,6 +1,7 @@
 package common
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -18,7 +19,7 @@ func LoadFromFileOrHttpUrl(urlString string) ([]byte, error) {
 	case "file":
 		return os.ReadFile(u.Path)
 	case "http", "https":
-		res, err := http.Get(urlString)
+		res, err := RetryHttpRequest(context.Background(), http.MethodGet, urlString, "", nil)
 		if err != nil {
 			return nil, err
 		}

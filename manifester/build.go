@@ -152,7 +152,7 @@ func (b *ManifestBuilder) Build(
 		return nil, err
 	}
 	narinfoUrl := upstreamUrl.JoinPath(storePathHash + ".narinfo").String()
-	res, err := http.Get(narinfoUrl)
+	res, err := common.RetryHttpRequest(ctx, http.MethodGet, narinfoUrl, "", nil)
 	if err != nil {
 		return nil, fmt.Errorf("%w: upstream http for %s: %w", ErrReq, narinfoUrl, err)
 	}
@@ -199,7 +199,7 @@ func (b *ManifestBuilder) Build(
 	} else {
 		// start := time.Now()
 		narUrl := upstreamUrl.JoinPath(ni.URL).String()
-		res, err = http.Get(narUrl)
+		res, err = common.RetryHttpRequest(ctx, http.MethodGet, narUrl, "", nil)
 		if err != nil {
 			return nil, fmt.Errorf("%w: nar http error for %s: %w", ErrReq, narUrl, err)
 		}
