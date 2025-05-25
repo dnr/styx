@@ -11,7 +11,22 @@
   services.styx.enable = true;
 
   # build with latest kernel to get >= 6.8
-  boot.kernelPackages = pkgs.linuxPackages_latest;
+  #boot.kernelPackages = pkgs.linuxPackages_latest;
+
+  # TODO: temp downgrade to 6.14.6 for amdgpu bug
+  boot.kernelPackages = let
+    version = "6.14.6";
+    src = pkgs.fetchurl {
+      url = "mirror://kernel/linux/kernel/v6.x/linux-${version}.tar.xz";
+      hash = "sha256:1acpjxscw5nvgp19jzd29zhl1c6wdzx0bxp4yy0hy8z2k0cpz091";
+    };
+    argsOverride = {
+      inherit src version;
+      modDirVersion = version;
+    };
+    kernel = pkgs.linux_6_14.override { inherit argsOverride; };
+  in pkgs.linuxPackagesFor kernel;
+
   # some kernel modules that I use that depend on the custom kernel:
   boot.extraModulePackages = with config.boot.kernelPackages; [
     acpi_call
