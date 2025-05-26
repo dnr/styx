@@ -1,8 +1,8 @@
 let
   overlays = if builtins.getEnv "USE_NIX_GOCACHEPROG" == "" then [] else [
     ( import "${fetchTarball {
-        url = "https://github.com/dnr/nix-gocacheprog/archive/aa71e7bb111b.tar.gz";
-        sha256 = "004sf8z1rl701rg1wr0izz6kg68bp7ck9xs419k5yabsqv8agrvx";
+        url = "https://github.com/dnr/nix-gocacheprog/archive/349d679ae547.tar.gz";
+        sha256 = "1c2dkrlc2qym8y6ls40ksxl3x35xdml0yd1m6y4lj91dxa15c1af";
       }}/overlay.nix" )
   ];
 in
