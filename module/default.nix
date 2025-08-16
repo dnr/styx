@@ -50,7 +50,7 @@ in with lib; {
       boot.kernelPatches = [ {
         name = "styx";
         patch = null;
-        extraStructuredConfig = {
+        structuredExtraConfig = {
           CACHEFILES_ONDEMAND = lib.kernel.yes;
           EROFS_FS_ONDEMAND = lib.kernel.yes;
         };
