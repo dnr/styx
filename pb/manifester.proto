@@ -1,0 +1,25 @@
+syntax = "proto3";
+
+package pb;
+option go_package = "github.com/dnr/styx/pb";
+
+import "params.proto";
+
+// see manifester/proto.go for more details on protocol
+message ManifesterChunkDiffReq {
+  GlobalParams params = 1; // for compatibility check
+  repeated Req req = 2;
+
+  message Req {
+    bytes bases = 1; // concatenated digests
+    bytes reqs = 2;  // concatenated digests
+
+    // If set: bases and Reqs each comprise one single file in this compression
+    // format. Pass each one through this decompressor before diffing.
+    string expand_before_diff = 3;
+  }
+}
+
+message Lengths {
+  repeated int64 length = 1;
+}

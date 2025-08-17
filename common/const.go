@@ -9,10 +9,19 @@ var (
 
 	// replaced by ldflags
 	Version = "dev"
+)
 
+const (
 	// Context for signatures
 	ManifestContext     = "styx-manifest-1"
 	DaemonParamsContext = "styx-daemon-params-1"
 
+	// TODO: consolidate with cdig.Algo
 	DigestAlgo = "sha256"
+)
+
+const (
+	CTHdr   = "Content-Type"
+	CTJson  = "application/json"
+	CTProto = "application/protobuf"
 )

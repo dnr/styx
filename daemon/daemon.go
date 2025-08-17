@@ -477,7 +477,7 @@ func jsonmw[reqT, resT any](f func(context.Context, *reqT) (*resT, error)) func(
 			}
 		}()
 
-		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set(common.CTHdr, common.CTJson)
 		wEnc := json.NewEncoder(w)
 
 		var req reqT

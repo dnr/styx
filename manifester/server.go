@@ -5,6 +5,7 @@ import (
 	"cmp"
 	"compress/gzip"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -22,11 +23,13 @@ import (
 	"github.com/DataDog/zstd"
 	"github.com/aws/aws-lambda-go/lambdaurl"
 	"golang.org/x/exp/slices"
+	"google.golang.org/protobuf/proto"
 
 	"github.com/dnr/styx/common"
 	"github.com/dnr/styx/common/cdig"
 	"github.com/dnr/styx/common/errgroup"
 	"github.com/dnr/styx/common/shift"
+	"github.com/dnr/styx/pb"
 )
 
 const (
@@ -34,10 +37,9 @@ const (
 	// maxSmallFileCutoff = 480
 
 	SmallManifestCutoff = 32 * 1024
-)
 
-var (
-	errClosed = errors.New("closed")
+	// max size of json-encoded stats. if we add more stats, may need to increase this
+	statsSpace = 256
 )
 
 type (
@@ -119,34 +121,83 @@ func (s *server) handleManifest(w http.ResponseWriter, req *http.Request) {
 }
 
 func (s *server) handleChunkDiff(w http.ResponseWriter, req *http.Request) {
-	var r ChunkDiffReq
-	if err := json.NewDecoder(req.Body).Decode(&r); err != nil {
-		log.Println("json parse error:", err)
+	reqBody, err := io.ReadAll(io.LimitReader(req.Body, 1<<20))
+	if err != nil || len(reqBody) == 0 {
+		log.Println("body read error:", err)
 		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+
+	var r pb.ManifesterChunkDiffReq
+	switch req.Header.Get(common.CTHdr) {
+	case common.CTJson:
+		var jr DeprecatedChunkDiffReq
+		if err := json.Unmarshal(reqBody, &jr); err != nil {
+			writeError(w, fmt.Errorf("%w: json unmarshal: %w", ErrReq, err))
+			return
+		}
+		// translate json to proto for backwards compatibility
+		r.Params = &pb.GlobalParams{
+			DigestAlgo: cdig.Algo,
+			DigestBits: cdig.Bits,
+		}
+		r.Req = []*pb.ManifesterChunkDiffReq_Req{{
+			Bases:            jr.Bases,
+			Reqs:             jr.Reqs,
+			ExpandBeforeDiff: jr.ExpandBeforeDiff,
+		}}
+	case common.CTProto:
+		if err := proto.Unmarshal(reqBody, &r); err != nil {
+			writeError(w, fmt.Errorf("%w: proto unmarshal: %w", ErrReq, err))
+			return
+		}
+	default:
+		writeError(w, fmt.Errorf("%w: invalid content-type", ErrReq))
+		return
+	}
+
+	if r.Params.GetDigestAlgo() != cdig.Algo || r.Params.GetDigestBits() != cdig.Bits {
+		writeError(w, fmt.Errorf("%w: parameter mismatch", ErrReq))
 		return
 	}
 
 	// load requested chunks
 	start := time.Now()
 
-	var baseData, reqData []byte
-	var baseErr, reqErr error
-	var wg sync.WaitGroup
+	n := len(r.Req)
+	baseDatas := make([][]byte, n)
+	reqDatas := make([][]byte, n)
+	baseErrs := make([]error, n)
+	reqErrs := make([]error, n)
+	stats := ChunkDiffStats{Reqs: n}
 
-	// fetch both in parallel
+	// fetch all in parallel
 	egCtx := errgroup.WithContext(req.Context())
 	egCtx.SetLimit(s.cfg.ChunkDiffParallel)
-	wg.Add(2)
-	go func() {
-		baseData, baseErr = s.expand(egCtx, cdig.FromSliceAlias(r.Bases), r.ExpandBeforeDiff)
-		wg.Done()
-	}()
-	go func() {
-		reqData, reqErr = s.expand(egCtx, cdig.FromSliceAlias(r.Reqs), r.ExpandBeforeDiff)
-		wg.Done()
-	}()
-	// wait for both
+
+	var wg sync.WaitGroup
+	wg.Add(2 * n)
+	for i, ri := range r.Req {
+		if ri.ExpandBeforeDiff != "" {
+			stats.Expands++
+		}
+		stats.BaseChunks += len(ri.Bases) / cdig.Bytes
+		stats.ReqChunks += len(ri.Reqs) / cdig.Bytes
+
+		go func() {
+			defer wg.Done()
+			baseDatas[i], baseErrs[i] = s.expand(egCtx, cdig.FromSliceAlias(ri.Bases), ri.ExpandBeforeDiff)
+		}()
+		go func() {
+			defer wg.Done()
+			reqDatas[i], reqErrs[i] = s.expand(egCtx, cdig.FromSliceAlias(ri.Reqs), ri.ExpandBeforeDiff)
+		}()
+	}
+	// wait for all
 	wg.Wait()
+
+	baseErr := errors.Join(baseErrs...)
+	reqErr := errors.Join(reqErrs...)
 	if baseErr != nil || reqErr != nil {
 		if baseErr != nil {
 			log.Println("chunk read (base) error:", baseErr)
@@ -159,17 +210,27 @@ func (s *server) handleChunkDiff(w http.ResponseWriter, req *http.Request) {
 	}
 	dlDone := time.Now()
 
-	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set(common.CTHdr, "application/octet-stream")
 
-	// max size of json-encoded stats. if we add more stats, may need to increase this
-	const statsSpace = 256
+	// write lengths of req data (for recompress; if not recompressing, caller should know req
+	// data length already)
+	lensHdr, reqDataLen, err := makeLengthsHeader(reqDatas)
+	if err != nil {
+		log.Println("proto marshal error:", err)
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set(LengthsHeader, lensHdr)
 
 	cw := countWriter{w: w}
-	zw := zstd.NewWriterPatcher(&cw, s.cfg.ChunkDiffZstdLevel, baseData, int64(len(reqData))+statsSpace)
-	if _, err := zw.Write(reqData); err != nil {
-		log.Printf("zstd write error %v", err)
-		w.WriteHeader(http.StatusInternalServerError) // this will fail if zstd wrote anything
-		return
+	baseData := common.ContiguousBytes(baseDatas)
+	zw := zstd.NewWriterPatcher(&cw, s.cfg.ChunkDiffZstdLevel, baseData, reqDataLen+statsSpace)
+	for _, data := range reqDatas {
+		if _, err := zw.Write(data); err != nil {
+			log.Printf("zstd write error %v", err)
+			w.WriteHeader(http.StatusInternalServerError) // this will fail if zstd wrote anything
+			return
+		}
 	}
 
 	// flush to get accurate count in cw
@@ -179,15 +240,11 @@ func (s *server) handleChunkDiff(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	stats := ChunkDiffStats{
-		BaseChunks: len(r.Bases) / cdig.Bytes,
-		BaseBytes:  len(baseData),
-		ReqChunks:  len(r.Reqs) / cdig.Bytes,
-		ReqBytes:   len(reqData),
-		DiffBytes:  cw.c,
-		DlTotalMs:  dlDone.Sub(start).Milliseconds(),
-		ZstdMs:     time.Now().Sub(dlDone).Milliseconds(),
-	}
+	stats.BaseBytes = len(baseData)
+	stats.ReqBytes = int(reqDataLen)
+	stats.DiffBytes = cw.c
+	stats.DlTotalMs = dlDone.Sub(start).Milliseconds()
+	stats.ZstdMs = time.Now().Sub(dlDone).Milliseconds()
 	statsEnc, err := json.Marshal(stats)
 	if err != nil || len(statsEnc) > statsSpace {
 		statsEnc = []byte("{}")
@@ -339,16 +396,29 @@ func (s *server) Stop() {
 }
 
 func writeError(w http.ResponseWriter, err error) {
-	w.Header().Set("Content-Type", "text/plain")
+	code := http.StatusInternalServerError
 	switch {
 	case errors.Is(err, ErrReq):
-		w.WriteHeader(http.StatusExpectationFailed)
+		code = http.StatusExpectationFailed
 	case common.IsNotFound(err):
-		w.WriteHeader(http.StatusNotFound)
+		code = http.StatusNotFound
 	case errors.Is(err, ErrInternal):
-		w.WriteHeader(http.StatusInternalServerError)
-	default:
-		w.WriteHeader(http.StatusInternalServerError)
+		code = http.StatusInternalServerError
 	}
-	w.Write([]byte(err.Error()))
+	http.Error(w, err.Error(), code)
+}
+
+func makeLengthsHeader(reqDatas [][]byte) (string, int64, error) {
+	var lens pb.Lengths
+	lens.Length = make([]int64, len(reqDatas))
+	var reqDataLen int64
+	for i, data := range reqDatas {
+		lens.Length[i] = int64(len(data))
+		reqDataLen += int64(len(data))
+	}
+	lensEnc, err := proto.Marshal(&lens)
+	if err != nil {
+		return "", 0, err
+	}
+	return base64.RawURLEncoding.EncodeToString(lensEnc), reqDataLen, nil
 }

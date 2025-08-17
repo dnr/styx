@@ -24,6 +24,9 @@ var (
 
 	ExpandGz = "gz"
 	ExpandXz = "xz"
+
+	// header value is base64(proto-encoded pb.Lengths)
+	LengthsHeader = "x-styx-lengths"
 )
 
 type (
@@ -41,8 +44,8 @@ type (
 	}
 	// response is SignedManifest
 
-	// TODO: move this to pb so we don't have to use base64?
-	ChunkDiffReq struct {
+	// deprecated: use pb.ManifesterChunkDiffReq
+	DeprecatedChunkDiffReq struct {
 		Bases []byte
 		Reqs  []byte
 
@@ -50,6 +53,7 @@ type (
 		// format. Pass each one through this decompressor before diffing.
 		ExpandBeforeDiff string `json:",omitempty"`
 	}
+
 	// Response is compressed concatenation of reqs, using bases as compression base,
 	// with ChunkDiffStats (json) appended after that (also compressed).
 	// Bases and Reqs do not need to be the same length.
@@ -58,11 +62,21 @@ type (
 	// (256 * 64 KiB chunks = 16 MiB, larger chunks have lower limit on digests.)
 	// Note if running on lambda: after the first 6 MB of streamed data, bandwidth is limited.
 	// So aim for responses to be < 6 MB.
-	//
+
+	// Server will add header named LengthsHeader with lengths of req data for each individual
+	// request. Note that if not expanding, the caller will already know that information,
+	// since it knows the size of each requested chunk. If expanding, though, it doesn't know
+	// the expanded size. If there's only one request, similarly, the caller can determine the
+	// expanded size since it's the full reconstructed body (minus stats). But for more than
+	// one request, there's no additional framing, so the length header will be needed to
+	// separate them.
+
 	// ChunkDiffStats must contain only integers! (For now, since we sometimes scan backwards
 	// to find the start of the stats. We can relax this requirement if we write a reverse json
 	// parser.)
 	ChunkDiffStats struct {
+		Reqs       int   `json:"reqs"`
+		Expands    int   `json:"exps"`
 		BaseChunks int   `json:"baseC"`
 		BaseBytes  int   `json:"baseB"`
 		ReqChunks  int   `json:"reqC"`

@@ -141,7 +141,7 @@ func internalCmd() *cobra.Command {
 				if err != nil {
 					return err
 				}
-				hReq.Header.Set("Content-Type", "application/json")
+				hReq.Header.Set("Content-Type", common.CTJson)
 				res, err := http.DefaultClient.Do(hReq)
 				if err == nil {
 					if res.StatusCode != http.StatusOK {
