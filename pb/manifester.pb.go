@@ -21,16 +21,13 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
+// see manifester/proto.go for more details on protocol
 type ManifesterChunkDiffReq struct {
-	state  protoimpl.MessageState `protogen:"open.v1"`
-	Params *GlobalParams          `protobuf:"bytes,1,opt,name=params,proto3" json:"params,omitempty"` // for compatibility check
-	Bases  []byte                 `protobuf:"bytes,2,opt,name=bases,proto3" json:"bases,omitempty"`
-	Reqs   []byte                 `protobuf:"bytes,3,opt,name=reqs,proto3" json:"reqs,omitempty"`
-	// If set: Bases and Reqs each comprise one single file in the given compression
-	// format. Pass each one through this decompressor before diffing.
-	ExpandBeforeDiff string `protobuf:"bytes,4,opt,name=expand_before_diff,json=expandBeforeDiff,proto3" json:"expand_before_diff,omitempty"`
-	unknownFields    protoimpl.UnknownFields
-	sizeCache        protoimpl.SizeCache
+	state         protoimpl.MessageState        `protogen:"open.v1"`
+	Params        *GlobalParams                 `protobuf:"bytes,1,opt,name=params,proto3" json:"params,omitempty"` // for compatibility check
+	Req           []*ManifesterChunkDiffReq_Req `protobuf:"bytes,2,rep,name=req,proto3" json:"req,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *ManifesterChunkDiffReq) Reset() {
@@ -70,25 +67,11 @@ func (x *ManifesterChunkDiffReq) GetParams() *GlobalParams {
 	return nil
 }
 
-func (x *ManifesterChunkDiffReq) GetBases() []byte {
+func (x *ManifesterChunkDiffReq) GetReq() []*ManifesterChunkDiffReq_Req {
 	if x != nil {
-		return x.Bases
+		return x.Req
 	}
 	return nil
-}
-
-func (x *ManifesterChunkDiffReq) GetReqs() []byte {
-	if x != nil {
-		return x.Reqs
-	}
-	return nil
-}
-
-func (x *ManifesterChunkDiffReq) GetExpandBeforeDiff() string {
-	if x != nil {
-		return x.ExpandBeforeDiff
-	}
-	return ""
 }
 
 type Lengths struct {
@@ -135,16 +118,80 @@ func (x *Lengths) GetLength() []int64 {
 	return nil
 }
 
+type ManifesterChunkDiffReq_Req struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Bases []byte                 `protobuf:"bytes,1,opt,name=bases,proto3" json:"bases,omitempty"` // concatenated digests
+	Reqs  []byte                 `protobuf:"bytes,2,opt,name=reqs,proto3" json:"reqs,omitempty"`   // concatenated digests
+	// If set: bases and Reqs each comprise one single file in this compression
+	// format. Pass each one through this decompressor before diffing.
+	ExpandBeforeDiff string `protobuf:"bytes,3,opt,name=expand_before_diff,json=expandBeforeDiff,proto3" json:"expand_before_diff,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
+}
+
+func (x *ManifesterChunkDiffReq_Req) Reset() {
+	*x = ManifesterChunkDiffReq_Req{}
+	mi := &file_manifester_proto_msgTypes[2]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ManifesterChunkDiffReq_Req) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ManifesterChunkDiffReq_Req) ProtoMessage() {}
+
+func (x *ManifesterChunkDiffReq_Req) ProtoReflect() protoreflect.Message {
+	mi := &file_manifester_proto_msgTypes[2]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ManifesterChunkDiffReq_Req.ProtoReflect.Descriptor instead.
+func (*ManifesterChunkDiffReq_Req) Descriptor() ([]byte, []int) {
+	return file_manifester_proto_rawDescGZIP(), []int{0, 0}
+}
+
+func (x *ManifesterChunkDiffReq_Req) GetBases() []byte {
+	if x != nil {
+		return x.Bases
+	}
+	return nil
+}
+
+func (x *ManifesterChunkDiffReq_Req) GetReqs() []byte {
+	if x != nil {
+		return x.Reqs
+	}
+	return nil
+}
+
+func (x *ManifesterChunkDiffReq_Req) GetExpandBeforeDiff() string {
+	if x != nil {
+		return x.ExpandBeforeDiff
+	}
+	return ""
+}
+
 var File_manifester_proto protoreflect.FileDescriptor
 
 const file_manifester_proto_rawDesc = "" +
 	"\n" +
-	"\x10manifester.proto\x12\x02pb\x1a\fparams.proto\"\x9a\x01\n" +
+	"\x10manifester.proto\x12\x02pb\x1a\fparams.proto\"\xd3\x01\n" +
 	"\x16ManifesterChunkDiffReq\x12(\n" +
-	"\x06params\x18\x01 \x01(\v2\x10.pb.GlobalParamsR\x06params\x12\x14\n" +
-	"\x05bases\x18\x02 \x01(\fR\x05bases\x12\x12\n" +
-	"\x04reqs\x18\x03 \x01(\fR\x04reqs\x12,\n" +
-	"\x12expand_before_diff\x18\x04 \x01(\tR\x10expandBeforeDiff\"!\n" +
+	"\x06params\x18\x01 \x01(\v2\x10.pb.GlobalParamsR\x06params\x120\n" +
+	"\x03req\x18\x02 \x03(\v2\x1e.pb.ManifesterChunkDiffReq.ReqR\x03req\x1a]\n" +
+	"\x03Req\x12\x14\n" +
+	"\x05bases\x18\x01 \x01(\fR\x05bases\x12\x12\n" +
+	"\x04reqs\x18\x02 \x01(\fR\x04reqs\x12,\n" +
+	"\x12expand_before_diff\x18\x03 \x01(\tR\x10expandBeforeDiff\"!\n" +
 	"\aLengths\x12\x16\n" +
 	"\x06length\x18\x01 \x03(\x03R\x06lengthB\x18Z\x16github.com/dnr/styx/pbb\x06proto3"
 
@@ -160,19 +207,21 @@ func file_manifester_proto_rawDescGZIP() []byte {
 	return file_manifester_proto_rawDescData
 }
 
-var file_manifester_proto_msgTypes = make([]protoimpl.MessageInfo, 2)
+var file_manifester_proto_msgTypes = make([]protoimpl.MessageInfo, 3)
 var file_manifester_proto_goTypes = []any{
-	(*ManifesterChunkDiffReq)(nil), // 0: pb.ManifesterChunkDiffReq
-	(*Lengths)(nil),                // 1: pb.Lengths
-	(*GlobalParams)(nil),           // 2: pb.GlobalParams
+	(*ManifesterChunkDiffReq)(nil),     // 0: pb.ManifesterChunkDiffReq
+	(*Lengths)(nil),                    // 1: pb.Lengths
+	(*ManifesterChunkDiffReq_Req)(nil), // 2: pb.ManifesterChunkDiffReq.Req
+	(*GlobalParams)(nil),               // 3: pb.GlobalParams
 }
 var file_manifester_proto_depIdxs = []int32{
-	2, // 0: pb.ManifesterChunkDiffReq.params:type_name -> pb.GlobalParams
-	1, // [1:1] is the sub-list for method output_type
-	1, // [1:1] is the sub-list for method input_type
-	1, // [1:1] is the sub-list for extension type_name
-	1, // [1:1] is the sub-list for extension extendee
-	0, // [0:1] is the sub-list for field type_name
+	3, // 0: pb.ManifesterChunkDiffReq.params:type_name -> pb.GlobalParams
+	2, // 1: pb.ManifesterChunkDiffReq.req:type_name -> pb.ManifesterChunkDiffReq.Req
+	2, // [2:2] is the sub-list for method output_type
+	2, // [2:2] is the sub-list for method input_type
+	2, // [2:2] is the sub-list for extension type_name
+	2, // [2:2] is the sub-list for extension extendee
+	0, // [0:2] is the sub-list for field type_name
 }
 
 func init() { file_manifester_proto_init() }
@@ -187,7 +236,7 @@ func file_manifester_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_manifester_proto_rawDesc), len(file_manifester_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   2,
+			NumMessages:   3,
 			NumExtensions: 0,
 			NumServices:   0,
 		},
