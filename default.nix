@@ -89,6 +89,7 @@ rec {
     builder = pkgs.writeShellScript "build-testdata" ''
       set -e; . .attrs.sh
       PATH=${pkgs.coreutils}/bin:${pkgs.gnused}/bin:${pkgs.wget}/bin:$PATH
+      export NIX_SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt
       out=''${outputs[out]}
       mkdir $out && cd $out
       ${pkgs.lib.concatMapStringsSep "\n" (p: ''
