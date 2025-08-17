@@ -129,11 +129,11 @@ func (s *server) handleChunkDiff(w http.ResponseWriter, req *http.Request) {
 	}
 
 	var r pb.ManifesterChunkDiffReq
-	if reqBody[0] == '{' {
+	switch req.Header.Get(common.CTHdr) {
+	case common.CTJson:
 		var jr DeprecatedChunkDiffReq
 		if err := json.Unmarshal(reqBody, &jr); err != nil {
-			log.Println("json parse error:", err)
-			w.WriteHeader(http.StatusBadRequest)
+			writeError(w, fmt.Errorf("%w: json unmarshal: %w", ErrReq, err))
 			return
 		}
 		// translate json to proto for backwards compatibility
@@ -141,17 +141,19 @@ func (s *server) handleChunkDiff(w http.ResponseWriter, req *http.Request) {
 			DigestAlgo: cdig.Algo,
 			DigestBits: cdig.Bits,
 		}
-		r.Req = []*pb.ManifesterChunkDiffReq_Req{&pb.ManifesterChunkDiffReq_Req{
+		r.Req = []*pb.ManifesterChunkDiffReq_Req{{
 			Bases:            jr.Bases,
 			Reqs:             jr.Reqs,
 			ExpandBeforeDiff: jr.ExpandBeforeDiff,
 		}}
-	} else {
+	case common.CTProto:
 		if err := proto.Unmarshal(reqBody, &r); err != nil {
-			log.Println("proto unmarshal error:", err)
-			w.WriteHeader(http.StatusBadRequest)
+			writeError(w, fmt.Errorf("%w: proto unmarshal: %w", ErrReq, err))
 			return
 		}
+	default:
+		writeError(w, fmt.Errorf("%w: invalid content-type", ErrReq))
+		return
 	}
 
 	if r.Params.GetDigestAlgo() != cdig.Algo || r.Params.GetDigestBits() != cdig.Bits {
@@ -208,7 +210,7 @@ func (s *server) handleChunkDiff(w http.ResponseWriter, req *http.Request) {
 	}
 	dlDone := time.Now()
 
-	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set(common.CTHdr, "application/octet-stream")
 
 	// write lengths of req data (for recompress; if not recompressing, caller should know req
 	// data length already)
@@ -396,18 +398,16 @@ func (s *server) Stop() {
 }
 
 func writeError(w http.ResponseWriter, err error) {
-	w.Header().Set("Content-Type", "text/plain")
+	code := http.StatusInternalServerError
 	switch {
 	case errors.Is(err, ErrReq):
-		w.WriteHeader(http.StatusExpectationFailed)
+		code = http.StatusExpectationFailed
 	case common.IsNotFound(err):
-		w.WriteHeader(http.StatusNotFound)
+		code = http.StatusNotFound
 	case errors.Is(err, ErrInternal):
-		w.WriteHeader(http.StatusInternalServerError)
-	default:
-		w.WriteHeader(http.StatusInternalServerError)
+		code = http.StatusInternalServerError
 	}
-	w.Write([]byte(err.Error()))
+	http.Error(w, err.Error(), code)
 }
 
 func contiguousBytes(in [][]byte) []byte {

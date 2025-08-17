@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+
+	"github.com/dnr/styx/common"
 )
 
 // simple client for json requests/responses over http over unix socket
@@ -38,7 +40,7 @@ func (c *StyxClient) Call(path string, req, res any) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	httpRes, err := c.cli.Post(u.String(), "application/json", bytes.NewReader(buf))
+	httpRes, err := c.cli.Post(u.String(), common.CTJson, bytes.NewReader(buf))
 	if err != nil {
 		return 0, err
 	}

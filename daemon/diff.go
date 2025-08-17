@@ -638,7 +638,7 @@ func (s *Server) getChunkDiff(ctx context.Context, bases, reqs []cdig.CDig, reco
 		return nil, err
 	}
 	u := strings.TrimSuffix(s.p().params.ChunkDiffUrl, "/") + manifester.ChunkDiffPath
-	res, err := common.RetryHttpRequest(ctx, http.MethodPost, u, "application/json", reqBytes)
+	res, err := common.RetryHttpRequest(ctx, http.MethodPost, u, common.CTJson, reqBytes)
 	if err != nil {
 		return nil, err
 	}
