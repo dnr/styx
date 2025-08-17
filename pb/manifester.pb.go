@@ -91,6 +91,50 @@ func (x *ManifesterChunkDiffReq) GetExpandBeforeDiff() string {
 	return ""
 }
 
+type Lengths struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Length        []int64                `protobuf:"varint,1,rep,packed,name=length,proto3" json:"length,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Lengths) Reset() {
+	*x = Lengths{}
+	mi := &file_manifester_proto_msgTypes[1]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Lengths) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Lengths) ProtoMessage() {}
+
+func (x *Lengths) ProtoReflect() protoreflect.Message {
+	mi := &file_manifester_proto_msgTypes[1]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Lengths.ProtoReflect.Descriptor instead.
+func (*Lengths) Descriptor() ([]byte, []int) {
+	return file_manifester_proto_rawDescGZIP(), []int{1}
+}
+
+func (x *Lengths) GetLength() []int64 {
+	if x != nil {
+		return x.Length
+	}
+	return nil
+}
+
 var File_manifester_proto protoreflect.FileDescriptor
 
 const file_manifester_proto_rawDesc = "" +
@@ -100,7 +144,9 @@ const file_manifester_proto_rawDesc = "" +
 	"\x06params\x18\x01 \x01(\v2\x10.pb.GlobalParamsR\x06params\x12\x14\n" +
 	"\x05bases\x18\x02 \x01(\fR\x05bases\x12\x12\n" +
 	"\x04reqs\x18\x03 \x01(\fR\x04reqs\x12,\n" +
-	"\x12expand_before_diff\x18\x04 \x01(\tR\x10expandBeforeDiffB\x18Z\x16github.com/dnr/styx/pbb\x06proto3"
+	"\x12expand_before_diff\x18\x04 \x01(\tR\x10expandBeforeDiff\"!\n" +
+	"\aLengths\x12\x16\n" +
+	"\x06length\x18\x01 \x03(\x03R\x06lengthB\x18Z\x16github.com/dnr/styx/pbb\x06proto3"
 
 var (
 	file_manifester_proto_rawDescOnce sync.Once
@@ -114,13 +160,14 @@ func file_manifester_proto_rawDescGZIP() []byte {
 	return file_manifester_proto_rawDescData
 }
 
-var file_manifester_proto_msgTypes = make([]protoimpl.MessageInfo, 1)
+var file_manifester_proto_msgTypes = make([]protoimpl.MessageInfo, 2)
 var file_manifester_proto_goTypes = []any{
 	(*ManifesterChunkDiffReq)(nil), // 0: pb.ManifesterChunkDiffReq
-	(*GlobalParams)(nil),           // 1: pb.GlobalParams
+	(*Lengths)(nil),                // 1: pb.Lengths
+	(*GlobalParams)(nil),           // 2: pb.GlobalParams
 }
 var file_manifester_proto_depIdxs = []int32{
-	1, // 0: pb.ManifesterChunkDiffReq.params:type_name -> pb.GlobalParams
+	2, // 0: pb.ManifesterChunkDiffReq.params:type_name -> pb.GlobalParams
 	1, // [1:1] is the sub-list for method output_type
 	1, // [1:1] is the sub-list for method input_type
 	1, // [1:1] is the sub-list for extension type_name
@@ -140,7 +187,7 @@ func file_manifester_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_manifester_proto_rawDesc), len(file_manifester_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   1,
+			NumMessages:   2,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

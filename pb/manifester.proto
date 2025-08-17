@@ -15,3 +15,7 @@ message ManifesterChunkDiffReq {
   // format. Pass each one through this decompressor before diffing.
   string expand_before_diff = 4;
 }
+
+message Lengths {
+  repeated int64 length = 1;
+}
