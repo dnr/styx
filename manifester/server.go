@@ -119,7 +119,7 @@ func (s *server) handleManifest(w http.ResponseWriter, req *http.Request) {
 }
 
 func (s *server) handleChunkDiff(w http.ResponseWriter, req *http.Request) {
-	var r ChunkDiffReq
+	var r DeprecatedChunkDiffReq
 	if err := json.NewDecoder(req.Body).Decode(&r); err != nil {
 		log.Println("json parse error:", err)
 		w.WriteHeader(http.StatusBadRequest)

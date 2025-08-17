@@ -41,8 +41,8 @@ type (
 	}
 	// response is SignedManifest
 
-	// TODO: move this to pb so we don't have to use base64?
-	ChunkDiffReq struct {
+	// deprecated: use pb.ManifesterChunkDiffReq
+	DeprecatedChunkDiffReq struct {
 		Bases []byte
 		Reqs  []byte
 
@@ -50,6 +50,7 @@ type (
 		// format. Pass each one through this decompressor before diffing.
 		ExpandBeforeDiff string `json:",omitempty"`
 	}
+
 	// Response is compressed concatenation of reqs, using bases as compression base,
 	// with ChunkDiffStats (json) appended after that (also compressed).
 	// Bases and Reqs do not need to be the same length.

@@ -1,0 +1,17 @@
+syntax = "proto3";
+
+package pb;
+option go_package = "github.com/dnr/styx/pb";
+
+import "params.proto";
+
+message ManifesterChunkDiffReq {
+  GlobalParams params = 1; // for compatibility check
+
+  bytes bases = 2;
+  bytes reqs = 3;
+
+  // If set: Bases and Reqs each comprise one single file in the given compression
+  // format. Pass each one through this decompressor before diffing.
+  string expand_before_diff = 4;
+}

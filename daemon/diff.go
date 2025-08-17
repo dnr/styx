@@ -629,7 +629,7 @@ func (s *Server) gotNewChunk(loc erofs.SlabLoc, digest cdig.CDig, b []byte) erro
 }
 
 func (s *Server) getChunkDiff(ctx context.Context, bases, reqs []cdig.CDig, recompress []string) (io.ReadCloser, error) {
-	r := manifester.ChunkDiffReq{Bases: cdig.ToSliceAlias(bases), Reqs: cdig.ToSliceAlias(reqs)}
+	r := manifester.DeprecatedChunkDiffReq{Bases: cdig.ToSliceAlias(bases), Reqs: cdig.ToSliceAlias(reqs)}
 	if len(recompress) > 0 {
 		r.ExpandBeforeDiff = recompress[0]
 	}
