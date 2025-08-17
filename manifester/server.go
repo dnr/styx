@@ -156,10 +156,6 @@ func (s *server) handleChunkDiff(w http.ResponseWriter, req *http.Request) {
 
 	// TODO: check params
 
-	var stats ChunkDiffStats
-	// BaseBytes:  len(baseData),
-	// ReqBytes:   reqDataLen,
-
 	// load requested chunks
 	start := time.Now()
 
@@ -168,6 +164,7 @@ func (s *server) handleChunkDiff(w http.ResponseWriter, req *http.Request) {
 	reqDatas := make([][]byte, n)
 	baseErrs := make([]error, n)
 	reqErrs := make([]error, n)
+	var stats ChunkDiffStats
 
 	// fetch all in parallel
 	egCtx := errgroup.WithContext(req.Context())
@@ -179,6 +176,9 @@ func (s *server) handleChunkDiff(w http.ResponseWriter, req *http.Request) {
 		ri := r.Req[i]
 
 		stats.Reqs++
+		if ri.ExpandBeforeDiff != "" {
+			stats.Expands++
+		}
 		stats.BaseChunks += len(ri.Bases) / cdig.Bytes
 		stats.ReqChunks += len(ri.Reqs) / cdig.Bytes
 
@@ -212,20 +212,13 @@ func (s *server) handleChunkDiff(w http.ResponseWriter, req *http.Request) {
 
 	// write lengths of req data (for recompress; if not recompressing, caller should know req
 	// data length already)
-	var lens pb.Lengths
-	lens.Length = make([]int64, n)
-	var reqDataLen int64
-	for i, data := range reqDatas {
-		lens.Length[i] = int64(len(data))
-		reqDataLen += int64(len(data))
-	}
-	lensEnc, err := proto.Marshal(&lens)
+	lensHdr, reqDataLen, err := makeLengthsHeader(reqDatas)
 	if err != nil {
 		log.Println("proto marshal error:", err)
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
-	w.Header().Set(LengthsHeader, base64.RawURLEncoding.EncodeToString(lensEnc))
+	w.Header().Set(LengthsHeader, lensHdr)
 
 	cw := countWriter{w: w}
 	baseData := contiguousBytes(baseDatas)
@@ -423,4 +416,19 @@ func contiguousBytes(in [][]byte) []byte {
 	} else {
 		return bytes.Join(in, nil)
 	}
+}
+
+func makeLengthsHeader(reqDatas [][]byte) (string, int64, error) {
+	var lens pb.Lengths
+	lens.Length = make([]int64, len(reqDatas))
+	var reqDataLen int64
+	for i, data := range reqDatas {
+		lens.Length[i] = int64(len(data))
+		reqDataLen += int64(len(data))
+	}
+	lensEnc, err := proto.Marshal(&lens)
+	if err != nil {
+		return "", 0, err
+	}
+	return base64.RawURLEncoding.EncodeToString(lensEnc), reqDataLen, nil
 }
