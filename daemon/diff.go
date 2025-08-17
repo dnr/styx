@@ -629,16 +629,25 @@ func (s *Server) gotNewChunk(loc erofs.SlabLoc, digest cdig.CDig, b []byte) erro
 }
 
 func (s *Server) getChunkDiff(ctx context.Context, bases, reqs []cdig.CDig, recompress []string) (io.ReadCloser, error) {
-	r := manifester.DeprecatedChunkDiffReq{Bases: cdig.ToSliceAlias(bases), Reqs: cdig.ToSliceAlias(reqs)}
-	if len(recompress) > 0 {
-		r.ExpandBeforeDiff = recompress[0]
+	r := &pb.ManifesterChunkDiffReq{
+		Params: &pb.GlobalParams{
+			DigestAlgo: cdig.Algo,
+			DigestBits: cdig.Bits,
+		},
+		Req: []*pb.ManifesterChunkDiffReq_Req{{
+			Bases: cdig.ToSliceAlias(bases),
+			Reqs:  cdig.ToSliceAlias(reqs),
+		}},
 	}
-	reqBytes, err := json.Marshal(r)
+	if len(recompress) > 0 {
+		r.Req[0].ExpandBeforeDiff = recompress[0]
+	}
+	reqBytes, err := proto.Marshal(r)
 	if err != nil {
 		return nil, err
 	}
 	u := strings.TrimSuffix(s.p().params.ChunkDiffUrl, "/") + manifester.ChunkDiffPath
-	res, err := common.RetryHttpRequest(ctx, http.MethodPost, u, common.CTJson, reqBytes)
+	res, err := common.RetryHttpRequest(ctx, http.MethodPost, u, common.CTProto, reqBytes)
 	if err != nil {
 		return nil, err
 	}
