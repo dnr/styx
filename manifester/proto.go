@@ -62,7 +62,15 @@ type (
 	// (256 * 64 KiB chunks = 16 MiB, larger chunks have lower limit on digests.)
 	// Note if running on lambda: after the first 6 MB of streamed data, bandwidth is limited.
 	// So aim for responses to be < 6 MB.
-	//
+
+	// Server will add header named LengthsHeader with lengths of req data for each individual
+	// request. Note that if not expanding, the caller will already know that information,
+	// since it knows the size of each requested chunk. If expanding, though, it doesn't know
+	// the expanded size. If there's only one request, similarly, the caller can determine the
+	// expanded size since it's the full reconstructed body (minus stats). But for more than
+	// one request, there's no additional framing, so the length header will be needed to
+	// separate them.
+
 	// ChunkDiffStats must contain only integers! (For now, since we sometimes scan backwards
 	// to find the start of the stats. We can relax this requirement if we write a reverse json
 	// parser.)
