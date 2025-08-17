@@ -154,7 +154,10 @@ func (s *server) handleChunkDiff(w http.ResponseWriter, req *http.Request) {
 		}
 	}
 
-	// TODO: check params
+	if r.Params.GetDigestAlgo() != cdig.Algo || r.Params.GetDigestBits() != cdig.Bits {
+		writeError(w, fmt.Errorf("%w: parameter mismatch", ErrReq))
+		return
+	}
 
 	// load requested chunks
 	start := time.Now()
