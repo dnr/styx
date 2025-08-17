@@ -24,6 +24,9 @@ var (
 
 	ExpandGz = "gz"
 	ExpandXz = "xz"
+
+	// header value is base64(proto-encoded pb.Lengths)
+	LengthsHeader = "x-styx-lengths"
 )
 
 type (
@@ -64,6 +67,8 @@ type (
 	// to find the start of the stats. We can relax this requirement if we write a reverse json
 	// parser.)
 	ChunkDiffStats struct {
+		Reqs       int   `json:"reqs"`
+		Expands    int   `json:"exps"`
 		BaseChunks int   `json:"baseC"`
 		BaseBytes  int   `json:"baseB"`
 		ReqChunks  int   `json:"reqC"`

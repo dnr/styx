@@ -14,5 +14,6 @@ var (
 	ManifestContext     = "styx-manifest-1"
 	DaemonParamsContext = "styx-daemon-params-1"
 
+	// TODO: consolidate with cdig.Algo
 	DigestAlgo = "sha256"
 )
