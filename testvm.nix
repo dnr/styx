@@ -12,7 +12,10 @@ hostPkgs.testers.runNixOSTest ({config, ...}: {
              "${hostPkgs.btrfs-progs}/bin/mkfs.btrfs"
            else throw "unknown fs type";
     newScript = hostPkgs.runCommand "testvm-start-script" {} ''
-      sed 's|/nix/store/[^ /]*/bin/mkfs[.]ext4|${mkfs}|' < ${origScript} > $out
+      sed -e '
+        s|/nix/store/[^ /]*/bin/mkfs[.]ext4|${mkfs}|
+        s|,mount_tag=nix-store|&,multidevs=remap|
+      ' < ${origScript} > $out
       chmod a+x $out
     '';
   in ["--start-scripts ${newScript}"];
