@@ -167,7 +167,7 @@ func (s *server) handleChunkDiff(w http.ResponseWriter, req *http.Request) {
 	reqDatas := make([][]byte, n)
 	baseErrs := make([]error, n)
 	reqErrs := make([]error, n)
-	var stats ChunkDiffStats
+	stats := ChunkDiffStats{Reqs: n}
 
 	// fetch all in parallel
 	egCtx := errgroup.WithContext(req.Context())
@@ -175,10 +175,7 @@ func (s *server) handleChunkDiff(w http.ResponseWriter, req *http.Request) {
 
 	var wg sync.WaitGroup
 	wg.Add(2 * n)
-	for i := range n {
-		ri := r.Req[i]
-
-		stats.Reqs++
+	for i, ri := range r.Req {
 		if ri.ExpandBeforeDiff != "" {
 			stats.Expands++
 		}
