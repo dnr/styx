@@ -1,7 +1,6 @@
 package daemon
 
 import (
-	"bytes"
 	"cmp"
 	"context"
 	"encoding/base64"
@@ -500,41 +499,38 @@ func (s *Server) doDiffOp(ctx context.Context, op *diffOp) error {
 		s.stats.diffBytes.Add(diffCounter.c)
 	}
 
-	var statsBytes []byte
-	if len(op.recompress) > 0 {
-		// reqData contains the concatenation of _un_compressed data plus stats.
-		// we need to recompress the data but not the stats, so strip off the stats.
-		// note: this only works since stats are only ints. if we have nested objects or
-		// strings we'll need a more complicated parser.
-		statsStart := bytes.LastIndexByte(reqData, '{')
-		if statsStart < 0 {
-			return fmt.Errorf("diff data has bad stats")
-		}
-		statsBytes = reqData[statsStart:]
-		reqData, err = doDiffRecompress(ctx, reqData[:statsStart], op.recompress)
-		if err != nil {
-			return fmt.Errorf("recompress error: %w", err)
-		}
-	}
-
-	if len(reqData) < int(op.reqTotalSize) {
-		return fmt.Errorf("decompressed data is too short: %d < %d", len(reqData), op.reqTotalSize)
-	}
+	// var statsBytes []byte
 
 	// write out to slab
 	p = 0
-	for idx, i := range op.reqInfo {
-		// slice with cap to force copy if less than block size
-		b := reqData[p : p+int64(i.size) : p+int64(i.size)]
-		if err := s.gotNewChunk(i.loc, op.reqDigests[idx], b); err != nil {
-			if len(op.recompress) > 0 && strings.Contains(err.Error(), "digest mismatch") {
-				// we didn't recompress correctly, fall back to single
-				// TODO: be able to try with different parameter variants
-				return fmt.Errorf("recompress mismatch")
+	for sopIdx, sop := range op.sops {
+		sopLen := lens[sopIdx]
+		data = reqData[p : p+sopLen]
+		if len(sop.recompress) > 0 {
+			data, err = doDiffRecompress(ctx, data, sop.recompress)
+			if err != nil {
+				return fmt.Errorf("recompress error: %w", err)
 			}
-			return fmt.Errorf("gotNewChunk error (diff): %w", err)
 		}
-		p += int64(i.size)
+
+		// FIXME: pick up here
+		if len(data) < int(sop.reqSize) {
+			return fmt.Errorf("decompressed data is too short: %d < %d", len(data), sop.reqSize)
+		}
+
+		for idx, i := range sop.reqInfo {
+			// slice with cap to force copy if less than block size
+			b := reqData[p : p+int64(i.size) : p+int64(i.size)]
+			if err := s.gotNewChunk(i.loc, op.reqDigests[idx], b); err != nil {
+				if len(op.recompress) > 0 && strings.Contains(err.Error(), "digest mismatch") {
+					// we didn't recompress correctly, fall back to single
+					// TODO: be able to try with different parameter variants
+					return fmt.Errorf("recompress mismatch")
+				}
+				return fmt.Errorf("gotNewChunk error (diff): %w", err)
+			}
+			p += int64(i.size)
+		}
 	}
 
 	// rest is json stats
@@ -693,7 +689,7 @@ func (s *Server) getChunkDiff(
 			return nil, nil, fmt.Errorf("bad lengths header: %w", err)
 		}
 	}
-	if len(sops) > 1 && len(lens.Length) == 0 {
+	if len(lens.Length) == 0 {
 		io.Copy(io.Discard, res.Body)
 		res.Body.Close()
 		return nil, nil, fmt.Errorf("missing lengths header")

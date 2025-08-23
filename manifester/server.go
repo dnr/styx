@@ -220,9 +220,7 @@ func (s *server) handleChunkDiff(w http.ResponseWriter, req *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
-	if stats.Expands > 0 {
-		w.Header().Set(LengthsHeader, lensHdr)
-	}
+	w.Header().Set(LengthsHeader, lensHdr)
 
 	cw := countWriter{w: w}
 	baseData := common.ContiguousBytes(baseDatas)
