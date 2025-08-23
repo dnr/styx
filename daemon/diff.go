@@ -66,15 +66,20 @@ type (
 		digest cdig.CDig
 	}
 
+	subOp struct {
+		baseDigests, reqDigests []cdig.CDig
+		baseInfo, reqInfo       []info
+		recompress              []string
+	}
+
 	diffOp struct {
 		err  error         // result. only written by start, read by wait
 		done chan struct{} // closed by start after writing err
 
 		// when building: add non-recompress to [0], add recompress as new pairs.
 		// when running: support any combination.
-		baseDigests, reqDigests     [][]cdig.CDig
-		baseInfo, reqInfo           [][]info
-		recompress                  [][]string
+		subOps []subOp
+
 		baseTotalSize, reqTotalSize int32
 
 		usingSph map[Sph]struct{}
@@ -927,6 +932,18 @@ func (op *singleOp) wait() error {
 	return op.err
 }
 
+// subop
+
+func (sop *subOp) addBase(digest cdig.CDig, size int32, loc erofs.SlabLoc) {
+	sop.baseDigests = append(sop.baseDigests, digest)
+	sop.baseInfo = append(sop.baseInfo, info{size, loc})
+}
+
+func (sop *subOp) addReq(digest cdig.CDig, size int32, loc erofs.SlabLoc) {
+	sop.reqDigests = append(sop.reqDigests, digest)
+	sop.reqInfo = append(sop.reqInfo, info{size, loc})
+}
+
 // diff op
 
 func (op *diffOp) wait() error {
@@ -944,34 +961,23 @@ func (op *diffOp) hasReq() bool {
 
 func (op *diffOp) addBase(sph Sph, digest cdig.CDig, size int32, loc erofs.SlabLoc) {
 	op.usingSph[sph] = struct{}{}
-	op.baseDigests[0] = append(op.baseDigests[0], digest)
-	op.baseInfo[0] = append(op.baseInfo[0], info{size, loc})
+	op.subOps[0].addBase(digest, size, loc)
 	op.baseTotalSize += size
 }
 
 func (op *diffOp) addReq(sph Sph, digest cdig.CDig, size int32, loc erofs.SlabLoc) {
 	op.usingSph[sph] = struct{}{}
-	op.reqDigests[0] = append(op.reqDigests[0], digest)
-	op.reqInfo[0] = append(op.reqInfo[0], info{size, loc})
+	op.subOps[0].addReq(digest, size, loc)
 	op.reqTotalSize += size
 }
 
-func (op *diffOp) addRecompress(
-	sphs map[Sph]struct{},
-	baseDigests, reqDigests []cdig.CDig,
-	baseInfos, reqInfos []info,
-	args []string,
-) {
+func (op *diffOp) addRecompress(sphs map[Sph]struct{}, sop subOp) {
 	maps.Copy(op.usingSph, sphs)
-	op.baseDigests = append(op.baseDigests, bases)
-	op.reqDigests = append(op.reqDigests, reqs)
-	op.baseInfo = append(op.baseInfo, baseInfos)
-	op.reqInfo = append(op.reqInfo, reqInfos)
-	op.recompress = append(op.recompress, args)
-	for _, i := range baseInfos {
+	op.subOps = append(op.subOps, sop)
+	for _, i := range sop.baseInfos {
 		op.baseTotalSize += size
 	}
-	for _, i := range reqInfos {
+	for _, i := range sop.reqInfos {
 		op.reqTotalSize += isize
 	}
 }
@@ -1249,8 +1255,7 @@ func (set *opSet) buildRecompress(
 	}
 
 	sphs := make(map[Sph]struct{})
-	var baseDigests, reqDigests []cdig.CDig
-	var baseInfos, reqInfos []info
+	var sop subOp
 
 	baseEnt := baseIter.ent()
 	for baseIter.toFileStart(); baseIter.ent() == baseEnt; baseIter.next(1) {
@@ -1262,7 +1267,8 @@ func (set *opSet) buildRecompress(
 			// Base is not present, don't bother with recompress (data is already compressed).
 			return errors.New("base chunk not present")
 		}
-		set.op.addBase(res.baseHash, baseDigest, baseIter.size(), baseLoc)
+		sphs[req.baseHash] = struct{}{}
+		sop.addBase(baseDigest, baseIter.size(), baseLoc)
 	}
 
 	for reqIter.toFileStart(); reqIter.ent() == reqEnt; reqIter.next(1) {
@@ -1271,10 +1277,11 @@ func (set *opSet) buildRecompress(
 		if reqLoc.Addr == 0 {
 			return errors.New("digest in entry of req digest is not mapped")
 		}
-		set.op.addReq(res.reqHash, reqDigest, reqIter.size(), reqLoc)
+		sphs[req.reqHash] = struct{}{}
+		sop.addReq(reqDigest, reqIter.size(), reqLoc)
 	}
 
-	set.op.addRecompress(sphs, baseDigests, reqDigests, baseInfos, reqInfos, args)
+	set.op.addRecompress(sphs, sop)
 
 	// For recompress diff we need to ask for the whole file so we may include chunks we
 	// already have, or are already being diffed (though that's very unlikely). In that case
