@@ -22,3 +22,7 @@ func (e *Entry) ChunkShiftDef() shift.Shift {
 	}
 	return shift.Shift(e.ChunkShift)
 }
+
+func (e *Entry) Chunks() int {
+	return len(e.Digests) / e.DigestBytesDef()
+}
