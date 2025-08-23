@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"cmp"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -72,7 +73,22 @@ type (
 		baseDigests, reqDigests     []cdig.CDig
 		baseInfo, reqInfo           []info
 		baseTotalSize, reqTotalSize int32
-		recompress                  []string
+
+		usingSph map[Sph]struct{}
+
+		// shared with all ops in opSet.
+		// the contents of the recentReads are under diffLock.
+		rrs *[MaxSources * 2]*recentRead
+	}
+
+	recompressOp struct {
+		err  error         // result. only written by start, read by wait
+		done chan struct{} // closed by start after writing err
+
+		baseDigests, reqDigests     [][]cdig.CDig
+		baseInfo, reqInfo           [][]info
+		baseTotalSize, reqTotalSize int32
+		recompress                  []string // [0] is type, rest are args
 
 		usingSph map[Sph]struct{}
 
@@ -444,7 +460,78 @@ func (s *Server) startDiffOp(ctx context.Context, op *diffOp) {
 }
 
 func (s *Server) doDiffOp(ctx context.Context, op *diffOp) error {
-	diff, err := s.getChunkDiff(ctx, op.baseDigests, op.reqDigests, op.recompress)
+	diff, _, err := s.getChunkDiff(
+		ctx,
+		[][]cdig.CDig{op.baseDigests},
+		[][]cdig.CDig{op.reqDigests},
+		nil,
+	)
+	if err != nil {
+		return fmt.Errorf("getChunkDiff: %w", err)
+	}
+	defer diff.Close()
+
+	var p int64
+	var baseData []byte
+
+	if op.hasBase() {
+		baseData = make([]byte, op.baseTotalSize)
+		for _, i := range op.baseInfo {
+			if err := s.getKnownChunk(i.loc, baseData[p:p+int64(i.size)]); err != nil {
+				return fmt.Errorf("getKnownChunk error: %w", err)
+			}
+			p += int64(i.size)
+		}
+	}
+
+	// decompress from diff
+	diffCounter := countReader{r: diff}
+	reqData, err := io.ReadAll(zstd.NewReaderPatcher(&diffCounter, baseData))
+	if err != nil {
+		return fmt.Errorf("expandChunkDiff error: %w", err)
+	}
+	if !op.hasBase() {
+		s.stats.batchBytes.Add(diffCounter.c)
+	} else {
+		s.stats.diffBytes.Add(diffCounter.c)
+	}
+
+	if len(reqData) < int(op.reqTotalSize) {
+		return fmt.Errorf("decompressed data is too short: %d < %d", len(reqData), op.reqTotalSize)
+	}
+
+	// write out to slab
+	p = 0
+	for idx, i := range op.reqInfo {
+		// slice with cap to force copy if less than block size
+		b := reqData[p : p+int64(i.size) : p+int64(i.size)]
+		if err := s.gotNewChunk(i.loc, op.reqDigests[idx], b); err != nil {
+			return fmt.Errorf("gotNewChunk error (diff): %w", err)
+		}
+		p += int64(i.size)
+	}
+
+	// stats follow immediately after data
+	var st manifester.ChunkDiffStats
+	if err = json.Unmarshal(reqData[p:], &st); err == nil {
+		if st.BaseChunks > 0 {
+			log.Printf("diff [%d:%d <~ %d:%d] = %d (%.1f%%)",
+				st.ReqChunks, st.ReqBytes, st.BaseChunks, st.BaseBytes,
+				st.DiffBytes, 100*float64(st.DiffBytes)/float64(st.ReqBytes))
+		} else {
+			log.Printf("batch [%d:%d] = %d (%.1f%%)",
+				st.ReqChunks, st.ReqBytes,
+				st.DiffBytes, 100*float64(st.DiffBytes)/float64(st.ReqBytes))
+		}
+	} else {
+		log.Println("diff data has bad stats", err)
+	}
+
+	return nil
+}
+
+func (s *Server) doRecompressOp(ctx context.Context, op *recompressOp) error {
+	diff, lens, err := s.getChunkDiff(ctx, op.baseDigests, op.reqDigests, op.recompress)
 	if err != nil {
 		return fmt.Errorf("getChunkDiff: %w", err)
 	}
@@ -462,12 +549,13 @@ func (s *Server) doDiffOp(ctx context.Context, op *diffOp) error {
 			p += int64(i.size)
 		}
 
-		// decompress if needed
 		baseData, err = doDiffDecompress(ctx, baseData, op.recompress)
 		if err != nil {
 			return fmt.Errorf("decompress error: %w", err)
 		}
 	}
+
+	_ = lens //FIXME
 
 	// decompress from diff
 	diffCounter := countReader{r: diff}
@@ -482,20 +570,19 @@ func (s *Server) doDiffOp(ctx context.Context, op *diffOp) error {
 	}
 
 	var statsBytes []byte
-	if len(op.recompress) > 0 {
-		// reqData contains the concatenation of _un_compressed data plus stats.
-		// we need to recompress the data but not the stats, so strip off the stats.
-		// note: this only works since stats are only ints. if we have nested objects or
-		// strings we'll need a more complicated parser.
-		statsStart := bytes.LastIndexByte(reqData, '{')
-		if statsStart < 0 {
-			return fmt.Errorf("diff data has bad stats")
-		}
-		statsBytes = reqData[statsStart:]
-		reqData, err = doDiffRecompress(ctx, reqData[:statsStart], op.recompress)
-		if err != nil {
-			return fmt.Errorf("recompress error: %w", err)
-		}
+
+	// reqData contains the concatenation of _un_compressed data plus stats.
+	// we need to recompress the data but not the stats, so strip off the stats.
+	// note: this only works since stats are only ints. if we have nested objects or
+	// strings we'll need a more complicated parser.
+	statsStart := bytes.LastIndexByte(reqData, '{')
+	if statsStart < 0 {
+		return fmt.Errorf("diff data has bad stats")
+	}
+	statsBytes = reqData[statsStart:]
+	reqData, err = doDiffRecompress(ctx, reqData[:statsStart], op.recompress)
+	if err != nil {
+		return fmt.Errorf("recompress error: %w", err)
 	}
 
 	if len(reqData) < int(op.reqTotalSize) {
@@ -520,10 +607,6 @@ func (s *Server) doDiffOp(ctx context.Context, op *diffOp) error {
 
 	// rest is json stats
 	var st manifester.ChunkDiffStats
-	if statsBytes == nil {
-		// if we didn't recompress, stats follow immediately after data.
-		statsBytes = reqData[p:]
-	}
 	if err = json.Unmarshal(statsBytes, &st); err == nil {
 		if st.BaseChunks > 0 {
 			log.Printf("diff [%d:%d <~ %d:%d] = %d (%.1f%%)",
@@ -628,30 +711,57 @@ func (s *Server) gotNewChunk(loc erofs.SlabLoc, digest cdig.CDig, b []byte) erro
 	return nil
 }
 
-func (s *Server) getChunkDiff(ctx context.Context, bases, reqs []cdig.CDig, recompress []string) (io.ReadCloser, error) {
+// bases and reqs must be same length, but length of inner slices may differ
+func (s *Server) getChunkDiff(
+	ctx context.Context,
+	bases, reqs [][]cdig.CDig,
+	recompress []string,
+) (io.ReadCloser, []int64, error) {
+	if len(bases) != len(reqs) {
+		return nil, nil, errors.New("bases and reqs must be same length")
+	}
 	r := &pb.ManifesterChunkDiffReq{
 		Params: &pb.GlobalParams{
 			DigestAlgo: cdig.Algo,
 			DigestBits: cdig.Bits,
 		},
-		Req: []*pb.ManifesterChunkDiffReq_Req{{
-			Bases: cdig.ToSliceAlias(bases),
-			Reqs:  cdig.ToSliceAlias(reqs),
-		}},
+		Req: make([]*pb.ManifesterChunkDiffReq_Req, len(bases)),
 	}
-	if len(recompress) > 0 {
-		r.Req[0].ExpandBeforeDiff = recompress[0]
+	for i := range r.Req {
+		r.Req[i] = &pb.ManifesterChunkDiffReq_Req{
+			Bases: cdig.ToSliceAlias(bases[i]),
+			Reqs:  cdig.ToSliceAlias(reqs[i]),
+		}
+		if len(recompress) > 0 {
+			r.Req[i].ExpandBeforeDiff = recompress[0]
+		}
 	}
 	reqBytes, err := proto.Marshal(r)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	u := strings.TrimSuffix(s.p().params.ChunkDiffUrl, "/") + manifester.ChunkDiffPath
 	res, err := common.RetryHttpRequest(ctx, http.MethodPost, u, common.CTProto, reqBytes)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return res.Body, nil
+
+	// parse lengths header if present
+	var lens pb.Lengths
+	if lensHdr := res.Header.Get(manifester.LengthsHeader); lensHdr != "" {
+		lensEnc, err := base64.RawURLEncoding.DecodeString(lensHdr)
+		if err == nil {
+			err = proto.Unmarshal(lensEnc, &lens)
+		}
+		if err == nil && len(lens.Length) != len(reqs) {
+			err = fmt.Errorf("len %d != %d", len(lens.Length), len(reqs))
+		}
+		if err != nil {
+			return nil, nil, fmt.Errorf("bad lengths header: %w", err)
+		}
+	}
+
+	return res.Body, lens.Length, nil
 }
 
 // note: called with read-only tx
@@ -919,7 +1029,6 @@ func (op *diffOp) resetDiff() {
 	op.reqInfo = nil
 	op.baseTotalSize = 0
 	op.reqTotalSize = 0
-	op.recompress = nil
 }
 
 func (op *diffOp) addBase(sph Sph, digest cdig.CDig, size int32, loc erofs.SlabLoc) {
@@ -935,6 +1044,44 @@ func (op *diffOp) addReq(sph Sph, digest cdig.CDig, size int32, loc erofs.SlabLo
 	op.reqInfo = append(op.reqInfo, info{size, loc})
 	op.reqTotalSize += size
 }
+
+// recompress op
+
+func (op *recompressOp) wait() error {
+	<-op.done
+	return op.err
+}
+
+func (op *recompressOp) hasBase() bool {
+	return len(op.baseInfo) > 0
+}
+
+func (op *recompressOp) hasReq() bool {
+	return len(op.reqInfo) > 0
+}
+
+func (op *recompressOp) resetDiff() {
+	op.baseDigests = nil
+	op.reqDigests = nil
+	op.baseInfo = nil
+	op.reqInfo = nil
+	op.baseTotalSize = 0
+	op.reqTotalSize = 0
+}
+
+// func (op *recompressOp) addBase(sph Sph, digest cdig.CDig, size int32, loc erofs.SlabLoc) {
+// 	op.usingSph[sph] = struct{}{}
+// 	op.baseDigests = append(op.baseDigests, digest)
+// 	op.baseInfo = append(op.baseInfo, info{size, loc})
+// 	op.baseTotalSize += size
+// }
+
+// func (op *recompressOp) addReq(sph Sph, digest cdig.CDig, size int32, loc erofs.SlabLoc) {
+// 	op.usingSph[sph] = struct{}{}
+// 	op.reqDigests = append(op.reqDigests, digest)
+// 	op.reqInfo = append(op.reqInfo, info{size, loc})
+// 	op.reqTotalSize += size
+// }
 
 // op set
 

@@ -23,6 +23,7 @@ func TestRecompress(t *testing.T) {
 	require.Equal(t, "0r2agiq8bzv09nsk11yidwvyjb5cfrp5wavq2jxqc9k6sh1256s9", tb.nixHash(man2))
 	d2 := tb.debug()
 	require.NotZero(t, d2.Stats.DiffReqs)
+	t.Log("DiffReqs", d2.Stats.DiffReqs, "DiffBytes", d2.Stats.DiffBytes)
 	require.Greater(t, d2.Stats.DiffBytes, int64(0))
 	// the zstd diff between the uncompressed files is < 7kb. between compressed files is 95kb
 	// (no savings). check that we did the recompress thing.
