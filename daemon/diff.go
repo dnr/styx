@@ -70,6 +70,7 @@ type (
 		baseDigests, reqDigests []cdig.CDig
 		baseInfo, reqInfo       []info
 		recompress              []string
+		baseSize, reqSize       int32
 	}
 
 	diffOp struct {
@@ -78,7 +79,7 @@ type (
 
 		// when building: add non-recompress to [0], add recompress as new pairs.
 		// when running: support any combination.
-		subOps []subOp
+		sops []subOp
 
 		baseTotalSize, reqTotalSize int32
 
@@ -423,9 +424,11 @@ func (s *Server) startDiffOp(ctx context.Context, op *diffOp) {
 
 		// clear references to this op from the map
 		s.diffLock.Lock()
-		for _, i := range op.reqInfo {
-			if s.diffMap[i.loc] == reqOp(op) {
-				delete(s.diffMap, i.loc)
+		for _, sop := range op.sops {
+			for _, i := range sop.reqInfo {
+				if s.diffMap[i.loc] == reqOp(op) {
+					delete(s.diffMap, i.loc)
+				}
 			}
 		}
 		// update recentRead timers
@@ -452,30 +455,38 @@ func (s *Server) startDiffOp(ctx context.Context, op *diffOp) {
 }
 
 func (s *Server) doDiffOp(ctx context.Context, op *diffOp) error {
-	diff, lens, err := s.getChunkDiff(ctx, op.baseDigests, op.reqDigests, op.recompress)
+	diff, lens, err := s.getChunkDiff(ctx, op.sops)
 	if err != nil {
 		return fmt.Errorf("getChunkDiff: %w", err)
 	}
 	defer diff.Close()
 
 	var p int64
-	var baseData []byte
+	var baseDatas [][]byte
 
-	if op.hasBase() {
-		baseData = make([]byte, op.baseTotalSize)
-		for _, i := range op.baseInfo {
-			if err := s.getKnownChunk(i.loc, baseData[p:p+int64(i.size)]); err != nil {
+	for _, sop := range op.sops {
+		if !sop.hasBase() {
+			continue
+		}
+
+		data := make([]byte, sop.baseSize)
+		for _, i := range sop.baseInfo {
+			if err := s.getKnownChunk(i.loc, data[p:p+int64(i.size)]); err != nil {
 				return fmt.Errorf("getKnownChunk error: %w", err)
 			}
 			p += int64(i.size)
 		}
 
 		// decompress if needed
-		baseData, err = doDiffDecompress(ctx, baseData, op.recompress)
+		data, err = doDiffDecompress(ctx, data, sop.recompress)
 		if err != nil {
 			return fmt.Errorf("decompress error: %w", err)
 		}
+
+		baseDatas = append(baseDatas, data)
 	}
+
+	baseData := common.ContiguousBytes(baseDatas)
 
 	// decompress from diff
 	diffCounter := countReader{r: diff}
@@ -636,29 +647,24 @@ func (s *Server) gotNewChunk(loc erofs.SlabLoc, digest cdig.CDig, b []byte) erro
 	return nil
 }
 
-// bases and reqs must be same length, but length of inner slices may differ
 func (s *Server) getChunkDiff(
 	ctx context.Context,
-	bases, reqs [][]cdig.CDig,
-	recompress [][]string,
+	sops []subOp,
 ) (io.ReadCloser, []int64, error) {
-	if len(bases) != len(reqs) || len(bases) != len(recompress) {
-		return nil, nil, errors.New("bases/reqs/recompress must be same length")
-	}
 	r := &pb.ManifesterChunkDiffReq{
 		Params: &pb.GlobalParams{
 			DigestAlgo: cdig.Algo,
 			DigestBits: cdig.Bits,
 		},
-		Req: make([]*pb.ManifesterChunkDiffReq_Req, len(bases)),
+		Req: make([]*pb.ManifesterChunkDiffReq_Req, len(sops)),
 	}
-	for i := range r.Req {
+	for i, sop := range sops {
 		r.Req[i] = &pb.ManifesterChunkDiffReq_Req{
-			Bases: cdig.ToSliceAlias(bases[i]),
-			Reqs:  cdig.ToSliceAlias(reqs[i]),
+			Bases: cdig.ToSliceAlias(sop.bases),
+			Reqs:  cdig.ToSliceAlias(sop.reqs),
 		}
-		if len(recompress[i]) > 0 {
-			r.Req[i].ExpandBeforeDiff = recompress[i][0]
+		if len(sop.recompress) > 0 {
+			r.Req[i].ExpandBeforeDiff = sop.recompress[0]
 		}
 	}
 	reqBytes, err := proto.Marshal(r)
@@ -678,12 +684,19 @@ func (s *Server) getChunkDiff(
 		if err == nil {
 			err = proto.Unmarshal(lensEnc, &lens)
 		}
-		if err == nil && len(lens.Length) != len(reqs) {
-			err = fmt.Errorf("len %d != %d", len(lens.Length), len(reqs))
+		if err == nil && len(lens.Length) != len(sops) {
+			err = fmt.Errorf("len %d != %d", len(lens.Length), len(sops))
 		}
 		if err != nil {
+			io.Copy(io.Discard, res.Body)
+			res.Body.Close()
 			return nil, nil, fmt.Errorf("bad lengths header: %w", err)
 		}
+	}
+	if len(sops) > 1 && len(lens.Length) == 0 {
+		io.Copy(io.Discard, res.Body)
+		res.Body.Close()
+		return nil, nil, fmt.Errorf("missing lengths header")
 	}
 
 	return res.Body, lens.Length, nil
@@ -937,11 +950,21 @@ func (op *singleOp) wait() error {
 func (sop *subOp) addBase(digest cdig.CDig, size int32, loc erofs.SlabLoc) {
 	sop.baseDigests = append(sop.baseDigests, digest)
 	sop.baseInfo = append(sop.baseInfo, info{size, loc})
+	sop.baseSize += size
 }
 
 func (sop *subOp) addReq(digest cdig.CDig, size int32, loc erofs.SlabLoc) {
 	sop.reqDigests = append(sop.reqDigests, digest)
 	sop.reqInfo = append(sop.reqInfo, info{size, loc})
+	sop.reqSize += size
+}
+
+func (sop *subOp) hasBase() bool {
+	return len(sop.baseInfo) > 0
+}
+
+func (sop *subOp) hasReq() bool {
+	return len(sop.reqInfo) > 0
 }
 
 // diff op
@@ -951,35 +974,41 @@ func (op *diffOp) wait() error {
 	return op.err
 }
 
-func (op *diffOp) hasBase() bool {
-	return len(op.baseInfo) > 0
-}
+// func (op *diffOp) hasBase() bool {
+// 	for _, sop := range op.sops {
+// 		if sop.hasBase() {
+// 			return true
+// 		}
+// 	}
+// 	return false
+// }
 
-func (op *diffOp) hasReq() bool {
-	return len(op.reqInfo) > 0
-}
+// func (op *diffOp) hasReq() bool {
+// 	for _, sop := range op.sops {
+// 		if sop.hasReq() {
+// 			return true
+// 		}
+// 	}
+// 	return false
+// }
 
 func (op *diffOp) addBase(sph Sph, digest cdig.CDig, size int32, loc erofs.SlabLoc) {
 	op.usingSph[sph] = struct{}{}
-	op.subOps[0].addBase(digest, size, loc)
+	op.ops[0].addBase(digest, size, loc)
 	op.baseTotalSize += size
 }
 
 func (op *diffOp) addReq(sph Sph, digest cdig.CDig, size int32, loc erofs.SlabLoc) {
 	op.usingSph[sph] = struct{}{}
-	op.subOps[0].addReq(digest, size, loc)
+	op.ops[0].addReq(digest, size, loc)
 	op.reqTotalSize += size
 }
 
 func (op *diffOp) addRecompress(sphs map[Sph]struct{}, sop subOp) {
 	maps.Copy(op.usingSph, sphs)
 	op.subOps = append(op.subOps, sop)
-	for _, i := range sop.baseInfos {
-		op.baseTotalSize += size
-	}
-	for _, i := range sop.reqInfos {
-		op.reqTotalSize += isize
-	}
+	op.baseTotalSize += sop.baseSize
+	op.reqTotalSize += sop.reqSize
 }
 
 // op set

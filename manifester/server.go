@@ -225,7 +225,7 @@ func (s *server) handleChunkDiff(w http.ResponseWriter, req *http.Request) {
 	}
 
 	cw := countWriter{w: w}
-	baseData := contiguousBytes(baseDatas)
+	baseData := common.ContiguousBytes(baseDatas)
 	zw := zstd.NewWriterPatcher(&cw, s.cfg.ChunkDiffZstdLevel, baseData, reqDataLen+statsSpace)
 	for _, data := range reqDatas {
 		if _, err := zw.Write(data); err != nil {
@@ -408,16 +408,6 @@ func writeError(w http.ResponseWriter, err error) {
 		code = http.StatusInternalServerError
 	}
 	http.Error(w, err.Error(), code)
-}
-
-func contiguousBytes(in [][]byte) []byte {
-	if len(in) == 0 {
-		return nil
-	} else if len(in) == 1 {
-		return in[0] // bytes.Join does a copy in this case, otherwise we could just use that
-	} else {
-		return bytes.Join(in, nil)
-	}
 }
 
 func makeLengthsHeader(reqDatas [][]byte) (string, int64, error) {
