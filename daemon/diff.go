@@ -66,10 +66,12 @@ type (
 	}
 
 	subOp struct {
-		baseDigests, reqDigests []cdig.CDig
-		baseInfo, reqInfo       []info
-		recompress              []string
-		baseSize, reqSize       int32
+		baseDigests       []cdig.CDig
+		baseInfo          []info
+		reqDigests        []cdig.CDig
+		reqInfo           []info
+		recompress        []string
+		baseSize, reqSize int32
 	}
 
 	diffOp struct {
@@ -80,7 +82,8 @@ type (
 		// when running: support any combination.
 		sops []subOp
 
-		baseTotalSize, reqTotalSize int32
+		baseTotalChunks, baseTotalSize int32
+		reqTotalChunks, reqTotalSize   int32
 
 		usingSph map[Sph]struct{}
 
@@ -100,7 +103,7 @@ type (
 		// first half are for image, second half are for file
 		rrs         *[MaxSources * 2]*recentRead
 		limitShift  int
-		maxOpSize   int
+		maxOpSize   int // # chunks
 		maxOps      int
 		sourcesLeft int
 	}
@@ -414,7 +417,7 @@ func (s *Server) startDiffOp(ctx context.Context, op *diffOp) {
 			op.err = fmt.Errorf("panic in diff op: %v", r)
 		}
 		if op.err != nil {
-			if !op.hasBase() {
+			if !op.anyHasBase() {
 				s.stats.batchErrs.Add(1)
 			} else {
 				s.stats.diffErrs.Add(1)
@@ -442,7 +445,7 @@ func (s *Server) startDiffOp(ctx context.Context, op *diffOp) {
 		close(op.done)
 	}()
 
-	if !op.hasBase() {
+	if !op.anyHasBase() {
 		s.stats.batchReqs.Add(1)
 	} else {
 		s.stats.diffReqs.Add(1)
@@ -460,8 +463,7 @@ func (s *Server) doDiffOp(ctx context.Context, op *diffOp) error {
 	}
 	defer diff.Close()
 
-	var p int64
-	var baseDatas [][]byte
+	baseDatas := make([][]byte, 0, len(op.sops))
 
 	for _, sop := range op.sops {
 		if !sop.hasBase() {
@@ -469,11 +471,13 @@ func (s *Server) doDiffOp(ctx context.Context, op *diffOp) error {
 		}
 
 		data := make([]byte, sop.baseSize)
+		p := data
 		for _, i := range sop.baseInfo {
-			if err := s.getKnownChunk(i.loc, data[p:p+int64(i.size)]); err != nil {
+			var part []byte
+			part, p = takePart(p, i.size)
+			if err := s.getKnownChunk(i.loc, part); err != nil {
 				return fmt.Errorf("getKnownChunk error: %w", err)
 			}
-			p += int64(i.size)
 		}
 
 		// decompress if needed
@@ -493,19 +497,17 @@ func (s *Server) doDiffOp(ctx context.Context, op *diffOp) error {
 	if err != nil {
 		return fmt.Errorf("expandChunkDiff error: %w", err)
 	}
-	if !op.hasBase() {
+	if !op.anyHasBase() {
 		s.stats.batchBytes.Add(diffCounter.c)
 	} else {
 		s.stats.diffBytes.Add(diffCounter.c)
 	}
 
-	// var statsBytes []byte
-
 	// write out to slab
-	p = 0
+	p := reqData
 	for sopIdx, sop := range op.sops {
-		sopLen := lens[sopIdx]
-		data = reqData[p : p+sopLen]
+		var data []byte
+		data, p = takePart(p, lens[sopIdx])
 		if len(sop.recompress) > 0 {
 			data, err = doDiffRecompress(ctx, data, sop.recompress)
 			if err != nil {
@@ -513,33 +515,28 @@ func (s *Server) doDiffOp(ctx context.Context, op *diffOp) error {
 			}
 		}
 
-		// FIXME: pick up here
 		if len(data) < int(sop.reqSize) {
 			return fmt.Errorf("decompressed data is too short: %d < %d", len(data), sop.reqSize)
 		}
 
+		q := data
 		for idx, i := range sop.reqInfo {
-			// slice with cap to force copy if less than block size
-			b := reqData[p : p+int64(i.size) : p+int64(i.size)]
-			if err := s.gotNewChunk(i.loc, op.reqDigests[idx], b); err != nil {
-				if len(op.recompress) > 0 && strings.Contains(err.Error(), "digest mismatch") {
+			var chunk []byte
+			chunk, q = takePart(q, i.size)
+			if err := s.gotNewChunk(i.loc, sop.reqDigests[idx], chunk); err != nil {
+				if len(sop.recompress) > 0 && strings.Contains(err.Error(), "digest mismatch") {
 					// we didn't recompress correctly, fall back to single
 					// TODO: be able to try with different parameter variants
 					return fmt.Errorf("recompress mismatch")
 				}
 				return fmt.Errorf("gotNewChunk error (diff): %w", err)
 			}
-			p += int64(i.size)
 		}
 	}
 
 	// rest is json stats
 	var st manifester.ChunkDiffStats
-	if statsBytes == nil {
-		// if we didn't recompress, stats follow immediately after data.
-		statsBytes = reqData[p:]
-	}
-	if err = json.Unmarshal(statsBytes, &st); err == nil {
+	if err = json.Unmarshal(p, &st); err == nil {
 		if st.BaseChunks > 0 {
 			log.Printf("diff [%d:%d <~ %d:%d] = %d (%.1f%%)",
 				st.ReqChunks, st.ReqBytes, st.BaseChunks, st.BaseBytes,
@@ -656,8 +653,8 @@ func (s *Server) getChunkDiff(
 	}
 	for i, sop := range sops {
 		r.Req[i] = &pb.ManifesterChunkDiffReq_Req{
-			Bases: cdig.ToSliceAlias(sop.bases),
-			Reqs:  cdig.ToSliceAlias(sop.reqs),
+			Bases: cdig.ToSliceAlias(sop.baseDigests),
+			Reqs:  cdig.ToSliceAlias(sop.reqDigests),
 		}
 		if len(sop.recompress) > 0 {
 			r.Req[i].ExpandBeforeDiff = sop.recompress[0]
@@ -970,40 +967,44 @@ func (op *diffOp) wait() error {
 	return op.err
 }
 
-// func (op *diffOp) hasBase() bool {
-// 	for _, sop := range op.sops {
-// 		if sop.hasBase() {
-// 			return true
-// 		}
-// 	}
-// 	return false
-// }
+func (op *diffOp) anyHasBase() bool {
+	for _, sop := range op.sops {
+		if sop.hasBase() {
+			return true
+		}
+	}
+	return false
+}
 
-// func (op *diffOp) hasReq() bool {
-// 	for _, sop := range op.sops {
-// 		if sop.hasReq() {
-// 			return true
-// 		}
-// 	}
-// 	return false
-// }
+func (op *diffOp) anyHasReq() bool {
+	for _, sop := range op.sops {
+		if sop.hasReq() {
+			return true
+		}
+	}
+	return false
+}
 
 func (op *diffOp) addBase(sph Sph, digest cdig.CDig, size int32, loc erofs.SlabLoc) {
 	op.usingSph[sph] = struct{}{}
-	op.ops[0].addBase(digest, size, loc)
+	op.sops[0].addBase(digest, size, loc)
+	op.baseTotalChunks += 1
 	op.baseTotalSize += size
 }
 
 func (op *diffOp) addReq(sph Sph, digest cdig.CDig, size int32, loc erofs.SlabLoc) {
 	op.usingSph[sph] = struct{}{}
-	op.ops[0].addReq(digest, size, loc)
+	op.sops[0].addReq(digest, size, loc)
+	op.reqTotalChunks += 1
 	op.reqTotalSize += size
 }
 
 func (op *diffOp) addRecompress(sphs map[Sph]struct{}, sop subOp) {
 	maps.Copy(op.usingSph, sphs)
-	op.subOps = append(op.subOps, sop)
+	op.sops = append(op.sops, sop)
+	op.baseTotalChunks += int32(len(sop.baseInfo))
 	op.baseTotalSize += sop.baseSize
+	op.reqTotalChunks += int32(len(sop.reqInfo))
 	op.reqTotalSize += sop.reqSize
 }
 
@@ -1062,30 +1063,34 @@ func (set *opSet) markUsing(dig cdig.CDig) {
 
 func (set *opSet) newOp() {
 	op := &diffOp{
-		done:        make(chan struct{}),
-		baseDigests: make([][]cdig.CDig, 1),
-		reqDigests:  make([][]cdig.CDig, 1),
-		recompress:  make([][]string, 1),
-		usingSph:    make(map[Sph]struct{}),
-		rrs:         set.rrs,
+		done:     make(chan struct{}),
+		sops:     make([]subOp, 1),
+		usingSph: make(map[Sph]struct{}),
+		rrs:      set.rrs,
 	}
 	set.ops = append(set.ops, op)
 	set.op = op
 }
 
 func (set *opSet) checkReq() {
-	if len(set.op.reqInfo) >= set.maxOpSize || set.op.reqTotalSize >= MaxOpBytes {
+	if len(set.op.sops[0].reqInfo) >= set.maxOpSize || set.op.reqTotalSize >= MaxOpBytes {
 		set.newOp()
 	}
 }
 
 func (set *opSet) fullBase() bool {
 	// assumes baseInfo is filled in previous ops
-	return len(set.ops) >= set.maxOps && (len(set.op.baseInfo) >= set.maxOpSize || set.op.baseTotalSize >= MaxOpBytes)
+	return len(set.ops) >= set.maxOps && (int(set.op.baseTotalChunks) >= set.maxOpSize || set.op.baseTotalSize >= MaxOpBytes)
 }
 func (set *opSet) fullReq() bool {
 	// assumes reqInfo is filled in previous ops
-	return len(set.ops) >= set.maxOps && (len(set.op.reqInfo) >= set.maxOpSize || set.op.reqTotalSize >= MaxOpBytes)
+	return len(set.ops) >= set.maxOps && (int(set.op.reqTotalChunks) >= set.maxOpSize || set.op.reqTotalSize >= MaxOpBytes)
+}
+func (set *opSet) subOpFits(sop subOp) bool {
+	return int(set.op.baseTotalChunks)+len(sop.baseInfo) <= set.maxOpSize &&
+		(set.op.baseTotalSize+sop.baseSize) <= MaxOpBytes &&
+		int(set.op.reqTotalChunks)+len(sop.reqInfo) <= set.maxOpSize &&
+		(set.op.reqTotalSize+sop.reqSize) <= MaxOpBytes
 }
 
 // call with diffLock held
@@ -1101,13 +1106,13 @@ func (set *opSet) buildDiff(
 		if res, err := set.s.catalogFindBase(tx, sphps[i]); err == nil {
 			set.buildExtendDiff(tx, targetDigest, res, useRR)
 
-			// can't extend recompress or full
-			if set.sourcesLeft == 0 || len(set.op.recompress) > 0 || set.fullBase() && set.fullReq() {
+			// can't extend if full
+			if set.sourcesLeft == 0 || set.fullBase() && set.fullReq() {
 				break
 			}
 		}
 	}
-	if set.op.hasReq() {
+	if set.op.anyHasReq() {
 		return nil
 	}
 
@@ -1131,7 +1136,7 @@ func (set *opSet) buildExtendDiff(
 	res catalogResult,
 	useRR bool,
 ) {
-	firstOp := !set.op.hasReq()
+	firstOp := !set.op.anyHasReq()
 
 	isManifest := strings.HasPrefix(res.reqName, isManifestPrefix)
 	if isManifest && !firstOp {
@@ -1181,7 +1186,7 @@ func (set *opSet) buildExtendDiff(
 		readLog = fmt.Sprintf("  or /nix/store/%s-%s%s", res.reqHash, res.reqName, reqEnt.Path)
 	}
 
-	if firstOp && res.usingBase() {
+	if res.usingBase() {
 		if args := getRecompressArgs(reqEnt); len(args) > 0 {
 			if err := set.buildRecompress(tx, res, args, baseIter, reqIter, reqEnt); err == nil {
 				set.log(res, args[0], true)
@@ -1221,7 +1226,7 @@ func (set *opSet) buildExtendDiff(
 
 		// fill base only if room in this op, don't make more ops just for base
 		baseDigest := baseIter.digest()
-		if baseDigest != cdig.Zero && len(set.op.baseInfo) < set.maxOpSize && set.op.baseTotalSize < MaxOpBytes && !set.isUsing(baseDigest) {
+		if baseDigest != cdig.Zero && int(set.op.baseTotalChunks) < set.maxOpSize && set.op.baseTotalSize < MaxOpBytes && !set.isUsing(baseDigest) {
 			baseLoc, basePresent := set.s.digestPresent(tx, baseDigest)
 			if basePresent {
 				set.markUsing(baseDigest)
@@ -1279,10 +1284,17 @@ func (set *opSet) buildRecompress(
 		}
 	}
 
-	sphs := make(map[Sph]struct{})
-	var sop subOp
-
 	baseEnt := baseIter.ent()
+
+	sphs := make(map[Sph]struct{})
+	sop := subOp{
+		baseDigests: make([]cdig.CDig, 0, baseEnt.Chunks()),
+		baseInfo:    make([]info, 0, baseEnt.Chunks()),
+		reqDigests:  make([]cdig.CDig, 0, reqEnt.Chunks()),
+		reqInfo:     make([]info, 0, reqEnt.Chunks()),
+		recompress:  args,
+	}
+
 	for baseIter.toFileStart(); baseIter.ent() == baseEnt; baseIter.next(1) {
 		baseDigest := baseIter.digest()
 		baseLoc, basePresent := set.s.digestPresent(tx, baseDigest)
@@ -1292,7 +1304,7 @@ func (set *opSet) buildRecompress(
 			// Base is not present, don't bother with recompress (data is already compressed).
 			return errors.New("base chunk not present")
 		}
-		sphs[req.baseHash] = struct{}{}
+		sphs[res.baseHash] = struct{}{}
 		sop.addBase(baseDigest, baseIter.size(), baseLoc)
 	}
 
@@ -1302,8 +1314,12 @@ func (set *opSet) buildRecompress(
 		if reqLoc.Addr == 0 {
 			return errors.New("digest in entry of req digest is not mapped")
 		}
-		sphs[req.reqHash] = struct{}{}
+		sphs[res.reqHash] = struct{}{}
 		sop.addReq(reqDigest, reqIter.size(), reqLoc)
+	}
+
+	if !set.subOpFits(sop) {
+		return errors.New("recompress would make op too big")
 	}
 
 	set.op.addRecompress(sphs, sop)
@@ -1311,12 +1327,11 @@ func (set *opSet) buildRecompress(
 	// For recompress diff we need to ask for the whole file so we may include chunks we
 	// already have, or are already being diffed (though that's very unlikely). In that case
 	// just leave the existing entry.
-	for _, i := range set.op.reqInfo {
+	for _, i := range sop.reqInfo {
 		if set.s.diffMap[i.loc] == nil {
 			set.s.diffMap[i.loc] = set.op
 		}
 	}
-	set.op.recompress = args
 	return nil
 }
 
@@ -1349,10 +1364,10 @@ func (set *opSet) log(
 			if i == 1 {
 				fmt.Fprintf(&sb, " …%d more…", len(set.ops)-2)
 			}
-		} else if op.hasBase() {
-			fmt.Fprintf(&sb, " [%d:%d <~ %d:%d]", len(op.reqInfo), op.reqTotalSize, len(op.baseInfo), op.baseTotalSize)
+		} else if op.anyHasBase() {
+			fmt.Fprintf(&sb, " [%d:%d <~ %d:%d]", op.reqTotalChunks, op.reqTotalSize, op.baseTotalChunks, op.baseTotalSize)
 		} else {
-			fmt.Fprintf(&sb, " [%d:%d]", len(op.reqInfo), op.reqTotalSize)
+			fmt.Fprintf(&sb, " [%d:%d]", op.reqTotalChunks, op.reqTotalSize)
 		}
 	}
 
@@ -1458,4 +1473,9 @@ func (i *digestIterator) findFileFunc(f func(string) bool) bool {
 		}
 		i.e++
 	}
+}
+
+func takePart[I int | int32 | int64](b []byte, s I) (part, rest []byte) {
+	// slice with cap to force copy if less than block size
+	return b[:s:s], b[s:]
 }
