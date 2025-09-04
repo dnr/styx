@@ -3,7 +3,8 @@
 #   runvm             # default (ext4 root fs)
 #   runvm -t btrfs    # to get a btrfs root fs
 
-fstype=ext4
+# FIXME: debug
+fstype=btrfs
 while getopts ":t:" opt; do
   case $opt in
     t) fstype=$OPTARG ;;

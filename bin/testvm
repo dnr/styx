@@ -9,4 +9,4 @@ fi
 
 set -eux
 # Note: test flags need to be in form "-test.run", not just "-run"
-nix-build --no-out-link --argstr fstype "$fstype" --argstr testflags "$*" testvm.nix
+nix-build --substituters '' --no-out-link --argstr fstype "$fstype" --argstr testflags "$*" testvm.nix

@@ -1,23 +1,8 @@
 # Stripped-down version of my (dnr)'s basic nix config.
 # If you're actually using this and want more stuff in here, let me know.
 
-{ config, pkgs, ... }:
-{
-  imports = [
-    <styx/module>
-  ];
-
-  # builds custom kernel, patched nix, styx binary
-  services.styx.enable = true;
-
-  # build with latest kernel to get >= 6.8
-  boot.kernelPackages = pkgs.linuxPackages_latest;
-
-  # some kernel modules that I use that depend on the custom kernel:
-  boot.extraModulePackages = with config.boot.kernelPackages; [
-    acpi_call
-    v4l2loopback
-  ];
+{ config, pkgs, ... }: {
+  #boot.kernelPackages = pkgs.linuxPackages_latest;
 
   # just enough to make nix-build not complain:
   fileSystems."/".device = "/dev/dummy";
@@ -25,10 +10,7 @@
 
   hardware.enableRedistributableFirmware = true;
   networking.networkmanager.enable = true;
-  nixpkgs.config.allowUnfree = true;
-  nixpkgs.overlays = [
-    (import ./overlay-xcursor.nix)
-  ];
+  #nixpkgs.config.allowUnfree = true;
 
   environment.systemPackages = with pkgs;
   let
@@ -62,6 +44,7 @@
     evince
     ffmpeg
     file
+    firefox
     gdb
     gh
     gimp
@@ -71,7 +54,6 @@
     gnupg
     go
     gocryptfs
-    (google-chrome.override { speechd-minimal = snappy; })  # hack to avoid bringing in speech deps. non-redistributable?
     guvcview
     hdparm
     hugin
@@ -92,7 +74,6 @@
     nodejs
     notion
     nvme-cli
-    obs-studio
     openssh
     openssl
     opusTools
@@ -112,14 +93,12 @@
     smem
     socat
     spacer
-    spotify # non-redistributable?
     sqlite
     starship
     strace
     sxiv
     sysstat
     tcpdump
-    terraform # non-redistributable?
     tig
     tree
     unzip
@@ -138,24 +117,21 @@
     xz
     yt-dlp
     zip
-    zoom-us # non-redistributable?
     zoxide
     zstd
 
   ];
 
-  services.fprintd.enable = true;
   services.fwupd.enable = true;
-  services.tlp.enable = true;
+  #services.tlp.enable = true;
   services.xserver.enable = true;
-  services.zerotierone.enable = true; # non-redistributable?
 
   fonts.packages = [
     pkgs.noto-fonts
     pkgs.noto-fonts-cjk-sans
     pkgs.noto-fonts-emoji
     pkgs.ubuntu_font_family
-    pkgs.nerd-fonts.ubuntu-mono
+    #pkgs.nerd-fonts.ubuntu-mono
   ];
 
   documentation.nixos.enable = false;

@@ -15,6 +15,7 @@
 
   # let styx handle everything
   nix.settings.styx-ondemand = [ ".*" ];
+  #nix.settings.styx-materialize = [ ".*" ];
 
   # use shared nixpkgs
   nix.nixPath = [ "nixpkgs=/tmp/nixpkgs" ];
@@ -25,11 +26,18 @@
   virtualisation.sharedDirectories = {
     nixpkgs = { source = toString <nixpkgs>; target = "/tmp/nixpkgs"; };
     styxsrc = { source = toString ./.;       target = "/tmp/styxsrc"; };
+    talk = { source = "/home/dnr/src/styxtalk/rels"; target = "/tmp/rels"; };
   };
   # set fstype of root fs
   virtualisation.fileSystems."/".fsType = lib.mkForce (builtins.getEnv "VMFSTYPE");
   # ensure btrfs enabled
   system.requiredKernelConfig = with config.lib.kernelConfig; [ (isEnabled "BTRFS_FS") ];
+
+  # FIXME temp for testing
+  #virtualisation.useNixStoreImage = true;
+  virtualisation.diskSize = 50000;
+  services.getty.autologinUser = "root";
+  virtualisation.writableStoreUseTmpfs = false;
 
   # more convenience
   environment.shellAliases = {
@@ -61,5 +69,8 @@
             ;;
         esac
       done
+      # FIXME:
+      PATH=/run/current-system/sw/bin:$PATH
+      StyxInitTest1
     ''; in "-${fixconsole} %i";
 }
