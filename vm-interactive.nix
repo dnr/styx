@@ -62,4 +62,20 @@
         esac
       done
     ''; in "-${fixconsole} %i";
+
+  # auto-login as root
+  services.getty.autologinUser = "root";
+
+  # auto-init with test1 params
+  systemd.services."StyxInitTest1" = {
+    description = "Init Styx Nix storage manager";
+    after = [ "network-online.target" ];
+    wants = [ "network-online.target" ];
+    wantedBy = [ "multi-user.target" ];
+    path = [ config.services.styx.package ];
+    serviceConfig = {
+      ExecStart = "/run/current-system/sw/bin/StyxInitTest1";
+      Type = "oneshot";
+    };
+  };
 }
