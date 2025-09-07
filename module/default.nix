@@ -1,8 +1,15 @@
-{ config, lib, pkgs, ... }:
+{
+  config,
+  lib,
+  pkgs,
+  ...
+}:
 let
   styx = import ../. { inherit pkgs; };
   cfg = config.services.styx;
-in with lib; {
+in
+with lib;
+{
   options = {
     services.styx = {
       enable = mkEnableOption "Styx storage manager for Nix";
@@ -43,18 +50,22 @@ in with lib; {
 
     (mkIf (cfg.enable || cfg.enableKernelOptions) {
       # Need to turn on these kernel config options:
-      assertions = [ {
+      assertions = [
+        {
           assertion = lib.versionAtLeast config.boot.kernelPackages.kernel.version "6.8";
           message = "Styx requires at least a 6.8 kernel";
-      } ];
-      boot.kernelPatches = [ {
-        name = "styx";
-        patch = null;
-        structuredExtraConfig = {
-          CACHEFILES_ONDEMAND = lib.kernel.yes;
-          EROFS_FS_ONDEMAND = lib.kernel.yes;
-        };
-      } ];
+        }
+      ];
+      boot.kernelPatches = [
+        {
+          name = "styx";
+          patch = null;
+          structuredExtraConfig = {
+            CACHEFILES_ONDEMAND = lib.kernel.yes;
+            EROFS_FS_ONDEMAND = lib.kernel.yes;
+          };
+        }
+      ];
     })
 
     (mkIf cfg.enable {
@@ -71,7 +82,10 @@ in with lib; {
       systemd.services.styx = {
         description = "Nix storage manager";
         wantedBy = [ "sysinit.target" ];
-        before = [ "sysinit.target" "shutdown.target" ];
+        before = [
+          "sysinit.target"
+          "shutdown.target"
+        ];
         conflicts = [ "shutdown.target" ];
         requires = [
           "modprobe@cachefiles.service"
@@ -83,7 +97,10 @@ in with lib; {
         # TODO: restartTriggers?
         unitConfig = {
           DefaultDependencies = false;
-          RequiresMountsFor = [ "/var/cache/styx" "/nix/store" ];
+          RequiresMountsFor = [
+            "/var/cache/styx"
+            "/nix/store"
+          ];
         };
         serviceConfig = {
           # Use unshare directly instead of PrivateMounts so that our new mounts

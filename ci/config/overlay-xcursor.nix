@@ -33,7 +33,7 @@ final: prev: {
         +    dlopen("${final.xorg.libXcursor}/lib/libXcursor.so.1", RTLD_LAZY);
              /* Init the Toolkit. */
              {
-        '')
+      '')
     ];
   });
 
@@ -63,7 +63,7 @@ final: prev: {
         +
              libtu_init(argv[0]);
 
-        '')
+      '')
     ];
   });
 }

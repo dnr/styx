@@ -30,119 +30,123 @@
     (import ./overlay-xcursor.nix)
   ];
 
-  environment.systemPackages = with pkgs;
-  let
-    pythonWithMyPkgs = python3.withPackages (pp: with pp; [
-      dbus-python
-      pyserial
-      requests
-      websocket_client
-    ]);
-  in [
+  environment.systemPackages =
+    with pkgs;
+    let
+      pythonWithMyPkgs = python3.withPackages (
+        pp: with pp; [
+          dbus-python
+          pyserial
+          requests
+          websocket_client
+        ]
+      );
+    in
+    [
 
-    ascii
-    bc
-    binutils-unwrapped
-    borgbackup
-    brotli
-    btrfs-progs
-    compsize
-    cryptsetup
-    curl
-    darktable
-    ddcutil
-    diffstat
-    diffutils
-    direnv
-    dmenu
-    docker
-    docker-compose
-    dunst
-    easyeffects
-    evince
-    ffmpeg
-    file
-    gdb
-    gh
-    gimp
-    git
-    git-absorb
-    gnome-icon-theme
-    gnupg
-    go
-    gocryptfs
-    (google-chrome.override { speechd-minimal = snappy; })  # hack to avoid bringing in speech deps. non-redistributable?
-    guvcview
-    hdparm
-    hugin
-    imagemagick
-    jq
-    libnotify
-    libsecret
-    lm_sensors
-    lsof
-    ltrace
-    magic-wormhole
-    moreutils
-    mplayer
-    mpv
-    nix-direnv
-    nixos-option
-    nixpkgs-fmt
-    nodejs
-    notion
-    nvme-cli
-    obs-studio
-    openssh
-    openssl
-    opusTools
-    pavucontrol
-    pciutils
-    pipewire
-    psmisc
-    pulseaudio
-    pv
-    pythonWithMyPkgs
-    redshift
-    ripgrep
-    rsync
-    screen
-    scrot
-    signal-desktop
-    smem
-    socat
-    spacer
-    spotify # non-redistributable?
-    sqlite
-    starship
-    strace
-    sxiv
-    sysstat
-    tcpdump
-    terraform # non-redistributable?
-    tig
-    tree
-    unzip
-    usbutils
-    v4l-utils
-    vim
-    wget
-    wireguard-tools
-    wireplumber
-    xdotool
-    xdragon
-    xosd
-    xsel
-    xsettingsd
-    xxd
-    xz
-    yt-dlp
-    zip
-    zoom-us # non-redistributable?
-    zoxide
-    zstd
+      ascii
+      bc
+      binutils-unwrapped
+      borgbackup
+      brotli
+      btrfs-progs
+      compsize
+      cryptsetup
+      curl
+      darktable
+      ddcutil
+      diffstat
+      diffutils
+      direnv
+      dmenu
+      docker
+      docker-compose
+      dunst
+      easyeffects
+      evince
+      ffmpeg
+      file
+      gdb
+      gh
+      gimp
+      git
+      git-absorb
+      gnome-icon-theme
+      gnupg
+      go
+      gocryptfs
+      (google-chrome.override { speechd-minimal = snappy; }) # hack to avoid bringing in speech deps. non-redistributable?
+      guvcview
+      hdparm
+      hugin
+      imagemagick
+      jq
+      libnotify
+      libsecret
+      lm_sensors
+      lsof
+      ltrace
+      magic-wormhole
+      moreutils
+      mplayer
+      mpv
+      nix-direnv
+      nixos-option
+      nixpkgs-fmt
+      nodejs
+      notion
+      nvme-cli
+      obs-studio
+      openssh
+      openssl
+      opusTools
+      pavucontrol
+      pciutils
+      pipewire
+      psmisc
+      pulseaudio
+      pv
+      pythonWithMyPkgs
+      redshift
+      ripgrep
+      rsync
+      screen
+      scrot
+      signal-desktop
+      smem
+      socat
+      spacer
+      spotify # non-redistributable?
+      sqlite
+      starship
+      strace
+      sxiv
+      sysstat
+      tcpdump
+      terraform # non-redistributable?
+      tig
+      tree
+      unzip
+      usbutils
+      v4l-utils
+      vim
+      wget
+      wireguard-tools
+      wireplumber
+      xdotool
+      xdragon
+      xosd
+      xsel
+      xsettingsd
+      xxd
+      xz
+      yt-dlp
+      zip
+      zoom-us # non-redistributable?
+      zoxide
+      zstd
 
-  ];
+    ];
 
   services.fprintd.enable = true;
   services.fwupd.enable = true;

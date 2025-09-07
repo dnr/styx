@@ -1,4 +1,10 @@
-{ config, lib, pkgs, fstype, ... }:
+{
+  config,
+  lib,
+  pkgs,
+  fstype,
+  ...
+}:
 let
   styxtest = (import ./. { inherit pkgs; }).styx-test;
   runstyxtest = pkgs.writeShellScriptBin "runstyxtest" ''
@@ -7,7 +13,8 @@ let
     $sudo modprobe cachefiles
     exec $sudo ./styxtest -test.v "$@"
   '';
-in {
+in
+{
   imports = [
     ./vm-base.nix
     ./module
@@ -17,10 +24,12 @@ in {
   services.styx.enableKernelOptions = true;
 
   # set up configurable fs type
-  assertions = [ {
-    assertion = config.virtualisation.diskImage != null;
-    message = "must use disk image";
-  } ];
+  assertions = [
+    {
+      assertion = config.virtualisation.diskImage != null;
+      message = "must use disk image";
+    }
+  ];
   # set fstype of root fs
   virtualisation.fileSystems."/".fsType = lib.mkForce fstype;
   # ensure btrfs enabled
