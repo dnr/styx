@@ -95,7 +95,6 @@ rec {
         "3a7xq2qhxw2r7naqmc53akmx7yvz0mkf-less-is-more.patch"
         "v35ysx9k1ln4c6r7lj74204ss4bw7l5l-openssl-3.0.12-man"
         "xd96wmj058ky40aywv72z63vdw9yzzzb-openssl-3.0.12-man"
-        "1fka6ngkrlmqkhix0gnnb19z58sr0yma-openssl-3.0.13-man"
         "z2waz77lsh4pxs0jxgmpf16s7a3g7b7v-openssl-3.0.13-man"
         "53qwclnym7a6vzs937jjmsfqxlxlsf2y-opusfile-0.12"
         "kcyrz2y8si9ry5p8qkmj0gp41n01sa1y-opusfile-0.12"
