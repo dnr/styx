@@ -290,7 +290,7 @@ func (s *Server) buildAndStartPrefetch(ctx context.Context, reqs []cdig.CDig) ([
 // currently this is only used to read manifest chunks
 // all chunks must be the same size
 func (s *Server) readChunks(
-	ctx context.Context, // can be nil if allowMissing is true
+	ctx context.Context, // can be nil if allowMissing is false
 	useTx *bbolt.Tx, // optional
 	totalSize int64,
 	chunkShift shift.Shift,
@@ -299,7 +299,7 @@ func (s *Server) readChunks(
 	sphps []SphPrefix, // used if allowMissing is true
 	allowMissing bool,
 ) ([]byte, error) {
-	firstMissing := -1
+	var firstMissing int
 	findMissing := func(tx *bbolt.Tx) error {
 		for idx, loc := range locs {
 			if !s.locPresent(tx, loc) {
@@ -623,21 +623,29 @@ func (s *Server) gotNewChunk(loc erofs.SlabLoc, digest cdig.CDig, b []byte) erro
 
 	// record async
 	s.presentMap.Put(loc, struct{}{})
-
-	go func() {
-		err := s.db.Batch(func(tx *bbolt.Tx) error {
-			sb := tx.Bucket(slabBucket).Bucket(slabKey(loc.SlabId))
-			if sb == nil {
-				return errors.New("missing slab bucket")
-			}
-			return sb.Put(addrKey(presentMask|loc.Addr), []byte{})
-		})
-		if err == nil {
-			s.presentMap.Delete(loc)
-		}
-	}()
+	go s.cleanPresentMap(loc)
 
 	return nil
+}
+
+func (s *Server) cleanPresentMap(loc erofs.SlabLoc) {
+	err := s.db.Batch(func(tx *bbolt.Tx) error {
+		sb := tx.Bucket(slabBucket).Bucket(slabKey(loc.SlabId))
+		if sb == nil {
+			return errors.New("missing slab bucket")
+		}
+		return sb.Put(addrKey(presentMask|loc.Addr), []byte{})
+	})
+	if err != nil {
+		log.Println("present map record error:", err)
+		return
+	}
+	// we can't clean up presentMap immediately, we need to wait until all read
+	// transactions that were started before db.Batch have closed. one solution is to
+	// keep a generation number and set of open generations. that's a lot of
+	// bookkeeping, though. for now just wait a while. TODO: make this correct
+	time.Sleep(time.Minute)
+	s.presentMap.Delete(loc)
 }
 
 func (s *Server) getChunkDiff(
