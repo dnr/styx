@@ -49,8 +49,8 @@ const (
 type (
 	digestIterator struct {
 		ents []*pb.Entry
-		e    int // current index in ents
-		d    int // current digest offset (bytes)
+		e    int32 // current index in ents
+		d    int32 // current digest offset (bytes)
 	}
 
 	reqOp interface {
@@ -1432,7 +1432,7 @@ func (i *digestIterator) reset() *pb.Entry {
 
 // entry that the current chunk belongs to
 func (i *digestIterator) ent() *pb.Entry {
-	if i.e >= len(i.ents) {
+	if i.e >= int32(len(i.ents)) {
 		return nil
 	}
 	return i.ents[i.e]
@@ -1444,7 +1444,7 @@ func (i *digestIterator) digest() cdig.CDig {
 	if ent == nil {
 		return cdig.Zero
 	}
-	if i.d+cdig.Bytes > len(ent.Digests) {
+	if i.d+cdig.Bytes > int32(len(ent.Digests)) {
 		// shouldn't happen, we shouldn't have stopped here
 		return cdig.Zero
 	}
@@ -1458,21 +1458,21 @@ func (i *digestIterator) size() int32 {
 		return -1
 	}
 	cshift := ent.ChunkShiftDef()
-	return int32(cshift.FileChunkSize(ent.Size, i.d+cdig.Bytes >= len(ent.Digests)))
+	return int32(cshift.FileChunkSize(ent.Size, i.d+cdig.Bytes >= int32(len(ent.Digests))))
 }
 
 // moves forward n chunks. returns true if valid.
 func (i *digestIterator) next(n int) *pb.Entry {
-	i.d += n * cdig.Bytes
+	i.d += int32(n * cdig.Bytes)
 	for {
 		ent := i.ent()
 		if ent == nil {
 			return nil
-		} else if i.d+cdig.Bytes <= len(ent.Digests) {
+		} else if i.d+cdig.Bytes <= int32(len(ent.Digests)) {
 			return ent
 		}
 		i.e++
-		i.d -= len(ent.Digests)
+		i.d -= int32(len(ent.Digests))
 	}
 }
 
