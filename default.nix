@@ -1,27 +1,27 @@
 let
-  overlays =
+  overlay =
     if builtins.getEnv "USE_NIX_GOCACHEPROG" == "" then
-      [ ]
+      null
     else
-      [
-        (import "${
-          fetchTarball {
-            url = "https://github.com/dnr/nix-gocacheprog/archive/349d679ae547.tar.gz";
-            sha256 = "1c2dkrlc2qym8y6ls40ksxl3x35xdml0yd1m6y4lj91dxa15c1af";
-          }
-        }/overlay.nix")
-      ];
+      (import "${
+        fetchTarball {
+          url = "https://github.com/dnr/nix-gocacheprog/archive/349d679ae547.tar.gz";
+          sha256 = "1c2dkrlc2qym8y6ls40ksxl3x35xdml0yd1m6y4lj91dxa15c1af";
+        }
+      }/overlay.nix");
 in
 {
   pkgs ? import <nixpkgs> {
     config = { };
-    overlays = overlays;
+    overlays = if overlay == null then [ ] else [ overlay ];
   },
 }:
 rec {
-  base = {
+  version = "0.0.11";
+
+  baseArgs = {
     pname = "styx";
-    version = "0.0.11";
+    inherit version;
     vendorHash = "sha256-WJtuxe8A6VCxUVgvEoLp1XQhpSOk1W99/w56mtodLRA=";
     src = pkgs.lib.sourceByRegex ./. [
       "^go\\.(mod|sum)$"
@@ -35,7 +35,7 @@ rec {
   baseLdFlags = [
     "-X github.com/dnr/styx/common.NixBin=${pkgs.nix}/bin/nix"
     "-X github.com/dnr/styx/common.XzBin=${pkgs.xz}/bin/xz"
-    "-X github.com/dnr/styx/common.Version=${base.version}"
+    "-X github.com/dnr/styx/common.Version=${version}"
   ];
   daemonLdFlags = baseLdFlags ++ [
     "-X github.com/dnr/styx/common.GzipBin=${pkgs.gzip}/bin/gzip"
@@ -45,41 +45,47 @@ rec {
     # "-s" "-w"  # only saves 3.6% of image size
     "-X github.com/dnr/styx/common.XzBin=${xzStaticBin}/bin/xz"
     # GzipBin is not used by manifester or differ, only local
-    "-X github.com/dnr/styx/common.Version=${base.version}"
+    "-X github.com/dnr/styx/common.Version=${version}"
   ];
 
-  styx-local = pkgs.buildGoModule (
-    base
-    // {
-      ldflags = daemonLdFlags;
-    }
-  );
+  buildStyx =
+    let
+      buildGoModule =
+        # ensure overlay is applied even if we got pkgs from somewhere else
+        # TODO: there's got to be a better way to do this...
+        if overlay == null || (builtins.hasAttr "nixGocacheprogHook" pkgs) then
+          pkgs.buildGoModule
+        else
+          let
+            final = pkgs // (overlay final pkgs);
+          in
+          final.buildGoModule;
+    in
+    args: buildGoModule (baseArgs // args);
 
-  styx-lambda = pkgs.buildGoModule (
-    base
-    // {
-      tags = [ "lambda.norpc" ];
-      ldflags = staticLdFlags;
-    }
-  );
+  styx-local = buildStyx {
+    ldflags = daemonLdFlags;
+  };
 
-  styx-test = pkgs.buildGoModule (
-    base
-    // {
-      pname = "styxtest";
-      buildPhase = ''
-        go test -ldflags="$ldflags" -c -o styxtest ./tests
-      '';
-      installPhase = ''
-        mkdir -p $out/bin $out/keys
-        install styxtest $out/bin/
-        cp keys/testsuite* $out/keys/
-      '';
-      ldflags = daemonLdFlags ++ [
-        "-X github.com/dnr/styx/tests.TestdataDir=${testdata}"
-      ];
-    }
-  );
+  styx-lambda = buildStyx {
+    tags = [ "lambda.norpc" ];
+    ldflags = staticLdFlags;
+  };
+
+  styx-test = buildStyx {
+    pname = "styxtest";
+    buildPhase = ''
+      go test -ldflags="$ldflags" -c -o styxtest ./tests
+    '';
+    installPhase = ''
+      mkdir -p $out/bin $out/keys
+      install styxtest $out/bin/
+      cp keys/testsuite* $out/keys/
+    '';
+    ldflags = daemonLdFlags ++ [
+      "-X github.com/dnr/styx/tests.TestdataDir=${testdata}"
+    ];
+  };
 
   # TODO: switch to nixVersions.stable
   patchedNix = pkgs.nixVersions.nix_2_24.overrideAttrs (prev: {
@@ -127,22 +133,16 @@ rec {
     };
 
   # built by deploy-ci, for heavy CI worker on EC2
-  charon = pkgs.buildGoModule (
-    base
-    // {
-      pname = "charon";
-      subPackages = [ "cmd/charon" ];
-    }
-  );
+  charon = buildStyx {
+    pname = "charon";
+    subPackages = [ "cmd/charon" ];
+  };
   # for light CI worker on non-AWS server (dd5):
-  charon-light = pkgs.buildGoModule (
-    base
-    // {
-      pname = "charon";
-      subPackages = [ "cmd/charon" ];
-      ldflags = [ ];
-    }
-  );
+  charon-light = buildStyx {
+    pname = "charon";
+    subPackages = [ "cmd/charon" ];
+    ldflags = [ ];
+  };
 
   # Use static binaries and take only the main binaries to make the image as
   # small as possible:
