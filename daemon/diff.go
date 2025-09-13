@@ -1194,6 +1194,7 @@ func (set *opSet) buildExtendDiff(
 		readLog = fmt.Sprintf("  or /nix/store/%s-%s%s", res.reqHash, res.reqName, reqEnt.Path)
 	}
 
+	// FIXME: need to move this whole thing into the main loop!!!
 	if res.usingBase() {
 		if args := getRecompressArgs(reqEnt); len(args) > 0 {
 			if err := set.buildRecompress(tx, res, args, baseIter, reqIter, reqEnt); err == nil {
@@ -1252,6 +1253,8 @@ func (set *opSet) buildExtendDiff(
 		if len(set.ops) > 1 && newReqEnt != nil && newReqEnt.Path != reqEnt.Path {
 			// we're doing more than one op because we got multiple reads for the same file in
 			// succession. we can stop after the file.
+			// TODO: we added image-RRs, so we should update this condition: if we hit an image
+			// RR (in addition to or instead of a file RR) then don't break here.
 			break
 		}
 	}
