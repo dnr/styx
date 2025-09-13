@@ -968,6 +968,17 @@ func (sop *subOp) hasReq() bool {
 	return len(sop.reqInfo) > 0
 }
 
+func (sop *subOp) appendString(w io.Writer) {
+	fmt.Fprintf(w, "[%d:%d", len(sop.reqInfo), sop.reqSize)
+	if sop.hasBase() {
+		fmt.Fprintf(w, " <~ %d:%d", len(sop.baseInfo), sop.baseSize)
+	}
+	if len(sop.recompress) > 0 {
+		fmt.Fprintf(w, " | %s", sop.recompress[0])
+	}
+	fmt.Fprint(w, "]")
+}
+
 // diff op
 
 func (op *diffOp) wait() error {
@@ -1184,32 +1195,22 @@ func (set *opSet) buildExtendDiff(
 		reqIdx++
 	}
 
-	reqEnt := reqIter.ent()
+	path := reqIter.ent().Path
 	var readLog string
 	if isManifest {
 		readLog = fmt.Sprintf("read manifest %s-%s", res.reqHash, strings.TrimPrefix(res.reqName, isManifestPrefix))
 	} else if firstOp {
-		readLog = fmt.Sprintf("read /nix/store/%s-%s%s", res.reqHash, res.reqName, reqEnt.Path)
+		readLog = fmt.Sprintf("read %s-%s%s", res.reqHash, res.reqName, path)
 	} else { // later: don't bother logging this
-		readLog = fmt.Sprintf("  or /nix/store/%s-%s%s", res.reqHash, res.reqName, reqEnt.Path)
-	}
-
-	// FIXME: need to move this whole thing into the main loop!!!
-	if res.usingBase() {
-		if args := getRecompressArgs(reqEnt); len(args) > 0 {
-			if err := set.buildRecompress(tx, res, args, baseIter, reqIter, reqEnt); err == nil {
-				set.log(res, args[0], true)
-				return
-			}
-		}
+		readLog = fmt.Sprintf("  or %s-%s%s", res.reqHash, res.reqName, path)
 	}
 
 	if useRR {
-		set.updateRecentReads(res.reqHash, reqEnt.Path)
+		set.updateRecentReads(res.reqHash, path)
 	}
 
-	// try to find some file in base
-	if found := baseIter.findFile(reqEnt.Path); found {
+	// try to find same file in base
+	if found := baseIter.findFile(path); found {
 		// move to offset within file
 		baseIter.d = reqIter.d
 		baseIter.next(0) // correct iter in case base file is smaller
@@ -1220,7 +1221,23 @@ func (set *opSet) buildExtendDiff(
 	}
 
 	changed := false
+	newFile := true
 	for {
+		if newFile && res.usingBase() { // TODO: allow recompress against empty
+			if args := getRecompressArgs(reqIter.ent()); len(args) > 0 {
+				if newBaseIter, newReqIter, err := set.buildRecompress(tx, res, args, baseIter, reqIter); err == nil {
+					baseIter, reqIter = newBaseIter, newReqIter
+					changed = true
+
+					if (baseIter.ent() == nil || set.fullBase()) && (reqIter.ent() == nil || set.fullReq()) {
+						break
+					}
+
+					continue
+				}
+			}
+		}
+
 		reqDigest := reqIter.digest()
 		if reqDigest != cdig.Zero && !set.fullReq() && !set.isUsing(reqDigest) {
 			reqLoc, reqPresent := set.s.digestPresent(tx, reqDigest)
@@ -1249,8 +1266,11 @@ func (set *opSet) buildExtendDiff(
 		}
 
 		_, newReqEnt := baseIter.next(1), reqIter.next(1)
+		if newFile = newReqEnt != nil && newReqEnt.Path != path; newFile {
+			path = newReqEnt.Path
+		}
 
-		if len(set.ops) > 1 && newReqEnt != nil && newReqEnt.Path != reqEnt.Path {
+		if len(set.ops) > 1 && newFile {
 			// we're doing more than one op because we got multiple reads for the same file in
 			// succession. we can stop after the file.
 			// TODO: we added image-RRs, so we should update this condition: if we hit an image
@@ -1264,7 +1284,7 @@ func (set *opSet) buildExtendDiff(
 	set.sourcesLeft--
 
 	log.Print(readLog)
-	set.log(res, "", firstOp)
+	set.log(res, firstOp)
 }
 
 func (set *opSet) buildRecompress(
@@ -1272,8 +1292,8 @@ func (set *opSet) buildRecompress(
 	res catalogResult,
 	args []string,
 	baseIter, reqIter digestIterator,
-	reqEnt *pb.Entry,
-) (retErr error) {
+) (newBaseIter, newReqIter digestIterator, retErr error) {
+	reqEnt := reqIter.ent()
 	// findFile will only return true if it found an entry and it has digests,
 	// i.e. missing file, is symlink, inline, etc. will all return false.
 	if found := baseIter.findFile(reqEnt.Path); !found {
@@ -1291,7 +1311,8 @@ func (set *opSet) buildRecompress(
 			}
 		}
 		if !found {
-			return errors.New("base missing corresponding file: " + reqEnt.Path)
+			retErr = errors.New("base missing corresponding file: " + reqEnt.Path)
+			return
 		}
 	}
 
@@ -1310,10 +1331,12 @@ func (set *opSet) buildRecompress(
 		baseDigest := baseIter.digest()
 		baseLoc, basePresent := set.s.digestPresent(tx, baseDigest)
 		if baseLoc.Addr == 0 {
-			return errors.New("digest in entry of base digest is not mapped")
+			retErr = errors.New("digest in entry of base digest is not mapped")
+			return
 		} else if !basePresent {
 			// Base is not present, don't bother with recompress (data is already compressed).
-			return errors.New("base chunk not present")
+			retErr = errors.New("base chunk not present")
+			return
 		}
 		sphs[res.baseHash] = struct{}{}
 		sop.addBase(baseDigest, baseIter.size(), baseLoc)
@@ -1323,14 +1346,16 @@ func (set *opSet) buildRecompress(
 		reqDigest := reqIter.digest()
 		reqLoc := set.s.digestLoc(tx, reqDigest)
 		if reqLoc.Addr == 0 {
-			return errors.New("digest in entry of req digest is not mapped")
+			retErr = errors.New("digest in entry of req digest is not mapped")
+			return
 		}
 		sphs[res.reqHash] = struct{}{}
 		sop.addReq(reqDigest, reqIter.size(), reqLoc)
 	}
 
 	if !set.subOpFits(sop) {
-		return errors.New("recompress would make op too big")
+		retErr = errors.New("recompress would make op too big")
+		return
 	}
 
 	set.op.addRecompress(sphs, sop)
@@ -1343,12 +1368,11 @@ func (set *opSet) buildRecompress(
 			set.s.diffMap[i.loc] = set.op
 		}
 	}
-	return nil
+	return baseIter, reqIter, nil
 }
 
 func (set *opSet) log(
 	res catalogResult,
-	recompress string,
 	firstOp bool,
 ) {
 	var sb strings.Builder
@@ -1373,17 +1397,20 @@ func (set *opSet) log(
 	for i, op := range set.ops {
 		if i != 0 && i != len(set.ops)-1 {
 			if i == 1 {
-				fmt.Fprintf(&sb, " …%d more…", len(set.ops)-2)
+				fmt.Fprintf(&sb, " …%d…", len(set.ops)-2)
 			}
-		} else if op.anyHasBase() {
-			fmt.Fprintf(&sb, " [%d:%d <~ %d:%d]", op.reqTotalChunks, op.reqTotalSize, op.baseTotalChunks, op.baseTotalSize)
 		} else {
-			fmt.Fprintf(&sb, " [%d:%d]", op.reqTotalChunks, op.reqTotalSize)
+			fmt.Fprint(&sb, " ")
+			for j, sop := range op.sops {
+				if j != 0 && j != len(op.sops)-1 {
+					if j == 1 {
+						fmt.Fprintf(&sb, "…%d…", len(op.sops)-2)
+					}
+				} else {
+					sop.appendString(&sb)
+				}
+			}
 		}
-	}
-
-	if len(recompress) > 0 {
-		fmt.Fprintf(&sb, " <using %s>", recompress)
 	}
 
 	log.Print(sb.String())
