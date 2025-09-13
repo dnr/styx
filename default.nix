@@ -29,62 +29,63 @@ rec {
     ];
     subPackages = [ "cmd/styx" ];
     doCheck = false;
-    ldflags = baseLdFlags;
   };
 
-  baseLdFlags = [
-    "-X github.com/dnr/styx/common.NixBin=${pkgs.nix}/bin/nix"
-    "-X github.com/dnr/styx/common.XzBin=${pkgs.xz}/bin/xz"
-    "-X github.com/dnr/styx/common.Version=${version}"
-  ];
-  daemonLdFlags = baseLdFlags ++ [
-    "-X github.com/dnr/styx/common.GzipBin=${pkgs.gzip}/bin/gzip"
-    "-X github.com/dnr/styx/common.FilefragBin=${pkgs.e2fsprogs}/bin/filefrag"
-  ];
-  staticLdFlags = [
-    # "-s" "-w"  # only saves 3.6% of image size
-    "-X github.com/dnr/styx/common.XzBin=${xzStaticBin}/bin/xz"
+  charonArgs = {
+    pname = "charon";
+    subPackages = [ "cmd/charon" ];
+  };
+
+  baseConsts = {
+    "common.NixBin" = "${pkgs.nix}/bin/nix";
+    "common.XzBin" = "${pkgs.xz}/bin/xz";
+    "common.Version" = version;
+  };
+  daemonConsts = baseConsts // {
+    "common.GzipBin" = "${pkgs.gzip}/bin/gzip";
+    "common.FilefragBin" = "${pkgs.e2fsprogs}/bin/filefrag";
+  };
+  staticConsts = {
+    "common.XzBin" = "${xzStaticBin}/bin/xz";
     # GzipBin is not used by manifester or differ, only local
-    "-X github.com/dnr/styx/common.Version=${version}"
-  ];
+    "common.Version" = version;
+  };
+
+  overlaidBuildGoModule =
+    # ensure overlay is applied even if we got pkgs from somewhere else
+    # TODO: there's got to be a better way to do this...
+    if overlay == null || (builtins.hasAttr "nixGocacheprogHook" pkgs) then
+      pkgs.buildGoModule
+    else
+      let
+        final = pkgs // (overlay final pkgs);
+      in
+      final.buildGoModule;
 
   buildStyx =
+    consts: args:
     let
-      buildGoModule =
-        # ensure overlay is applied even if we got pkgs from somewhere else
-        # TODO: there's got to be a better way to do this...
-        if overlay == null || (builtins.hasAttr "nixGocacheprogHook" pkgs) then
-          pkgs.buildGoModule
-        else
-          let
-            final = pkgs // (overlay final pkgs);
-          in
-          final.buildGoModule;
+      # note: putting "-s -w" in ldflags only saves 3.6% of image size
+      ldflags = pkgs.lib.mapAttrsToList (k: v: "-X github.com/dnr/styx/${k}=${v}") consts;
     in
-    args: buildGoModule (baseArgs // args);
+    overlaidBuildGoModule (baseArgs // args // { inherit ldflags; });
 
-  styx-local = buildStyx {
-    ldflags = daemonLdFlags;
-  };
+  styx-local = buildStyx daemonConsts { };
 
-  styx-lambda = buildStyx {
+  styx-lambda = buildStyx staticConsts {
     tags = [ "lambda.norpc" ];
-    ldflags = staticLdFlags;
   };
 
-  styx-test = buildStyx {
+  styx-test = buildStyx (daemonConsts // { "tests.TestdataDir" = testdata; }) {
     pname = "styxtest";
-    buildPhase = ''
-      go test -ldflags="$ldflags" -c -o styxtest ./tests
-    '';
+    # need to override the build command to use "go test -c" so we can run the
+    # resulting binary with sudo.
+    buildPhase = ''go test -ldflags="$ldflags" -c -o styxtest ./tests'';
     installPhase = ''
       mkdir -p $out/bin $out/keys
       install styxtest $out/bin/
       cp keys/testsuite* $out/keys/
     '';
-    ldflags = daemonLdFlags ++ [
-      "-X github.com/dnr/styx/tests.TestdataDir=${testdata}"
-    ];
   };
 
   # TODO: switch to nixVersions.stable
@@ -132,17 +133,12 @@ rec {
       outputHash = hash;
     };
 
+  buildCharon = consts: args: buildStyx consts (charonArgs // args);
+
   # built by deploy-ci, for heavy CI worker on EC2
-  charon = buildStyx {
-    pname = "charon";
-    subPackages = [ "cmd/charon" ];
-  };
+  charon = buildCharon baseConsts { };
   # for light CI worker on non-AWS server (dd5):
-  charon-light = buildStyx {
-    pname = "charon";
-    subPackages = [ "cmd/charon" ];
-    ldflags = [ ];
-  };
+  charon-light = buildCharon { } { };
 
   # Use static binaries and take only the main binaries to make the image as
   # small as possible:
