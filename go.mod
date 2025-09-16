@@ -2,10 +2,10 @@ module github.com/dnr/styx
 
 go 1.24
 
-replace github.com/DataDog/zstd => github.com/dnr/datadog-zstd-go v0.0.0-20241112014204-5b807b5888a6
+replace github.com/DataDog/zstd => github.com/dnr/datadog-zstd-go v0.0.0-20250916100506-79345d875ce7
 
 require (
-	github.com/DataDog/zstd v1.5.5
+	github.com/DataDog/zstd v1.5.7
 	github.com/avast/retry-go/v4 v4.6.0
 	github.com/aws/aws-lambda-go v1.46.0
 	github.com/aws/aws-sdk-go-v2 v1.27.2
