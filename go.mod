@@ -1,6 +1,8 @@
 module github.com/dnr/styx
 
-go 1.24
+go 1.24.0
+
+toolchain go1.24.6
 
 replace github.com/DataDog/zstd => github.com/dnr/datadog-zstd-go v0.0.0-20250916100506-79345d875ce7
 
@@ -20,12 +22,12 @@ require (
 	github.com/spf13/cobra v1.8.1
 	github.com/stretchr/testify v1.10.0
 	github.com/wneessen/go-mail v0.4.2
-	go.etcd.io/bbolt v1.3.11
+	go.etcd.io/bbolt v1.4.3
 	go.temporal.io/api v1.43.2
 	go.temporal.io/sdk v1.32.1
 	golang.org/x/exp v0.0.0-20240904232852-e7e105dedf7e
-	golang.org/x/sync v0.8.0
-	golang.org/x/sys v0.26.0
+	golang.org/x/sync v0.10.0
+	golang.org/x/sys v0.36.0
 	golang.org/x/text v0.18.0
 	google.golang.org/grpc v1.66.1
 	google.golang.org/protobuf v1.34.2
@@ -72,7 +74,7 @@ require (
 	github.com/pmezard/go-difflib v1.0.0 // indirect
 	github.com/robfig/cron v1.2.0 // indirect
 	github.com/spaolacci/murmur3 v1.1.0 // indirect
-	github.com/spf13/pflag v1.0.5 // indirect
+	github.com/spf13/pflag v1.0.6 // indirect
 	github.com/stretchr/objx v0.5.2 // indirect
 	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.55.0 // indirect
 	go.opentelemetry.io/otel v1.30.0 // indirect
