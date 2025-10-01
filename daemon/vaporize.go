@@ -51,7 +51,7 @@ func (s *Server) handleVaporizeReq(ctx context.Context, r *VaporizeReq) (*Status
 
 	m := &pb.Manifest{
 		Params: &pb.GlobalParams{
-			DigestAlgo: common.DigestAlgo,
+			DigestAlgo: cdig.Algo,
 			DigestBits: cdig.Bits,
 		},
 		SmallFileCutoff: manifester.DefaultSmallFileCutoff,
@@ -175,7 +175,7 @@ func (s *Server) handleVaporizeReq(ctx context.Context, r *VaporizeReq) (*Status
 	envelope, err := proto.Marshal(&pb.SignedMessage{
 		Msg: entry,
 		Params: &pb.GlobalParams{
-			DigestAlgo: common.DigestAlgo,
+			DigestAlgo: cdig.Algo,
 			DigestBits: int32(cdig.Bits),
 		},
 	})

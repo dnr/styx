@@ -199,7 +199,7 @@ func (tb *testBase) initDaemon() {
 	require.NoError(tb.t, err)
 	params := pb.DaemonParams{
 		Params: &pb.GlobalParams{
-			DigestAlgo: common.DigestAlgo,
+			DigestAlgo: cdig.Algo,
 			DigestBits: cdig.Bits,
 		},
 		ManifesterUrl:    tb.manifesterAddr,

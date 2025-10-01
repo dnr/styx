@@ -105,7 +105,7 @@ func NewManifestBuilder(cfg ManifestBuilderConfig, cs ChunkStoreWrite) (*Manifes
 		cs:       cs,
 		chunksem: semaphore.NewWeighted(int64(cmp.Or(cfg.ConcurrentChunkOps, 200))),
 		params: &pb.GlobalParams{
-			DigestAlgo: common.DigestAlgo,
+			DigestAlgo: cdig.Algo,
 			DigestBits: int32(cdig.Bits),
 		},
 		chunkPool:  common.NewChunkPool(),
@@ -339,7 +339,7 @@ func (b *ManifestBuilder) Build(
 	cacheKey := (&ManifestReq{
 		Upstream:      upstream,
 		StorePathHash: storePathHash,
-		DigestAlgo:    common.DigestAlgo,
+		DigestAlgo:    cdig.Algo,
 		DigestBits:    int(cdig.Bits),
 	}).CacheKey()
 	cmpSb, err := b.cs.PutIfNotExists(ctx, ManifestCachePath, cacheKey, sb)

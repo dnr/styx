@@ -112,7 +112,7 @@ func internalCmd() *cobra.Command {
 				mReq := manifester.ManifestReq{
 					Upstream:      req.upstream,
 					StorePathHash: sphStr,
-					DigestAlgo:    common.DigestAlgo,
+					DigestAlgo:    cdig.Algo,
 					DigestBits:    int(cdig.Bits),
 				}
 

@@ -47,7 +47,7 @@ func (s *Server) getManifestAndBuildImage(ctx context.Context, req *MountReq) (*
 	}
 	if smParams != nil {
 		match := smParams.DigestBits == cdig.Bits &&
-			smParams.DigestAlgo == common.DigestAlgo
+			smParams.DigestAlgo == cdig.Algo
 		if !match {
 			return nil, nil, fmt.Errorf("chunked manifest global params mismatch")
 		}
@@ -150,7 +150,7 @@ func (s *Server) getManifestFromManifester(ctx context.Context, upstream, sph st
 	mReq := manifester.ManifestReq{
 		Upstream:      upstream,
 		StorePathHash: sph,
-		DigestAlgo:    common.DigestAlgo,
+		DigestAlgo:    cdig.Algo,
 		DigestBits:    int(cdig.Bits),
 		// SmallFileCutoff: s.cfg.SmallFileCutoff,
 	}

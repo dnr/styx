@@ -527,7 +527,7 @@ func (s *Server) doDiffOp(ctx context.Context, op *diffOp) error {
 				if len(sop.recompress) > 0 && strings.Contains(err.Error(), "digest mismatch") {
 					// we didn't recompress correctly, fall back to single
 					// TODO: be able to try with different parameter variants
-					return fmt.Errorf("recompress mismatch")
+					return fmt.Errorf("recompress mismatch for %s", sop.reqDigests[idx])
 				}
 				return fmt.Errorf("gotNewChunk error (diff): %w", err)
 			}
@@ -1223,7 +1223,7 @@ func (set *opSet) buildExtendDiff(
 	changed := false
 	newFile := true
 	for {
-		if newFile && res.usingBase() { // TODO: allow recompress against empty
+		if newFile && res.usingBase() {
 			if args := getRecompressArgs(reqIter.ent()); len(args) > 0 {
 				if newBaseIter, newReqIter, err := set.buildRecompress(tx, res, args, baseIter, reqIter); err == nil {
 					baseIter, reqIter = newBaseIter, newReqIter
