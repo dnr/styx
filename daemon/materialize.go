@@ -12,7 +12,9 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"sync/atomic"
 	"syscall"
 
 	"go.etcd.io/bbolt"
@@ -20,6 +22,7 @@ import (
 
 	"github.com/dnr/styx/common"
 	"github.com/dnr/styx/common/cdig"
+	"github.com/dnr/styx/common/errgroup"
 	"github.com/dnr/styx/erofs"
 	"github.com/dnr/styx/pb"
 )
@@ -147,12 +150,26 @@ func (s *Server) materialize(dest string, m *pb.Manifest) error {
 		return err
 	}
 
-	tryClone := true
+	var cloneFailed atomic.Bool
 	s.stateLock.Lock()
 	readFds := maps.Clone(s.readfdBySlab)
 	s.stateLock.Unlock()
 
-	// TODO: parallelize some of this?
+	// create all directories first
+	for _, ent := range ents {
+		if ent.Type == pb.EntryType_DIRECTORY {
+			p := filepath.Join(dest, ent.Path)
+			if err = os.MkdirAll(p, 0o755); err != nil {
+				return err
+			}
+			_ = unix.Lutimes(p, zeroTimeval)
+		}
+	}
+
+	// create files/symlinks in parallel
+	var eg errgroup.Group
+	eg.SetLimit(runtime.NumCPU())
+
 	wasBare := false
 	for i, ent := range ents {
 		p := filepath.Join(dest, ent.Path)
@@ -164,36 +181,33 @@ func (s *Server) materialize(dest string, m *pb.Manifest) error {
 			wasBare = ent.Type == pb.EntryType_REGULAR
 		}
 
-		switch ent.Type {
-		case pb.EntryType_DIRECTORY:
-			if err = os.MkdirAll(p, 0o755); err != nil {
-				return err
-			}
-			_ = unix.Lutimes(p, zeroTimeval)
-		case pb.EntryType_REGULAR:
-			if err = s.materializeFile(p, ent, locs, readFds, &tryClone); err != nil {
-				return err
-			}
-		case pb.EntryType_SYMLINK:
-			if i == 0 {
-				return errors.New("bare file can't be symlink")
-			}
-			err = unix.Symlink(string(ent.InlineData), p)
-			if err == unix.EEXIST {
-				// handle overlayfs store in interactive vm, shouldn't happen normally
-				_ = os.Remove(p)
+		eg.Go(func() error {
+			switch ent.Type {
+			case pb.EntryType_DIRECTORY:
+				return nil // done above
+			case pb.EntryType_REGULAR:
+				return s.materializeFile(p, ent, locs, readFds, &cloneFailed)
+			case pb.EntryType_SYMLINK:
+				if i == 0 {
+					return errors.New("bare file can't be symlink")
+				}
 				err = unix.Symlink(string(ent.InlineData), p)
-			}
-			if err != nil {
+				if err == unix.EEXIST {
+					// handle overlayfs store in interactive vm, shouldn't happen normally
+					_ = os.Remove(p)
+					err = unix.Symlink(string(ent.InlineData), p)
+				}
+				if err == nil {
+					err = unix.Lutimes(p, zeroTimeval)
+				}
 				return err
+			default:
+				return errors.New("unknown entry type in manifest")
 			}
-			_ = unix.Lutimes(p, zeroTimeval)
-		default:
-			return errors.New("unknown entry type in manifest")
-		}
+		})
 	}
 
-	return nil
+	return eg.Wait()
 }
 
 func (s *Server) materializeFile(
@@ -201,7 +215,7 @@ func (s *Server) materializeFile(
 	ent *pb.Entry,
 	locs map[cdig.CDig]erofs.SlabLoc,
 	readFds map[uint16]slabFds,
-	tryClone *bool,
+	cloneFailed *atomic.Bool,
 ) (retErr error) {
 	var dst *os.File
 	defer func() {
@@ -229,7 +243,7 @@ tryAgain:
 	for i, dig := range digs {
 		loc := locs[dig]
 		size := cshift.FileChunkSize(ent.Size, i == len(digs)-1)
-		if *tryClone {
+		if !cloneFailed.Load() {
 			if cfd := readFds[loc.SlabId].cacheFd; cfd > 0 {
 				sizeUp := int(s.blockShift.Roundup(size))
 				roundedUp = sizeUp != int(size)
@@ -258,7 +272,7 @@ tryAgain:
 				// nothing
 			case syscall.EINVAL, syscall.EOPNOTSUPP, syscall.EXDEV, io.ErrShortWrite, errCachefdNotFound:
 				log.Printf("CopyFileRange: %s, using plain copy", err)
-				*tryClone = false
+				cloneFailed.Store(true)
 				dst.Close()
 				goto tryAgain
 			default:
