@@ -17,7 +17,6 @@ import (
 	"os/exec"
 	"path"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/DataDog/zstd"
@@ -167,16 +166,17 @@ func (s *server) handleChunkDiff(w http.ResponseWriter, req *http.Request) {
 	n := len(r.Req)
 	baseDatas := make([][]byte, n)
 	reqDatas := make([][]byte, n)
-	baseErrs := make([]error, n)
-	reqErrs := make([]error, n)
 	stats := ChunkDiffStats{Reqs: n}
 
-	// fetch all in parallel
+	// fetch all in parallel: normal requests have just one "req" so no real limit.
+	// [multi-]recompress diffs will call gzip or xz for each "expand". lambda has limited cpu
+	// and 1024 fd limit, so limit the number of chunk series we do in parallel.
+	expandGrp := errgroup.WithContext(req.Context())
+	expandGrp.SetLimit(4)
+
 	egCtx := errgroup.WithContext(req.Context())
 	egCtx.SetLimit(s.cfg.ChunkDiffParallel)
 
-	var wg sync.WaitGroup
-	wg.Add(2 * n)
 	for i, ri := range r.Req {
 		if ri.ExpandBeforeDiff != "" {
 			stats.Expands++
@@ -184,28 +184,20 @@ func (s *server) handleChunkDiff(w http.ResponseWriter, req *http.Request) {
 		stats.BaseChunks += len(ri.Bases) / cdig.Bytes
 		stats.ReqChunks += len(ri.Reqs) / cdig.Bytes
 
-		go func() {
-			defer wg.Done()
-			baseDatas[i], baseErrs[i] = s.expand(egCtx, cdig.FromSliceAlias(ri.Bases), ri.ExpandBeforeDiff)
-		}()
-		go func() {
-			defer wg.Done()
-			reqDatas[i], reqErrs[i] = s.expand(egCtx, cdig.FromSliceAlias(ri.Reqs), ri.ExpandBeforeDiff)
-		}()
+		expandGrp.Go(func() (err error) {
+			baseDatas[i], err = s.expand(egCtx, cdig.FromSliceAlias(ri.Bases), ri.ExpandBeforeDiff)
+			return
+		})
+		expandGrp.Go(func() (err error) {
+			reqDatas[i], err = s.expand(egCtx, cdig.FromSliceAlias(ri.Reqs), ri.ExpandBeforeDiff)
+			return
+		})
 	}
-	// wait for all
-	wg.Wait()
 
-	baseErr := errors.Join(baseErrs...)
-	reqErr := errors.Join(reqErrs...)
-	if baseErr != nil || reqErr != nil {
-		if baseErr != nil {
-			log.Println("chunk read (base) error:", baseErr)
-		}
-		if reqErr != nil {
-			log.Println("chunk read (req) error:", reqErr)
-		}
-		writeError(w, errors.Join(baseErr, reqErr))
+	// wait for all
+	if err := expandGrp.Wait(); err != nil {
+		log.Println("chunk read error:", err)
+		writeError(w, err)
 		return
 	}
 	dlDone := time.Now()
