@@ -1,8 +1,5 @@
 package daemon
 
-// FIXME: is this right?
-const FANOTIFY_MSG_MAX_SIZE = 4096
-
 type fanotify_event_metadata struct {
 	EventLen    uint32
 	Vers        uint8
@@ -20,24 +17,24 @@ type fanotify_event_info_header struct {
 }
 
 type fanotify_event_info_fid struct {
-	Hdr  fanotify_event_info_header
-	Fsid uint64 // FIXME: really uint64?
+	// Hdr  fanotify_event_info_header
+	Fsid uint64
 	// Handle [...]byte
 }
 
 type fanotify_event_info_pidfd struct {
-	Hdr   fanotify_event_info_header
+	// Hdr   fanotify_event_info_header
 	PidFd int32
 }
 
 type fanotify_event_info_error struct {
-	Hdr        fanotify_event_info_header
+	// Hdr        fanotify_event_info_header
 	Error      int32
 	ErrorCount uint32
 }
 
 type fanotify_event_info_range struct {
-	Hdr    fanotify_event_info_header
+	// Hdr    fanotify_event_info_header
 	Pad    uint32
 	Offset uint64
 	Count  uint64

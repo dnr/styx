@@ -19,6 +19,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/lunixbochs/struc"
@@ -31,6 +32,7 @@ import (
 	"github.com/dnr/styx/common"
 	"github.com/dnr/styx/common/cdig"
 	"github.com/dnr/styx/common/shift"
+	"github.com/dnr/styx/common/systemd"
 	"github.com/dnr/styx/erofs"
 	"github.com/dnr/styx/manifester"
 	"github.com/dnr/styx/pb"
@@ -66,17 +68,19 @@ type (
 		msgPool    *sync.Pool
 		chunkPool  *common.ChunkPool
 		builder    *erofs.Builder
-		// devnode    atomic.Int32 // FIXME: notify state?
-		stats daemonStats
+		devnode    atomic.Int32 // FIXME: notify state?
+		stats      daemonStats
 
-		stateLock    sync.Mutex
-		cacheState   map[uint32]*openFileState // object id -> state
-		stateBySlab  map[uint16]*openFileState // slab id -> state
-		readfdBySlab map[uint16]int            // slab id -> readfd
+		stateLock sync.Mutex
+		// cacheState   map[uint32]*openFileState // object id -> state
+		// stateBySlab  map[uint16]*openFileState // slab id -> state
+		// readfdBySlab map[uint16]int            // slab id -> readfd
 		// readfds are kept in a separate map because after a restore, we may load the slab
 		// image and readfd before the slab is loaded by erofs. this doesn't make
 		// sense but it seems to work that way.
 		// FIXME: revisit this? we can consolidate...
+		// only need manifest slab in here, right?
+		slabFds map[uint16]int
 
 		// keeps track of locs that we know are present before we persist them
 		presentMap common.SimpleSyncMap[erofs.SlabLoc, struct{}]
@@ -120,10 +124,10 @@ type (
 		ErofsBlockShift int
 		// SmallFileCutoff int
 
-		Workers int // FIXME: still needed?
+		Workers int
 
 		IsTesting bool
-		// FdStore systemd.FdStore // FIXME: delete?
+		FdStore   systemd.FdStore
 	}
 )
 
@@ -137,7 +141,6 @@ func NewServer(cfg Config) *Server {
 	return &Server{
 		cfg:             &cfg,
 		blockShift:      shift.Shift(cfg.ErofsBlockShift),
-		msgPool:         &sync.Pool{New: func() any { return make([]byte, FANOTIFY_MSG_MAX_SIZE) }},
 		chunkPool:       common.NewChunkPool(),
 		builder:         erofs.NewBuilder(erofs.BuilderConfig{BlockShift: cfg.ErofsBlockShift}),
 		cacheState:      make(map[uint32]*openFileState),
@@ -314,7 +317,7 @@ func (s *Server) setupMounts() error {
 	return nil
 }
 
-// FIXME: consolidate with openSlabFile
+// FIXME: consolidate with createSlabFile?
 func (s *Server) setupManifestSlab() error {
 	var id uint16 = manifestSlabOffset
 	path := filepath.Join(s.cfg.CachePath, "slab", strconv.Itoa(int(id)))
@@ -326,19 +329,51 @@ func (s *Server) setupManifestSlab() error {
 
 	s.stateLock.Lock()
 	defer s.stateLock.Unlock()
-	state := &openFileState{
-		writeFd: common.TruncU32(fd), // write and read to same fd
-		tp:      typeManifestSlab,
-		slabId:  id,
-	}
-	s.stateBySlab[id] = state
-	s.readfdBySlab[id] = fd
+	s.slabFds[id] = fd
+	// state := &openFileState{
+	// 	writeFd: common.TruncU32(fd), // write and read to same fd
+	// 	tp:      typeManifestSlab,
+	// 	slabId:  id,
+	// }
+	// s.stateBySlab[id] = state
+	// s.readfdBySlab[id] = fd
 	return nil
 }
 
 func (s *Server) setupNotify() error {
-	// FIXME
 	log.Println("set up fanotify")
+	fd, err := unix.FanotifyInit(
+		unix.FAN_CLASS_PRE_CONTENT|
+			unix.FAN_CLOEXEC|
+			unix.FAN_NONBLOCK|
+			unix.FAN_UNLIMITED_QUEUE,
+		unix.O_RDWR|
+			unix.O_LARGEFILE|
+			unix.O_CLOEXEC|
+			unix.O_NOATIME,
+	)
+	if err != nil {
+		return fmt.Errorf("fanotifiy_init: %w", err)
+	}
+	err = unix.FanotifyMark(
+		fd,
+		unix.FAN_MARK_ADD,
+		unix.FAN_PRE_ACCESS,
+		unix.AT_FDCWD,
+		filepath.Join(s.cfg.CachePath, "slab", strconv.Itoa(0)),
+	)
+	if err != nil {
+		return fmt.Errorf("fanotifiy_mark: %w", err)
+	}
+	s.devnode.Store(int32(fd))
+
+	// FIXME: TEST
+	flags, err := unix.FcntlInt(int(s.devnode.Load()), syscall.F_GETFL, 0)
+	if err != nil {
+		return err
+	}
+	log.Println("ISNONBLOCK0", flags&syscall.O_NONBLOCK != 0)
+
 	return nil
 }
 
@@ -724,6 +759,10 @@ func (s *Server) Start() error {
 	if err := s.setupManifestSlab(); err != nil {
 		return fmt.Errorf("error setting up manifest slab: %w", err)
 	}
+	// FIXME: maybe we need to create more?
+	if err := s.createSlabFile(0); err != nil {
+		return fmt.Errorf("error creating slab 0: %w", err)
+	}
 	if err := s.setupNotify(); err != nil {
 		return err
 	}
@@ -732,12 +771,6 @@ func (s *Server) Start() error {
 	}
 	go s.pruneRecentCaches()
 	go s.notifyServer()
-	// TODO: get number of slabs from db and mount them all
-	// FIXME: do we need to do the proactively anymore?
-	if err := s.openSlabFile(0); err != nil {
-		log.Print(err)
-		// don't exit here, we can operate, just without diffing
-	}
 	log.Println("notify server ready, using", s.cfg.CachePath)
 	s.restoreMounts()
 	s.cfg.FdStore.Ready()
@@ -759,7 +792,7 @@ func (s *Server) Stop(closeDevnode bool) {
 	// maybe close devnode too
 	if closeDevnode {
 		// unix.Close(int(fd)) // FIXME: notify fd?
-		s.cfg.FdStore.RemoveFd(savedFdName)
+		// s.cfg.FdStore.RemoveFd(savedFdName) // FIXME
 	}
 
 	s.db.Close()
@@ -784,257 +817,320 @@ func (s *Server) notifyServer() {
 	s.shutdownWait.Add(1)
 	defer s.shutdownWait.Done()
 
-	wchan := make(chan []byte)
-	for i := 0; i < s.cfg.Workers; i++ {
+	f := os.NewFile(uintptr(s.devnode.Load()), "<fanotify>")
+
+	// FIXME: TEST
+	flags, err := unix.FcntlInt(int(s.devnode.Load()), syscall.F_GETFL, 0)
+	if err == nil {
+		log.Println("ISNONBLOCK1", flags&syscall.O_NONBLOCK != 0)
+	}
+
+	ch := make(chan []byte)
+
+	for range 4 { // TODO: configurable?
 		s.shutdownWait.Add(1)
 		go func() {
 			defer s.shutdownWait.Done()
-			for msg := range wchan {
-				s.handleMessage(msg)
+			for {
+				// buf := s.chunkPool.Get(4096)
+				// FIXME: use pools here again, need refcount
+				buf := make([]byte, 256)
+				n, err := f.Read(buf)
+				if err != nil {
+					log.Println("fanotify reader got err", err)
+					return
+				}
+				for len(buf) >= 24 {
+					n := binary.LittleEndian.Uint32(buf)
+					ch <- buf[:n]
+					buf = buf[n:]
+				}
 			}
 		}()
 	}
 
-	fd, err := unix.FanotifyInit(unix.FAN_CLASS_PRE_CONTENT, O_RDONLY)
-	if err != nil {
-		// FIXME: init fanotify ahead of time so we can get error
-		panic("init fanotifiy failed: " + err.Error())
-	}
-	slab1, err := unix.FanotifyMark(
-		fd,
-		unix.FAN_MARK_ADD,
-		0,
-		unix.AT_FDCWD,
-		filepath.Join(s.cfg.CachePath, "slab", strconv.Itoa(0)),
-	)
-	// FIXME
-
-	fds := make([]unix.PollFd, 1)
-	errors := 0
-	for {
-		if errors > 10 {
-			// we might be spinning somehow, slow down
-			time.Sleep(time.Duration(errors) * time.Millisecond)
-		}
-		// fd := s.devnode.Load() // FIXME
-		// if fd == 0 {
-		// 	break
-		// }
-		fds[0] = unix.PollFd{Fd: fd, Events: unix.POLLIN}
-		timeout := 3600 * 1000
-		if s.cfg.IsTesting {
-			// use smaller timeout since we can't interrupt this poll (even by closing the fd)
-			timeout = 500
-		}
-		n, err := unix.Poll(fds, timeout)
-		if err != nil {
-			log.Printf("error from poll: %v", err)
-			errors++
-			continue
-		}
-		if n != 1 {
-			continue
-		}
-		if fds[0].Revents&unix.POLLNVAL != 0 {
-			break
-		}
-		// read until we get zero
-		readAfterPoll := false
-		for {
-			buf := s.msgPool.Get().([]byte)
-			n, err = unix.Read(int(fd), buf)
-			if err != nil {
-				errors++
-				log.Printf("error from read: %v", err)
-				break
-			} else if n == 0 {
-				// handle bug in linux < 6.8 where poll returns POLLIN if there are any
-				// outstanding requests, not just new ones
-				if !readAfterPoll {
-					log.Printf("empty read from cachefiles device")
-					errors++
-				}
-				break
+	for range s.cfg.Workers {
+		s.shutdownWait.Add(1)
+		go func() {
+			defer s.shutdownWait.Done()
+			for buf := range ch {
+				s.handleMessage(buf)
 			}
-			readAfterPoll = true
-			errors = 0
-			wchan <- buf[:n]
-		}
+		}()
 	}
 
-	// log.Print("stopping workers")
-	close(wchan)
+	<-s.shutdownChan
+
+	log.Print("stopping workers")
+	f.Close()                          // cause all future reads to error
+	time.Sleep(100 * time.Millisecond) // FIXME: wait until all "readers" exit
+	close(ch)
+
+	// wchan := make(chan []byte)
+	// for i := 0; i < s.cfg.Workers; i++ {
+	// 	s.shutdownWait.Add(1)
+	// 	go func() {
+	// 		defer s.shutdownWait.Done()
+	// 		for msg := range wchan {
+	// 			s.handleMessage(msg)
+	// 		}
+	// 	}()
+	// }
+	//
+	// fds := make([]unix.PollFd, 1)
+	// errors := 0
+	// for {
+	// 	if errors > 10 {
+	// 		// we might be spinning somehow, slow down
+	// 		time.Sleep(time.Duration(errors) * time.Millisecond)
+	// 	}
+	// 	fd := s.devnode.Load() // FIXME
+	// 	if fd == 0 {
+	// 		break
+	// 	}
+	// 	fds[0] = unix.PollFd{Fd: fd, Events: unix.POLLIN}
+	// 	timeout := 3600 * 1000
+	// 	if s.cfg.IsTesting {
+	// 		// use smaller timeout since we can't interrupt this poll (even by closing the fd)
+	// 		timeout = 500
+	// 	}
+	// 	n, err := unix.Poll(fds, timeout)
+	// 	if err != nil {
+	// 		log.Printf("error from poll: %v", err)
+	// 		errors++
+	// 		continue
+	// 	}
+	// 	if n != 1 {
+	// 		continue
+	// 	}
+	// 	if fds[0].Revents&unix.POLLNVAL != 0 {
+	// 		break
+	// 	}
+	// 	// read until we get zero
+	// 	for {
+	// 		buf := s.chunkPool.Get(4096)
+	// 		n, err = unix.Read(int(fd), buf)
+	// 		if err != nil {
+	// 			errors++
+	// 			log.Printf("error from read: %v", err)
+	// 			break
+	// 		}
+	// 		readAfterPoll = true
+	// 		errors = 0
+	// 		wchan <- buf[:n]
+	// 	}
+	// }
 }
 
 func (s *Server) handleMessage(buf []byte) (retErr error) {
 	defer func() {
 		if r := recover(); r != nil {
-			retErr = fmt.Errorf("panic in handle: %v", r)
+			log.Println("panic in handle:", r)
 		}
 		if retErr != nil {
-			log.Printf("error handling message: %v", retErr)
+			log.Println("handle error:", retErr)
 		}
-		s.msgPool.Put(buf[0:FANOTIFY_MSG_MAX_SIZE])
 	}()
 
 	var r bytes.Reader
 	r.Reset(buf)
-	var msg cachefiles_msg
-	if err := struc.Unpack(&r, &msg); err != nil {
+
+	// unpack metadata
+	var msg fanotify_event_metadata
+	if err := struc.UnpackWithOptions(&r, &msg, &_popts); err != nil {
 		return err
 	}
-	switch msg.OpCode {
-	case CACHEFILES_OP_OPEN:
-		var open cachefiles_open
-		if err := struc.Unpack(&r, &open); err != nil {
-			return err
-		}
-		return s.handleOpen(msg.MsgId, msg.ObjectId, open.Fd, open.Flags, open.VolumeKey, open.CookieKey)
-	case CACHEFILES_OP_CLOSE:
-		return s.handleClose(msg.MsgId, msg.ObjectId)
-	case CACHEFILES_OP_READ:
-		var read cachefiles_read
-		if err := struc.Unpack(&r, &read); err != nil {
-			return err
-		}
-		return s.handleRead(msg.MsgId, msg.ObjectId, read.Len, read.Off)
-	default:
-		return errors.New("unknown opcode")
+	log.Printf("DEBUG EVENT %#v", msg)
+
+	if msg.Vers != unix.FANOTIFY_METADATA_VERSION {
+		return errors.New("fanotify metadata version mismatch")
 	}
-}
-
-func (s *Server) handleOpen(msgId, objectId, fd, flags uint32, volume, cookie []byte) (retErr error) {
-	// volume is "erofs,<domain_id>\x00" (domain_id is same as fsid if not specified)
-	// cookie is "<fsid>"
-
-	var cacheSize int64
-	fsid := string(cookie)
 
 	defer func() {
-		if r := recover(); r != nil {
-			retErr = fmt.Errorf("panic in open: %v", r)
-		}
-		if retErr != nil {
-			cacheSize = -int64(unix.ENODEV)
-		}
-		reply := fmt.Sprintf("copen %d,%d", msgId, cacheSize)
-		devfd := int(s.devnode.Load())
-		if devfd == 0 {
-			log.Println("closed cachefiles fd in middle of open")
-			return
-		}
-		if _, err := unix.Write(devfd, []byte(reply)); err != nil {
-			log.Println("failed write to devnode", err)
-		}
-		if cacheSize < 0 {
-			unix.Close(int(fd))
+		if msg.Fd >= 0 {
+			_ = unix.Close(int(msg.Fd))
 		}
 	}()
 
-	if string(volume) != "erofs,"+s.cfg.CacheDomain+"\x00" {
-		return fmt.Errorf("wrong domain %q", volume)
-	}
-
-	// slab or manifest
-	if idx := strings.TrimPrefix(fsid, slabPrefix); idx != fsid {
-		log.Println("open slab", idx, "as", objectId)
-		slabId, err := strconv.Atoi(idx)
-		if err != nil {
+	// unpack extras
+	var rng fanotify_event_info_range
+	for r.Len() > 0 {
+		var infohdr fanotify_event_info_header
+		if err := struc.UnpackWithOptions(&r, &infohdr); err != nil {
 			return err
 		}
-		cacheSize, retErr = s.handleOpenSlab(msgId, objectId, fd, flags, common.TruncU16(slabId))
-		return
-	} else if idx := strings.TrimPrefix(fsid, slabImagePrefix); idx != fsid {
-		log.Println("open slab image", idx, "as", objectId)
-		slabId, err := strconv.Atoi(idx)
-		if err != nil {
-			return err
+		switch infohdr.InfoType {
+		case unix.FAN_EVENT_INFO_TYPE_RANGE:
+			if infohdr.Len != 24 {
+				log.Println("FAN_EVENT_INFO_TYPE_RANGE had wrong length", infohdr.Len)
+			} else if err := struc.UnpackWithOptions(&r, &rng); err != nil {
+				return err
+			}
+		default:
+			log.Println("unexpected fanotify info", infohdr)
+			_, _ = r.Seek(infohdr.Len-4, io.SeekCurrent)
 		}
-		cacheSize, retErr = s.handleOpenSlabImage(msgId, objectId, fd, flags, common.TruncU16(slabId))
-		return
-	} else if len(fsid) == 32 {
-		log.Println("open image", fsid, "as", objectId)
-		cacheSize, retErr = s.handleOpenImage(msgId, objectId, fd, flags, fsid)
-		return
-	} else {
-		return fmt.Errorf("bad fsid %q", fsid)
 	}
+
+	if rng.Count == 0 {
+		return errors.New("fanotify message did not contain range")
+	}
+
+	slabId := uint16(0) // FIXME get from message
+	return s.handleReadSlab(msg.Fd, slabId, rng.Count, rng.Offset)
+
+	// switch msg.OpCode {
+	// case CACHEFILES_OP_OPEN:
+	// 	var open cachefiles_open
+	// 	if err := struc.Unpack(&r, &open); err != nil {
+	// 		return err
+	// 	}
+	// 	return s.handleOpen(msg.MsgId, msg.ObjectId, open.Fd, open.Flags, open.VolumeKey, open.CookieKey)
+	// case CACHEFILES_OP_CLOSE:
+	// 	return s.handleClose(msg.MsgId, msg.ObjectId)
+	// case CACHEFILES_OP_READ:
+	// 	var read cachefiles_read
+	// 	if err := struc.Unpack(&r, &read); err != nil {
+	// 		return err
+	// 	}
+	// 	return s.handleRead(msg.MsgId, msg.ObjectId, read.Len, read.Off)
+	// default:
+	// 	return errors.New("unknown opcode")
+	// }
 }
 
-func (s *Server) handleOpenSlab(msgId, objectId, fd, flags uint32, id uint16) (int64, error) {
-	// record open state
-	s.stateLock.Lock()
-	defer s.stateLock.Unlock()
-	state := &openFileState{
-		writeFd: fd,
-		tp:      typeSlab,
-		slabId:  id,
-	}
-	s.cacheState[objectId] = state
-	s.stateBySlab[id] = state
-	return slabBytes, nil
-}
+// func (s *Server) handleOpen(msgId, objectId, fd, flags uint32, volume, cookie []byte) (retErr error) {
+// 	// volume is "erofs,<domain_id>\x00" (domain_id is same as fsid if not specified)
+// 	// cookie is "<fsid>"
 
-func (s *Server) handleOpenSlabImage(msgId, objectId, fd, flags uint32, id uint16) (int64, error) {
-	// record open state
-	s.stateLock.Lock()
-	defer s.stateLock.Unlock()
-	state := &openFileState{
-		writeFd: fd,
-		tp:      typeSlabImage,
-		slabId:  id,
-	}
-	s.cacheState[objectId] = state
-	// always one block
-	return 1 << s.blockShift, nil
-}
+// 	var cacheSize int64
+// 	fsid := string(cookie)
 
-func (s *Server) handleOpenImage(msgId, objectId, fd, flags uint32, cookie string) (int64, error) {
-	ctx, _ := s.mountCtxMap.Get(cookie)
-	if ctx == nil {
-		return 0, fmt.Errorf("missing context in handleOpenImage for %s", cookie)
-	}
-	mountCtx, _ := fromMountCtx(ctx)
-	if mountCtx == nil {
-		return 0, fmt.Errorf("missing context in handleOpenImage for %s", cookie)
-	}
+// 	defer func() {
+// 		if r := recover(); r != nil {
+// 			retErr = fmt.Errorf("panic in open: %v", r)
+// 		}
+// 		if retErr != nil {
+// 			cacheSize = -int64(unix.ENODEV)
+// 		}
+// 		reply := fmt.Sprintf("copen %d,%d", msgId, cacheSize)
+// 		devfd := int(s.devnode.Load())
+// 		if devfd == 0 {
+// 			log.Println("closed cachefiles fd in middle of open")
+// 			return
+// 		}
+// 		if _, err := unix.Write(devfd, []byte(reply)); err != nil {
+// 			log.Println("failed write to devnode", err)
+// 		}
+// 		if cacheSize < 0 {
+// 			unix.Close(int(fd))
+// 		}
+// 	}()
 
-	s.stateLock.Lock()
-	defer s.stateLock.Unlock()
-	state := &openFileState{
-		writeFd:   fd,
-		tp:        typeImage,
-		imageData: mountCtx.imageData,
-	}
-	s.cacheState[objectId] = state
-	return mountCtx.imageSize, nil
-}
+// 	if string(volume) != "erofs,"+s.cfg.CacheDomain+"\x00" {
+// 		return fmt.Errorf("wrong domain %q", volume)
+// 	}
 
-func (s *Server) handleClose(msgId, objectId uint32) error {
-	log.Println("close", objectId)
-	s.stateLock.Lock()
-	state := s.cacheState[objectId]
-	if state == nil {
-		s.stateLock.Unlock()
-		log.Println("missing state for close")
-		return nil
-	}
-	if state.tp == typeSlab {
-		delete(s.stateBySlab, state.slabId)
-	}
-	var readFd int
-	switch state.tp {
-	case typeSlab, typeManifestSlab:
-		readFd = s.readfdBySlab[state.slabId]
-		delete(s.readfdBySlab, state.slabId)
-	}
-	delete(s.cacheState, objectId)
-	s.stateLock.Unlock()
+// 	// slab or manifest
+// 	if idx := strings.TrimPrefix(fsid, slabPrefix); idx != fsid {
+// 		log.Println("open slab", idx, "as", objectId)
+// 		slabId, err := strconv.Atoi(idx)
+// 		if err != nil {
+// 			return err
+// 		}
+// 		cacheSize, retErr = s.handleOpenSlab(msgId, objectId, fd, flags, common.TruncU16(slabId))
+// 		return
+// 	} else if idx := strings.TrimPrefix(fsid, slabImagePrefix); idx != fsid {
+// 		log.Println("open slab image", idx, "as", objectId)
+// 		slabId, err := strconv.Atoi(idx)
+// 		if err != nil {
+// 			return err
+// 		}
+// 		cacheSize, retErr = s.handleOpenSlabImage(msgId, objectId, fd, flags, common.TruncU16(slabId))
+// 		return
+// 	} else if len(fsid) == 32 {
+// 		log.Println("open image", fsid, "as", objectId)
+// 		cacheSize, retErr = s.handleOpenImage(msgId, objectId, fd, flags, fsid)
+// 		return
+// 	} else {
+// 		return fmt.Errorf("bad fsid %q", fsid)
+// 	}
+// }
 
-	// do rest of cleanup outside lock
-	s.closeState(state, readFd)
-	return nil
-}
+// func (s *Server) handleOpenSlab(msgId, objectId, fd, flags uint32, id uint16) (int64, error) {
+// 	// record open state
+// 	s.stateLock.Lock()
+// 	defer s.stateLock.Unlock()
+// 	state := &openFileState{
+// 		writeFd: fd,
+// 		tp:      typeSlab,
+// 		slabId:  id,
+// 	}
+// 	s.cacheState[objectId] = state
+// 	s.stateBySlab[id] = state
+// 	return slabBytes, nil
+// }
+
+// func (s *Server) handleOpenSlabImage(msgId, objectId, fd, flags uint32, id uint16) (int64, error) {
+// 	// record open state
+// 	s.stateLock.Lock()
+// 	defer s.stateLock.Unlock()
+// 	state := &openFileState{
+// 		writeFd: fd,
+// 		tp:      typeSlabImage,
+// 		slabId:  id,
+// 	}
+// 	s.cacheState[objectId] = state
+// 	// always one block
+// 	return 1 << s.blockShift, nil
+// }
+
+// func (s *Server) handleOpenImage(msgId, objectId, fd, flags uint32, cookie string) (int64, error) {
+// 	ctx, _ := s.mountCtxMap.Get(cookie)
+// 	if ctx == nil {
+// 		return 0, fmt.Errorf("missing context in handleOpenImage for %s", cookie)
+// 	}
+// 	mountCtx, _ := fromMountCtx(ctx)
+// 	if mountCtx == nil {
+// 		return 0, fmt.Errorf("missing context in handleOpenImage for %s", cookie)
+// 	}
+
+// 	s.stateLock.Lock()
+// 	defer s.stateLock.Unlock()
+// 	state := &openFileState{
+// 		writeFd:   fd,
+// 		tp:        typeImage,
+// 		imageData: mountCtx.imageData,
+// 	}
+// 	s.cacheState[objectId] = state
+// 	return mountCtx.imageSize, nil
+// }
+
+// func (s *Server) handleClose(msgId, objectId uint32) error {
+// 	log.Println("close", objectId)
+// 	s.stateLock.Lock()
+// 	state := s.cacheState[objectId]
+// 	if state == nil {
+// 		s.stateLock.Unlock()
+// 		log.Println("missing state for close")
+// 		return nil
+// 	}
+// 	if state.tp == typeSlab {
+// 		delete(s.stateBySlab, state.slabId)
+// 	}
+// 	var readFd int
+// 	switch state.tp {
+// 	case typeSlab, typeManifestSlab:
+// 		readFd = s.readfdBySlab[state.slabId]
+// 		delete(s.readfdBySlab, state.slabId)
+// 	}
+// 	delete(s.cacheState, objectId)
+// 	s.stateLock.Unlock()
+
+// 	// do rest of cleanup outside lock
+// 	s.closeState(state, readFd)
+// 	return nil
+// }
 
 func (s *Server) closeState(state *openFileState, readFd int) {
 	fds := []int{int(state.writeFd), readFd}
@@ -1052,67 +1148,67 @@ func (s *Server) closeState(state *openFileState, readFd int) {
 	}
 }
 
-func (s *Server) handleRead(msgId, objectId uint32, ln, off uint64) (retErr error) {
-	s.stateLock.Lock()
-	state := s.cacheState[objectId]
-	s.stateLock.Unlock()
+// func (s *Server) handleRead(msgId, objectId uint32, ln, off uint64) (retErr error) {
+// 	s.stateLock.Lock()
+// 	state := s.cacheState[objectId]
+// 	s.stateLock.Unlock()
 
-	if state == nil {
-		panic("missing state")
-	}
+// 	if state == nil {
+// 		panic("missing state")
+// 	}
 
-	defer func() {
-		_, _, e1 := unix.Syscall(unix.SYS_IOCTL, uintptr(state.writeFd), CACHEFILES_IOC_READ_COMPLETE, uintptr(msgId))
-		if e1 != 0 && retErr == nil {
-			retErr = fmt.Errorf("ioctl error %d", e1)
-		}
-	}()
+// 	defer func() {
+// 		_, _, e1 := unix.Syscall(unix.SYS_IOCTL, uintptr(state.writeFd), CACHEFILES_IOC_READ_COMPLETE, uintptr(msgId))
+// 		if e1 != 0 && retErr == nil {
+// 			retErr = fmt.Errorf("ioctl error %d", e1)
+// 		}
+// 	}()
 
-	switch state.tp {
-	case typeImage:
-		// log.Printf("read image %5d: %2dk @ %#x", objectId, ln>>10, off)
-		return s.handleReadImage(state, ln, off)
-	case typeSlabImage:
-		// log.Printf("read slab image %5d: %2dk @ %#x", objectId, ln>>10, off)
-		return s.handleReadSlabImage(state, ln, off)
-	case typeSlab:
-		// log.Printf("read slab %5d: %2dk @ %#x", objectId, ln>>10, off)
-		return s.handleReadSlab(state, ln, off)
-	default:
-		panic("bad state type")
-	}
-}
+// 	switch state.tp {
+// 	case typeImage:
+// 		// log.Printf("read image %5d: %2dk @ %#x", objectId, ln>>10, off)
+// 		return s.handleReadImage(state, ln, off)
+// 	case typeSlabImage:
+// 		// log.Printf("read slab image %5d: %2dk @ %#x", objectId, ln>>10, off)
+// 		return s.handleReadSlabImage(state, ln, off)
+// 	case typeSlab:
+// 		// log.Printf("read slab %5d: %2dk @ %#x", objectId, ln>>10, off)
+// 		return s.handleReadSlab(state, ln, off)
+// 	default:
+// 		panic("bad state type")
+// 	}
+// }
 
-func (s *Server) handleReadImage(state *openFileState, _, _ uint64) error {
-	if state.imageData == nil {
-		return errors.New("got read request when already written image")
-	}
-	// always write whole thing
-	// TODO: does this have to be page-aligned?
-	_, err := unix.Pwrite(int(state.writeFd), state.imageData, 0)
-	if err != nil {
-		return err
-	}
-	state.imageData = nil
-	return nil
-}
+// func (s *Server) handleReadImage(state *openFileState, _, _ uint64) error {
+// 	if state.imageData == nil {
+// 		return errors.New("got read request when already written image")
+// 	}
+// 	// always write whole thing
+// 	// TODO: does this have to be page-aligned?
+// 	_, err := unix.Pwrite(int(state.writeFd), state.imageData, 0)
+// 	if err != nil {
+// 		return err
+// 	}
+// 	state.imageData = nil
+// 	return nil
+// }
 
-func (s *Server) handleReadSlabImage(state *openFileState, ln, off uint64) error {
-	var devid string
-	if off == 0 {
-		// only superblock needs this
-		devid = slabPrefix + strconv.Itoa(int(state.slabId))
-	}
-	buf := s.chunkPool.Get(int(ln))
-	defer s.chunkPool.Put(buf)
+// func (s *Server) handleReadSlabImage(state *openFileState, ln, off uint64) error {
+// 	var devid string
+// 	if off == 0 {
+// 		// only superblock needs this
+// 		devid = slabPrefix + strconv.Itoa(int(state.slabId))
+// 	}
+// 	buf := s.chunkPool.Get(int(ln))
+// 	defer s.chunkPool.Put(buf)
 
-	b := buf[:ln]
-	erofs.SlabImageRead(devid, slabBytes, s.blockShift, off, b)
-	_, err := unix.Pwrite(int(state.writeFd), b, int64(off))
-	return err
-}
+// 	b := buf[:ln]
+// 	erofs.SlabImageRead(devid, slabBytes, s.blockShift, off, b)
+// 	_, err := unix.Pwrite(int(state.writeFd), b, int64(off))
+// 	return err
+// }
 
-func (s *Server) handleReadSlab(state *openFileState, ln, off uint64) (retErr error) {
+func (s *Server) handleReadSlab(destFd int, slabId uint16, ln, off uint64) (retErr error) {
 	s.stats.slabReads.Add(1)
 	defer func() {
 		if retErr != nil {
@@ -1124,7 +1220,6 @@ func (s *Server) handleReadSlab(state *openFileState, ln, off uint64) (retErr er
 		return errors.New("got too big slab read")
 	}
 
-	slabId := state.slabId
 	var addr uint32
 	var digest cdig.CDig
 	var sphps []SphPrefix
@@ -1180,29 +1275,19 @@ func (s *Server) handleReadSlab(state *openFileState, ln, off uint64) (retErr er
 	}
 
 	ctx := context.Background()
-	return s.requestChunk(ctx, erofs.SlabLoc{slabId, addr}, digest, sphps)
+	return s.requestChunk(ctx, destFd, erofs.SlabLoc{slabId, addr}, digest, sphps)
 }
 
 // FIXME: consolidate with setupManifestSlab
-func (s *Server) openSlabFile(slabId uint16) error {
+func (s *Server) createSlabFile(slabId uint16) error {
 	path := filepath.Join(s.cfg.CachePath, "slab", strconv.Itoa(int(slabId)))
 	slabFd, err := unix.Open(path, unix.O_RDWR|unix.O_CREAT, 0o600)
 	if err != nil {
 		return fmt.Errorf("error opening slab file %s: %w", path, err)
 	}
+	_ = unix.Close(slabFd)
 
-	// disable readahead so we don't get requests for parts we haven't written
-	// FIXME: still needed?
-	if err = unix.Fadvise(slabFd, 0, 0, unix.FADV_RANDOM); err != nil {
-		_ = unix.Close(slabFd)
-		return 0, fmt.Errorf("fadvise: %w", err)
-	}
-
-	s.stateLock.Lock()
-	s.readfdBySlab[common.TruncU16(slabId)] = slabFd
-	s.stateLock.Unlock()
-
-	log.Println("opened slab file", slabId)
+	log.Println("created slab file", slabId)
 	return nil
 }
 
@@ -1337,3 +1422,5 @@ func (s *Server) lookupLocs(tx *bbolt.Tx, digests []cdig.CDig) ([]erofs.SlabLoc,
 	}
 	return out, nil
 }
+
+var _popts = struc.Options{Order: binary.LittleEndian}
