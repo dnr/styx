@@ -836,6 +836,7 @@ func (s *Server) notifyServer() {
 				// FIXME: use pools here again, need refcount
 				buf := make([]byte, 256)
 				n, err := f.Read(buf)
+				buf = buf[:n]
 				if err != nil {
 					log.Println("fanotify reader got err", err)
 					return
@@ -854,7 +855,7 @@ func (s *Server) notifyServer() {
 		go func() {
 			defer s.shutdownWait.Done()
 			for buf := range ch {
-				s.handleMessage(buf)
+				_ = s.handleMessage(buf)
 			}
 		}()
 	}
