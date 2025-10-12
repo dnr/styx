@@ -15,7 +15,9 @@ import (
 )
 
 const NAME = "SPARSE"
-const SIZE = 1 << 20
+const BASE = "BASE"
+
+// const SIZE = 1 << 20
 
 func check(msg string, err error) {
 	if err != nil {
@@ -23,14 +25,23 @@ func check(msg string, err error) {
 	}
 }
 
-var not *os.File
+var basef, not *os.File
+var basesz int64
 
 func main() {
+	log.Println("open base")
+	var err error
+	basef, err = os.Open(BASE)
+	check("open", err)
+
+	fi, err := basef.Stat()
+	check("stat", err)
+	basesz = fi.Size()
 
 	log.Println("create sparse")
 	f, err := os.OpenFile(NAME, os.O_RDWR|os.O_CREATE, 0666)
 	check("create", err)
-	check("trunc", f.Truncate(SIZE))
+	check("trunc", f.Truncate(basesz))
 	check("close", f.Close())
 
 	log.Println("set up fanotify")
@@ -163,16 +174,15 @@ func handleMessage(buf []byte) (retErr error) {
 		retErr = cmp.Or(retErr, wrErr)
 	}()
 
-	rng.Count = min(SIZE-rng.Offset, rng.Count)
+	rng.Count = min(uint64(basesz)-rng.Offset, rng.Count)
 	if rng.Count <= 0 {
 		return nil
 	}
 
 	data := make([]byte, rng.Count)
-	for i := range data {
-		data[i] = uint8(i)
-	}
-	_, err := unix.Pwrite(int(msg.Fd), data, int64(rng.Offset))
+	_, err := basef.ReadAt(data, int64(rng.Offset))
+	check("pread", err)
+	_, err = unix.Pwrite(int(msg.Fd), data, int64(rng.Offset))
 	check("pwrite", err)
 
 	return nil
