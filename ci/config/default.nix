@@ -38,7 +38,7 @@
           dbus-python
           pyserial
           requests
-          websocket_client
+          websocket-client
         ]
       );
     in
@@ -134,7 +134,7 @@
       wireguard-tools
       wireplumber
       xdotool
-      xdragon
+      dragon-drop
       xosd
       xsel
       xsettingsd
@@ -157,12 +157,12 @@
   fonts.packages = [
     pkgs.noto-fonts
     pkgs.noto-fonts-cjk-sans
-    pkgs.noto-fonts-emoji
-    pkgs.ubuntu_font_family
+    pkgs.noto-fonts-color-emoji
+    pkgs.ubuntu-classic
     pkgs.nerd-fonts.ubuntu-mono
   ];
 
   documentation.nixos.enable = false;
 
-  system.stateVersion = "25.05";
+  system.stateVersion = "25.11";
 }
