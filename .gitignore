@@ -8,3 +8,6 @@
 /keys/*.secret
 !/keys/styx-dev-1.secret
 /testvm.qcow2
+/work
+/result
+/result-*
