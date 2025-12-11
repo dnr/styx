@@ -346,7 +346,7 @@ func (s *server) handleChunk(w http.ResponseWriter, r *http.Request) {
 	if l := len(parts); l < 2 {
 		w.WriteHeader(http.StatusNotFound)
 		return
-	} else if parts[l-2] != "chunk" {
+	} else if parts[l-2] != "chunk" && parts[l-2] != "manifest" {
 		w.WriteHeader(http.StatusNotFound)
 		return
 	}
@@ -370,6 +370,7 @@ func (s *server) Run() error {
 	mux.HandleFunc(ManifestPath, s.handleManifest)
 	mux.HandleFunc(ChunkDiffPath, s.handleChunkDiff)
 	mux.HandleFunc(ChunkReadPath, s.handleChunk)
+	mux.HandleFunc(ManifestCachePath, s.handleChunk)
 
 	if os.Getenv("AWS_LAMBDA_RUNTIME_API") != "" {
 		lambdaurl.Start(mux)
