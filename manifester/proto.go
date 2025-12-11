@@ -31,8 +31,8 @@ var (
 
 type (
 	ManifestReq struct {
-		Upstream      string
-		StorePathHash string
+		Upstream      string // url of nix binary cache or generic file
+		StorePathHash string // see ManifestBuilder.Build for format
 
 		// TODO: move this to pb and embed a GlobalParams?
 		DigestAlgo string

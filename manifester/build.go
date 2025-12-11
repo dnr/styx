@@ -145,6 +145,21 @@ func (b *ManifestBuilder) Build(
 	useLocalStoreDump string,
 	writeBuildRoot bool,
 ) (*ManifestBuildRes, error) {
+	switch {
+	case strings.HasPrefix(storePathHash, sphGenericTarball):
+		return b.BuildGenericTarball(ctx, upstream, shardTotal, shardIndex, writeBuildRoot)
+	default:
+		return b.BuildNar(ctx, upstream, storePathHash, shardTotal, shardIndex, useLocalStoreDump, writeBuildRoot)
+	}
+}
+
+func (b *ManifestBuilder) BuildNar(
+	ctx context.Context,
+	upstream, storePathHash string,
+	shardTotal, shardIndex int,
+	useLocalStoreDump string,
+	writeBuildRoot bool,
+) (*ManifestBuildRes, error) {
 	// get narinfo
 
 	upstreamUrl, err := url.Parse(upstream)
@@ -254,7 +269,7 @@ func (b *ManifestBuilder) Build(
 		ShardTotal:      shardTotal,
 		ShardIndex:      shardIndex,
 	}
-	manifest, err := b.BuildFromNar(ctx, args, io.TeeReader(narOut, narHasher))
+	manifest, err := b.buildFromNar(ctx, args, io.TeeReader(narOut, narHasher))
 	if err != nil {
 		return nil, fmt.Errorf("%w: manifest generation error: %w", ErrInternal, err)
 	}
@@ -321,8 +336,8 @@ func (b *ManifestBuilder) Build(
 	// turn into entry (maybe chunk)
 
 	manifestArgs := BuildArgs{SmallFileCutoff: SmallManifestCutoff}
-	path := common.ManifestContext + "/" + path.Base(ni.StorePath)
-	entry, err := b.ManifestAsEntry(ctx, &manifestArgs, path, manifest)
+	entPath := common.ManifestContext + "/" + path.Base(ni.StorePath)
+	entry, err := b.ManifestAsEntry(ctx, &manifestArgs, entPath, manifest)
 	if err != nil {
 		return nil, fmt.Errorf("%w: make manifest entry error: %w", ErrInternal, err)
 	}
@@ -384,7 +399,7 @@ func (b *ManifestBuilder) Build(
 	}, nil
 }
 
-func (b *ManifestBuilder) BuildFromNar(ctx context.Context, args *BuildArgs, r io.Reader) (*pb.Manifest, error) {
+func (b *ManifestBuilder) buildFromNar(ctx context.Context, args *BuildArgs, r io.Reader) (*pb.Manifest, error) {
 	m := &pb.Manifest{
 		Params:          b.params,
 		SmallFileCutoff: int32(args.SmallFileCutoff),
