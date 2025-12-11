@@ -147,13 +147,13 @@ func (b *ManifestBuilder) Build(
 ) (*ManifestBuildRes, error) {
 	switch {
 	case strings.HasPrefix(storePathHash, sphGenericTarball):
-		return b.BuildGenericTarball(ctx, upstream, shardTotal, shardIndex, writeBuildRoot)
+		return b.BuildFromTarball(ctx, upstream, shardTotal, shardIndex, writeBuildRoot)
 	default:
-		return b.BuildNar(ctx, upstream, storePathHash, shardTotal, shardIndex, useLocalStoreDump, writeBuildRoot)
+		return b.BuildFromNar(ctx, upstream, storePathHash, shardTotal, shardIndex, useLocalStoreDump, writeBuildRoot)
 	}
 }
 
-func (b *ManifestBuilder) BuildNar(
+func (b *ManifestBuilder) BuildFromNar(
 	ctx context.Context,
 	upstream, storePathHash string,
 	shardTotal, shardIndex int,

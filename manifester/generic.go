@@ -2,8 +2,9 @@ package manifester
 
 import (
 	"archive/tar"
-	"cmp"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -13,28 +14,31 @@ import (
 	"os/exec"
 	"path"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/dnr/styx/common"
 	"github.com/dnr/styx/common/cdig"
-	"github.com/dnr/styx/common/errgroup"
-	"github.com/dnr/styx/common/shift"
 	"github.com/dnr/styx/pb"
 	"github.com/multiformats/go-multihash"
 	"github.com/nix-community/go-nix/pkg/hash"
+	"github.com/nix-community/go-nix/pkg/nar"
 	"github.com/nix-community/go-nix/pkg/nixbase32"
 	"github.com/nix-community/go-nix/pkg/storepath"
 	"google.golang.org/protobuf/proto"
 )
 
-const (
-	sphGenericTarball = "@generic-tarball"
-)
+const sphGenericTarball = "@generic-tarball"
 
-var reNixExprs = regexp.MustCompile(`https://releases\.nixos\.org/.*/(nixos-\d\d\.\d\d\.\d+).[a-z0-9]+/nixexprs\.tar\.xz`)
+type tarEntry struct {
+	nar.Header
+	contents []byte
+}
 
-func (b *ManifestBuilder) BuildGenericTarball(
+var reNixExprs = regexp.MustCompile(`^https://releases\.nixos\.org/.*/(nixos-\d\d\.\d\d\.\d+).[a-z0-9]+/nixexprs\.tar`)
+
+func (b *ManifestBuilder) BuildFromTarball(
 	ctx context.Context,
 	upstream string,
 	shardTotal, shardIndex int,
@@ -89,42 +93,14 @@ func (b *ManifestBuilder) BuildGenericTarball(
 		}()
 	}
 
-	// set up to hash
-	tarHasher, _ := hash.New(multihash.SHA2_256)
-
-	// write some context to avoid collisions with anything else
-	tarHasher.Write([]byte("styx/" + sphGenericTarball + "/v1" + "\n"))
-
-	// TODO: make args configurable again (hashed in manifest cache key)
-	args := &BuildArgs{
-		SmallFileCutoff: DefaultSmallFileCutoff,
-		ShardTotal:      shardTotal,
-		ShardIndex:      shardIndex,
-	}
-	manifest, err := b.buildFromTar(ctx, args, io.TeeReader(tarOut, tarHasher))
-	if err != nil {
-		return nil, fmt.Errorf("%w: manifest generation error: %w", ErrInternal, err)
-	}
-
+	// extract tar into memory
 	// TODO: allow passing in expected hash somehow
-	// if narHasher.SRIString() != ni.NarHash.SRIString() {
-	// 	return nil, fmt.Errorf("%w: nar hash mismatch", ErrReq)
-	// }
-
-	// turn tar hash into store path hash
-	// TODO: it'd be really cool if we did this with the same algorithm that nix does for FODs,
-	// but it doesn't matter for now.
-	cmpHash := hash.CompressHash(tarHasher.Digest(), storepath.PathHashSize)
-	sph := nixbase32.EncodeToString(cmpHash)
-
-	// hack: tweak name, e.g. we want
-	//   https://releases.nixos.org/nixos/25.11/nixos-25.11.1056.d9bc5c7dceb3/nixexprs.tar.xz
-	// to turn into "nixexprs-nixos-25.11.1056" for better diffing
-	spName := path.Base(upstream)
-	if m := reNixExprs.FindStringSubmatch(upstream); m != nil {
-		spName = "nixexprs-" + m[1]
+	tarEnts, err := b.extractTar(tarOut)
+	if err != nil {
+		return nil, fmt.Errorf("%w: tar read error: %w", ErrInternal, err)
 	}
 
+	// ensure we got the whole thing
 	if decompress != nil {
 		if err = decompress.Wait(); err != nil {
 			return nil, fmt.Errorf("%w: nar decompress error: %w", ErrInternal, err)
@@ -137,12 +113,38 @@ func (b *ManifestBuilder) BuildGenericTarball(
 		// 	float64(size)/elapsed.Seconds()/1e6)
 	}
 
-	// if dump != nil {
-	// 	if err = dump.Wait(); err != nil {
-	// 		return nil, fmt.Errorf("%w: nar dump error: %w", ErrInternal, err)
-	// 	}
-	// 	dump = nil
-	// }
+	// construct nar from contents, write to hasher and builder
+	pr, pw := io.Pipe()
+	go b.writeNar(tarEnts, pw)
+
+	narHasher, _ := hash.New(multihash.SHA2_256)
+
+	// TODO: make args configurable again (hashed in manifest cache key)
+	args := &BuildArgs{
+		SmallFileCutoff: DefaultSmallFileCutoff,
+		ShardTotal:      shardTotal,
+		ShardIndex:      shardIndex,
+	}
+	manifest, err := b.buildFromNar(ctx, args, io.TeeReader(pr, narHasher))
+	if err != nil {
+		return nil, fmt.Errorf("%w: manifest generation error: %w", ErrInternal, err)
+	}
+
+	// hack: tweak name, e.g. we want
+	//   https://releases.nixos.org/nixos/25.11/nixos-25.11.1056.d9bc5c7dceb3/nixexprs.tar.xz
+	// to turn into "nixexprs-nixos-25.11.1056" for better diffing
+	spName := path.Base(upstream)
+	if m := reNixExprs.FindStringSubmatch(upstream); m != nil {
+		spName = "nixexprs-" + m[1]
+	}
+
+	// turn tar hash into store path hash using nix's fod algorithm
+	innerHash := hex.EncodeToString(narHasher.Digest())
+	fpHasher := sha256.New()
+	fmt.Fprintf(fpHasher, "source:sha256:%s:%s:%s", innerHash, storepath.StoreDir, spName)
+	cmpHash := hash.CompressHash(fpHasher.Sum(nil), storepath.PathHashSize)
+	sph := nixbase32.EncodeToString(cmpHash)
+
 	log.Println("manifest generic", upstream, "built manifest", sph)
 
 	b.stats.Shards.Add(1)
@@ -155,22 +157,14 @@ func (b *ManifestBuilder) BuildGenericTarball(
 	// add metadata
 
 	nipb := &pb.NarInfo{
-		StorePath: "/nix/store/" + sph + "-" + spName,
-		Url:       upstream,
-		// Compression: ni.Compression,
-		// FileHash:    ni.FileHash.NixString(),
-		// FileSize:    int64(ni.FileSize),
-		// NarHash:     ni.NarHash.NixString(),
-		// NarSize:     int64(ni.NarSize),
-		// References:  ni.References,
-		// Deriver:     ni.Deriver,
-		// System:      ni.System,
-		// Signatures:  make([]string, len(ni.Signatures)),
-		// Ca:          ni.CA,
+		StorePath:   storepath.StoreDir + "/" + sph + "-" + spName,
+		Url:         "styx://?origin=" + upstream,
+		Compression: "none",
+		FileHash:    narHasher.NixString(),
+		FileSize:    int64(narHasher.BytesWritten()),
+		NarHash:     narHasher.NixString(),
+		NarSize:     int64(narHasher.BytesWritten()),
 	}
-	// for i, sig := range ni.Signatures {
-	// 	nipb.Signatures[i] = sig.String()
-	// }
 	manifest.Meta = &pb.ManifestMeta{
 		NarinfoUrl:    sphGenericTarball + "/" + upstream,
 		Narinfo:       nipb,
@@ -246,32 +240,41 @@ func (b *ManifestBuilder) BuildGenericTarball(
 	}, nil
 }
 
-func (b *ManifestBuilder) buildFromTar(ctx context.Context, args *BuildArgs, r io.Reader) (*pb.Manifest, error) {
-	m := &pb.Manifest{
-		Params:          b.params,
-		SmallFileCutoff: int32(args.SmallFileCutoff),
-	}
-
+func (b *ManifestBuilder) extractTar(r io.Reader) ([]*tarEntry, error) {
 	tr := tar.NewReader(r)
 
-	egCtx := errgroup.WithContext(ctx)
-	var err error
-	for err == nil && egCtx.Err() == nil {
-		err = b.tarEntry(egCtx, args, m, tr)
-	}
-	if err == io.EOF {
-		err = nil
+	var ents []*tarEntry
+	for {
+		ent1, ent2, err := b.tarEntry(tr, len(ents))
+		if err == io.EOF {
+			break
+		} else if err != nil {
+			return nil, err
+		}
+		if ent1 != nil {
+			ents = append(ents, ent1)
+		}
+		if ent2 != nil {
+			ents = append(ents, ent2)
+		}
 	}
 
-	// TODO: sort manifest here for consistency?
+	// sort in nar order
+	sort.Slice(ents, func(i, j int) bool {
+		a, b := ents[i].Path, ents[j].Path
+		return nar.PathIsLexicographicallyOrdered(a, b)
+	})
 
-	return common.ValOrErr(m, cmp.Or(err, egCtx.Wait()))
+	// do what fetchzip stripRoot does
+	ents = stripRoot(ents)
+
+	return ents, nil
 }
 
-func (b *ManifestBuilder) tarEntry(egCtx *errgroup.Group, args *BuildArgs, m *pb.Manifest, tr *tar.Reader) error {
+func (b *ManifestBuilder) tarEntry(tr *tar.Reader, lenSoFar int) (*tarEntry, *tarEntry, error) {
 	h, err := tr.Next()
 	if err != nil { // including io.EOF
-		return err
+		return nil, nil, err
 	}
 
 	name := path.Clean(h.Name)
@@ -281,56 +284,99 @@ func (b *ManifestBuilder) tarEntry(egCtx *errgroup.Group, args *BuildArgs, m *pb
 		name = "/" + strings.Trim(name, "/")
 	}
 
-	if name != "/" && len(m.Entries) == 0 {
+	var fakeEnt *tarEntry
+
+	if name != "/" && lenSoFar == 0 {
 		// add fake root entry
-		m.Entries = append(m.Entries, &pb.Entry{
-			Path: "/",
-			Type: pb.EntryType_DIRECTORY,
-		})
+		fakeEnt = &tarEntry{
+			Header: nar.Header{
+				Path: "/",
+				Type: nar.TypeDirectory,
+			},
+		}
 	}
 
-	e := &pb.Entry{
-		Path:       name,
-		Executable: h.Typeflag == tar.TypeReg && h.Mode&0o111 != 0,
-		Size:       h.Size,
+	e := &tarEntry{
+		Header: nar.Header{
+			Path:       name,
+			Executable: h.Typeflag == tar.TypeReg && h.Mode&0o111 != 0,
+			Size:       h.Size,
+		},
 	}
-	m.Entries = append(m.Entries, e)
 
 	switch h.Typeflag {
 	case tar.TypeDir:
-		e.Type = pb.EntryType_DIRECTORY
+		e.Type = nar.TypeDirectory
 
 	case tar.TypeReg:
-		e.Type = pb.EntryType_REGULAR
-
-		var dataR io.Reader = tr
-
-		if e.Size <= int64(args.SmallFileCutoff) {
-			e.InlineData = make([]byte, e.Size)
-			if _, err := io.ReadFull(dataR, e.InlineData); err != nil {
-				return err
-			}
-		} else {
-			cshift := b.chunkSizer(e.Size)
-			if cshift != shift.DefaultChunkShift {
-				e.ChunkShift = int32(cshift)
-			}
-			var err error
-			e.Digests, err = b.chunkData(egCtx, args, e.Size, cshift, dataR)
-			if err != nil {
-				return err
-			}
+		e.Type = nar.TypeRegular
+		e.contents, err = io.ReadAll(tr)
+		if err != nil {
+			return nil, nil, err
+		}
+		if e.Size != int64(len(e.contents)) {
+			return nil, nil, fmt.Errorf("tar regular file size mismatch %q %d != %d",
+				h.Name, e.Size, len(e.contents))
 		}
 
 	case tar.TypeSymlink:
-		e.Type = pb.EntryType_SYMLINK
-		e.InlineData = []byte(h.Linkname)
+		e.Type = nar.TypeSymlink
+		e.Size = 0
+		e.LinkTarget = h.Linkname
 
 	// TODO: hard link?
 
 	default:
-		return errors.New("unknown type")
+		return nil, nil, errors.New("unknown type")
 	}
 
-	return nil
+	return fakeEnt, e, nil
+}
+
+func (b *ManifestBuilder) writeNar(ents []*tarEntry, w *io.PipeWriter) (retErr error) {
+	defer func() { w.CloseWithError(retErr) }()
+
+	nw, err := nar.NewWriter(w)
+	if err != nil {
+		return err
+	}
+
+	for _, e := range ents {
+		err = nw.WriteHeader(&e.Header)
+		if err != nil {
+			return err
+		}
+		if e.Type == nar.TypeRegular {
+			_, err = nw.Write(e.contents)
+			if err != nil {
+				return err
+			}
+		}
+	}
+
+	return nw.Close()
+}
+
+func stripRoot(ents []*tarEntry) []*tarEntry {
+	if len(ents) < 2 || ents[0].Path != "/" ||
+		ents[0].Type != nar.TypeDirectory ||
+		ents[1].Type != nar.TypeDirectory {
+		return ents
+	}
+	first := ents[1]
+	prefix := first.Path + "/"
+
+	for _, e := range ents[2:] {
+		if !strings.HasPrefix(e.Path, prefix) {
+			return ents
+		}
+	}
+
+	ents = ents[1:] // remove old root
+	for _, e := range ents[1:] {
+		e.Path = e.Path[len(first.Path):]
+	}
+	first.Path = "/"
+
+	return ents
 }
