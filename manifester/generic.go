@@ -29,7 +29,7 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-const sphGenericTarball = "@generic-tarball"
+const SphGenericTarball = "@generic-tarball"
 
 type tarEntry struct {
 	nar.Header
@@ -61,15 +61,16 @@ func (b *ManifestBuilder) BuildFromTarball(
 		return nil, fmt.Errorf("%w: tar http status for %s: %s", ErrReq, upstream, res.Status)
 	}
 	tarOut = res.Body
+	resolved := res.Request.URL.String()
 
 	// log.Println("req", storePathHash, "downloading nar")
 
 	switch {
-	case strings.HasSuffix(upstream, ".gz") || strings.HasSuffix(upstream, ".tgz"):
+	case strings.HasSuffix(resolved, ".gz") || strings.HasSuffix(resolved, ".tgz"):
 		decompress = exec.Command(common.GzipBin, "-d")
-	case strings.HasSuffix(upstream, ".xz") || strings.HasSuffix(upstream, ".txz"):
+	case strings.HasSuffix(resolved, ".xz") || strings.HasSuffix(resolved, ".txz"):
 		decompress = exec.Command(common.XzBin, "-d")
-	//case strings.HasSuffix(upstream, ".zst") || strings.HasSuffix(upstream, ".zstd"):
+	//case strings.HasSuffix(resolved, ".zst") || strings.HasSuffix(resolved, ".zstd"):
 	// TODO: use in-memory pipe?
 	// 	decompress = exec.Command(common.ZstdBin, "-d")
 	default:
@@ -133,8 +134,8 @@ func (b *ManifestBuilder) BuildFromTarball(
 	// hack: tweak name, e.g. we want
 	//   https://releases.nixos.org/nixos/25.11/nixos-25.11.1056.d9bc5c7dceb3/nixexprs.tar.xz
 	// to turn into "nixexprs-nixos-25.11.1056" for better diffing
-	spName := path.Base(upstream)
-	if m := reNixExprs.FindStringSubmatch(upstream); m != nil {
+	spName := path.Base(resolved)
+	if m := reNixExprs.FindStringSubmatch(resolved); m != nil {
 		spName = "nixexprs-" + m[1]
 	}
 
@@ -145,7 +146,7 @@ func (b *ManifestBuilder) BuildFromTarball(
 	cmpHash := hash.CompressHash(fpHasher.Sum(nil), storepath.PathHashSize)
 	sph := nixbase32.EncodeToString(cmpHash)
 
-	log.Println("manifest generic", upstream, "built manifest", sph)
+	log.Println("manifest generic", upstream, "->", resolved, "built manifest", sph)
 
 	b.stats.Shards.Add(1)
 
@@ -158,7 +159,7 @@ func (b *ManifestBuilder) BuildFromTarball(
 
 	nipb := &pb.NarInfo{
 		StorePath:   storepath.StoreDir + "/" + sph + "-" + spName,
-		Url:         "styx://?origin=" + upstream,
+		Url:         "nar/dummy.nar",
 		Compression: "none",
 		FileHash:    narHasher.NixString(),
 		FileSize:    int64(narHasher.BytesWritten()),
@@ -166,10 +167,11 @@ func (b *ManifestBuilder) BuildFromTarball(
 		NarSize:     int64(narHasher.BytesWritten()),
 	}
 	manifest.Meta = &pb.ManifestMeta{
-		NarinfoUrl:    sphGenericTarball + "/" + upstream,
-		Narinfo:       nipb,
-		Generator:     "styx-" + common.Version,
-		GeneratedTime: time.Now().Unix(),
+		GenericTarballOriginal: upstream,
+		GenericTarballResolved: resolved,
+		Narinfo:                nipb,
+		Generator:              "styx-" + common.Version,
+		GeneratedTime:          time.Now().Unix(),
 	}
 
 	// turn into entry (maybe chunk)
@@ -219,7 +221,7 @@ func (b *ManifestBuilder) BuildFromTarball(
 			Meta: &pb.BuildRootMeta{
 				BuildTime:        btime.Unix(),
 				ManifestUpstream: upstream,
-				ManifestSph:      sphGenericTarball,
+				ManifestSph:      SphGenericTarball,
 			},
 			Manifest: []string{cacheKey},
 		}
@@ -261,8 +263,16 @@ func (b *ManifestBuilder) extractTar(r io.Reader) ([]*tarEntry, error) {
 
 	// sort in nar order
 	sort.Slice(ents, func(i, j int) bool {
-		a, b := ents[i].Path, ents[j].Path
-		return nar.PathIsLexicographicallyOrdered(a, b)
+		ap := strings.Split(ents[i].Path, "/")
+		bp := strings.Split(ents[j].Path, "/")
+		for i := range min(len(ap), len(bp)) {
+			if ap[i] < bp[i] {
+				return true
+			} else if ap[i] > bp[i] {
+				return false
+			}
+		}
+		return len(ap) < len(bp)
 	})
 
 	// do what fetchzip stripRoot does

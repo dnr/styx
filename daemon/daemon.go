@@ -87,6 +87,9 @@ type (
 		// connect context for mount request to cachefiles request
 		mountCtxMap common.SimpleSyncMap[string, context.Context]
 
+		// fod narinfo
+		fodNarinfo common.SimpleSyncMap[string, []byte]
+
 		// keeps track of pending diff/fetch state
 		// note: we open a read-only transaction inside of diffLock.
 		// therefore we must not try to lock diffLock while in a read or write tx.
@@ -159,6 +162,7 @@ func NewServer(cfg Config) *Server {
 		presentMap:      *common.NewSimpleSyncMap[erofs.SlabLoc, struct{}](),
 		readKnownMap:    *common.NewSimpleSyncMap[erofs.SlabLoc, int](),
 		mountCtxMap:     *common.NewSimpleSyncMap[string, context.Context](),
+		fodNarinfo:      *common.NewSimpleSyncMap[string, []byte](),
 		diffMap:         make(map[erofs.SlabLoc]reqOp),
 		recentReads:     make(map[string]*recentRead),
 		diffSem:         semaphore.NewWeighted(int64(cfg.Workers)),
@@ -429,6 +433,7 @@ func (s *Server) startSocketServer() (err error) {
 	mux.HandleFunc(MaterializePath, jsonmw(s.handleMaterializeReq))
 	mux.HandleFunc(VaporizePath, jsonmw(s.handleVaporizeReq))
 	mux.HandleFunc(PrefetchPath, jsonmw(s.handlePrefetchReq))
+	mux.HandleFunc(GenericFodPath, jsonmw(s.handleGenericFodReq))
 	mux.HandleFunc(GcPath, jsonmw(s.handleGcReq))
 	mux.HandleFunc(DebugPath, jsonmw(s.handleDebugReq))
 	mux.HandleFunc(RepairPath, jsonmw(s.handleRepairReq))
@@ -796,6 +801,9 @@ func (s *Server) Start() error {
 		return err
 	}
 	if err := s.startSocketServer(); err != nil {
+		return err
+	}
+	if err := s.startFodCacheServer(); err != nil {
 		return err
 	}
 	go s.pruneRecentCaches()

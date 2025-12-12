@@ -146,7 +146,7 @@ func (b *ManifestBuilder) Build(
 	writeBuildRoot bool,
 ) (*ManifestBuildRes, error) {
 	switch {
-	case strings.HasPrefix(storePathHash, sphGenericTarball):
+	case strings.HasPrefix(storePathHash, SphGenericTarball):
 		return b.BuildFromTarball(ctx, upstream, shardTotal, shardIndex, writeBuildRoot)
 	default:
 		return b.BuildFromNar(ctx, upstream, storePathHash, shardTotal, shardIndex, useLocalStoreDump, writeBuildRoot)
@@ -180,8 +180,7 @@ func (b *ManifestBuilder) BuildFromNar(
 		return nil, fmt.Errorf("%w: upstream http for %s: %s", ErrReq, narinfoUrl, res.Status)
 	}
 
-	var rawNarinfo bytes.Buffer
-	ni, err := narinfo.Parse(io.TeeReader(res.Body, &rawNarinfo))
+	ni, err := narinfo.Parse(res.Body)
 	if err != nil {
 		return nil, fmt.Errorf("%w: narinfo parse for %s: %w", ErrReq, narinfoUrl, err)
 	}
@@ -440,6 +439,9 @@ func (b *ManifestBuilder) ManifestAsEntry(ctx context.Context, args *BuildArgs, 
 		entry.InlineData = mb
 		return entry, nil
 	}
+
+	// put copy of manifest meta inline in chunked entry
+	entry.ManifestMeta = manifest.Meta
 
 	egCtx := errgroup.WithContext(ctx)
 	entry.Digests, err = b.chunkData(egCtx, args, int64(len(mb)), shift.ManifestChunkShift, bytes.NewReader(mb))

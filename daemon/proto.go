@@ -17,6 +17,7 @@ var (
 	MaterializePath = "/materialize"
 	VaporizePath    = "/vaporize"
 	PrefetchPath    = "/prefetch"
+	GenericFodPath  = "/genericfod"
 	GcPath          = "/gc"
 	DebugPath       = "/debug"
 	RepairPath      = "/repair"
@@ -63,6 +64,17 @@ type (
 		StorePath string
 	}
 	// returns Status
+
+	GenericFodReq struct {
+		UpstreamUrl string
+	}
+	GenericFodResp struct {
+		ResolvedUrl   string
+		StorePathHash string
+		Name          string
+		NarHash       string
+		NarHashAlgo   string
+	}
 
 	GcReq struct {
 		DryRunFast bool
