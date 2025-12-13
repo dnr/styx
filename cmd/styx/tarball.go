@@ -32,17 +32,17 @@ type drvOutput struct {
 	Path     string `json:"path"`
 }
 
-var fodCmd = cmd(
+var tarballCmd = cmd(
 	&cobra.Command{
-		Use:   "fod <url>",
+		Use:   "tarball <url>",
 		Short: "'substitute' a generic tarball to the local store",
 		Args:  cobra.ExactArgs(1),
 	},
 	withStyxClient,
 	func(c *cobra.Command, args []string) error {
 		cli := get[*client.StyxClient](c)
-		var resp daemon.GenericFodResp
-		status, err := cli.Call(daemon.GenericFodPath, &daemon.GenericFodReq{
+		var resp daemon.TarballResp
+		status, err := cli.Call(daemon.TarballPath, &daemon.TarballReq{
 			UpstreamUrl: args[0],
 		}, &resp)
 		if err != nil {

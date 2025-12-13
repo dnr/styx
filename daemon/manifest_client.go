@@ -31,10 +31,10 @@ func (s *Server) getManifestAndBuildImage(ctx context.Context, req *MountReq) (*
 	}
 
 	// handle generic tarball manifests that are being substituted from our fake binary cache
-	if strings.Contains(req.Upstream, fodCacheBind) {
+	if strings.Contains(req.Upstream, fakeCacheBind) {
 		data, ok := s.fakeBinaryCache.Get(sphStr)
 		if !ok {
-			return nil, nil, fmt.Errorf("couldn't find upstream for %s; re-run 'styx fod'", sphStr)
+			return nil, nil, fmt.Errorf("couldn't find upstream for %s; re-run 'styx tarball'", sphStr)
 		}
 		nreq := *req
 		nreq.Upstream = data.upstream

@@ -11,7 +11,7 @@ const (
 
 	isManifestPrefix = "M/"
 
-	fodCacheBind = "localhost:7444"
+	fakeCacheBind = "localhost:7444"
 )
 
 var (

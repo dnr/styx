@@ -21,27 +21,27 @@ import (
 
 // local binary cache to serve narinfo
 
-func (s *Server) startFodCacheServer() (err error) {
-	l, err := net.Listen("tcp", fodCacheBind)
+func (s *Server) startFakeCacheServer() (err error) {
+	l, err := net.Listen("tcp", fakeCacheBind)
 	if err != nil {
-		return fmt.Errorf("failed to listen on local tcp socket %s: %w", fodCacheBind, err)
+		return fmt.Errorf("failed to listen on local tcp socket %s: %w", fakeCacheBind, err)
 	}
 	mux := http.NewServeMux()
-	mux.HandleFunc("/nix-cache-info", s.getFodCacheInfo)
-	mux.HandleFunc("/", s.getFodNarinfo)
+	mux.HandleFunc("/nix-cache-info", s.getFakeCacheInfo)
+	mux.HandleFunc("/", s.getFakeNarinfo)
 	s.shutdownWait.Add(1)
 	go func() {
 		defer s.shutdownWait.Done()
 		srv := &http.Server{Handler: mux}
 		go srv.Serve(l)
 		<-s.shutdownChan
-		log.Printf("stopping fod cache server")
+		log.Printf("stopping fake cache server")
 		srv.Close()
 	}()
 	return nil
 }
 
-func (s *Server) getFodCacheInfo(w http.ResponseWriter, r *http.Request) {
+func (s *Server) getFakeCacheInfo(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, http.StatusText(http.StatusMethodNotAllowed), http.StatusMethodNotAllowed)
 		return
@@ -52,7 +52,7 @@ func (s *Server) getFodCacheInfo(w http.ResponseWriter, r *http.Request) {
 
 var reNarinfoPath = regexp.MustCompile(`^/([` + nixbase32.Alphabet + `]+)\.narinfo$`)
 
-func (s *Server) getFodNarinfo(w http.ResponseWriter, r *http.Request) {
+func (s *Server) getFakeNarinfo(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		http.Error(w, http.StatusText(http.StatusMethodNotAllowed), http.StatusMethodNotAllowed)
 	} else if m := reNarinfoPath.FindStringSubmatch(r.URL.Path); m == nil {
@@ -67,7 +67,7 @@ func (s *Server) getFodNarinfo(w http.ResponseWriter, r *http.Request) {
 
 // request handler
 
-func (s *Server) handleGenericFodReq(ctx context.Context, r *GenericFodReq) (*GenericFodResp, error) {
+func (s *Server) handleTarballReq(ctx context.Context, r *TarballReq) (*TarballResp, error) {
 	if s.p() == nil {
 		return nil, mwErr(http.StatusPreconditionFailed, "styx is not initialized, call 'styx init --params=...'")
 	}
@@ -141,7 +141,7 @@ func (s *Server) handleGenericFodReq(ctx context.Context, r *GenericFodReq) (*Ge
 		upstream: mm.GenericTarballResolved,
 	})
 
-	return &GenericFodResp{
+	return &TarballResp{
 		ResolvedUrl:   mm.GenericTarballResolved,
 		StorePathHash: sph,
 		Name:          nipb.StorePath[44:],

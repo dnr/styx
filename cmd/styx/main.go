@@ -357,7 +357,7 @@ func main() {
 				)
 			},
 		),
-		fodCmd,
+		tarballCmd,
 		cmd(
 			&cobra.Command{
 				Use:   "gc",

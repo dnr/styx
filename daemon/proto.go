@@ -17,7 +17,7 @@ var (
 	MaterializePath = "/materialize"
 	VaporizePath    = "/vaporize"
 	PrefetchPath    = "/prefetch"
-	GenericFodPath  = "/genericfod"
+	TarballPath     = "/tarball"
 	GcPath          = "/gc"
 	DebugPath       = "/debug"
 	RepairPath      = "/repair"
@@ -65,10 +65,10 @@ type (
 	}
 	// returns Status
 
-	GenericFodReq struct {
+	TarballReq struct {
 		UpstreamUrl string
 	}
-	GenericFodResp struct {
+	TarballResp struct {
 		ResolvedUrl   string
 		StorePathHash string
 		Name          string

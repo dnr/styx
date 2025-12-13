@@ -438,7 +438,7 @@ func (s *Server) startSocketServer() (err error) {
 	mux.HandleFunc(MaterializePath, jsonmw(s.handleMaterializeReq))
 	mux.HandleFunc(VaporizePath, jsonmw(s.handleVaporizeReq))
 	mux.HandleFunc(PrefetchPath, jsonmw(s.handlePrefetchReq))
-	mux.HandleFunc(GenericFodPath, jsonmw(s.handleGenericFodReq))
+	mux.HandleFunc(TarballPath, jsonmw(s.handleTarballReq))
 	mux.HandleFunc(GcPath, jsonmw(s.handleGcReq))
 	mux.HandleFunc(DebugPath, jsonmw(s.handleDebugReq))
 	mux.HandleFunc(RepairPath, jsonmw(s.handleRepairReq))
@@ -808,7 +808,7 @@ func (s *Server) Start() error {
 	if err := s.startSocketServer(); err != nil {
 		return err
 	}
-	if err := s.startFodCacheServer(); err != nil {
+	if err := s.startFakeCacheServer(); err != nil {
 		return err
 	}
 	go s.pruneRecentCaches()
