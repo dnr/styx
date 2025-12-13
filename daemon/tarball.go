@@ -133,6 +133,8 @@ func (s *Server) handleTarballReq(ctx context.Context, r *TarballReq) (*TarballR
 		FileSize:    uint64(nipb.FileSize),
 		NarHash:     nh,
 		NarSize:     uint64(nipb.NarSize),
+		// needed to make nix treat it as CA so doesn't it require a signature
+		CA: "fixed:r:" + nh.NixString(),
 	}
 
 	sph := nipb.StorePath[11:43]
