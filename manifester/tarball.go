@@ -34,8 +34,6 @@ type tarEntry struct {
 	contents []byte
 }
 
-var reNixExprs = regexp.MustCompile(`^https://releases\.nixos\.org/.*/(nixos-\d\d\.\d\d\.\d+).[a-z0-9]+/nixexprs\.tar`)
-
 func (b *ManifestBuilder) BuildFromTarball(
 	ctx context.Context,
 	upstream string,
@@ -380,6 +378,8 @@ func stripRoot(ents []*tarEntry) []*tarEntry {
 
 	return ents
 }
+
+var reNixExprs = regexp.MustCompile(`^https://releases\.nixos\.org/.*/(nix(os|pkgs)-\d\d\.\d\d(\.|pre)\d+).[a-z0-9]+/nixexprs\.tar`)
 
 func getSpNameFromUrl(url string) string {
 	// hack: tweak name, e.g. we want
