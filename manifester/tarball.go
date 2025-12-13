@@ -42,7 +42,7 @@ func (b *ManifestBuilder) BuildFromTarball(
 	shardTotal, shardIndex int,
 	writeBuildRoot bool,
 ) (*ManifestBuildRes, error) {
-	log.Println("manifest generic", upstream)
+	log.Println("manifest tarball", upstream)
 
 	// download body
 	var tarOut io.Reader
@@ -129,22 +129,16 @@ func (b *ManifestBuilder) BuildFromTarball(
 		return nil, fmt.Errorf("%w: manifest generation error: %w", ErrInternal, err)
 	}
 
-	// hack: tweak name, e.g. we want
-	//   https://releases.nixos.org/nixos/25.11/nixos-25.11.1056.d9bc5c7dceb3/nixexprs.tar.xz
-	// to turn into "nixexprs-nixos-25.11.1056" for better diffing
-	spName := path.Base(resolved)
-	if m := reNixExprs.FindStringSubmatch(resolved); m != nil {
-		spName = "nixexprs-" + m[1]
-	}
-
 	// turn tar hash into store path hash using nix's fod algorithm
+	spName := getSpNameFromUrl(resolved)
 	innerHash := hex.EncodeToString(narHasher.Digest())
 	fpHasher := sha256.New()
+	// "source" is specific to nar hashing method. we don't support flat here yet.
 	fmt.Fprintf(fpHasher, "source:sha256:%s:%s:%s", innerHash, storepath.StoreDir, spName)
 	cmpHash := hash.CompressHash(fpHasher.Sum(nil), storepath.PathHashSize)
 	sph := nixbase32.EncodeToString(cmpHash)
 
-	log.Println("manifest generic", upstream, "->", resolved, "built manifest", sph)
+	log.Println("manifest tarball", upstream, "->", resolved, "built manifest", sph)
 
 	b.stats.Shards.Add(1)
 
@@ -229,7 +223,7 @@ func (b *ManifestBuilder) BuildFromTarball(
 		}
 	}
 
-	log.Println("manifest generic", upstream, "added to cache as", cacheKey)
+	log.Println("manifest tarball", upstream, "added to cache as", cacheKey)
 	b.stats.Manifests.Add(1)
 
 	return &ManifestBuildRes{
@@ -385,4 +379,14 @@ func stripRoot(ents []*tarEntry) []*tarEntry {
 	first.Path = "/"
 
 	return ents
+}
+
+func getSpNameFromUrl(url string) string {
+	// hack: tweak name, e.g. we want
+	//   https://releases.nixos.org/nixos/25.11/nixos-25.11.1056.d9bc5c7dceb3/nixexprs.tar.xz
+	// to turn into "nixexprs-nixos-25.11.1056" for better diffing
+	if m := reNixExprs.FindStringSubmatch(url); m != nil {
+		return "nixexprs-" + m[1]
+	}
+	return path.Base(url)
 }
