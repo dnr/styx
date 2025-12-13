@@ -87,8 +87,8 @@ type (
 		// connect context for mount request to cachefiles request
 		mountCtxMap common.SimpleSyncMap[string, context.Context]
 
-		// fod narinfo
-		fodNarinfo common.SimpleSyncMap[string, []byte]
+		// local fake binary cache
+		fakeBinaryCache common.SimpleSyncMap[string, binaryCacheData]
 
 		// keeps track of pending diff/fetch state
 		// note: we open a read-only transaction inside of diffLock.
@@ -127,6 +127,11 @@ type (
 		readFd, cacheFd int
 	}
 
+	binaryCacheData struct {
+		narinfo  []byte
+		upstream string
+	}
+
 	Config struct {
 		DevPath     string
 		CachePath   string
@@ -162,7 +167,7 @@ func NewServer(cfg Config) *Server {
 		presentMap:      *common.NewSimpleSyncMap[erofs.SlabLoc, struct{}](),
 		readKnownMap:    *common.NewSimpleSyncMap[erofs.SlabLoc, int](),
 		mountCtxMap:     *common.NewSimpleSyncMap[string, context.Context](),
-		fodNarinfo:      *common.NewSimpleSyncMap[string, []byte](),
+		fakeBinaryCache: *common.NewSimpleSyncMap[string, binaryCacheData](),
 		diffMap:         make(map[erofs.SlabLoc]reqOp),
 		recentReads:     make(map[string]*recentRead),
 		diffSem:         semaphore.NewWeighted(int64(cfg.Workers)),

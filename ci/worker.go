@@ -681,7 +681,7 @@ func (a *heavyActivities) HeavyBuild(ctx context.Context, req *buildReq) (retBui
 		m := m
 		egCtx.Go(func() error {
 			sph := m.storePath[11:43]
-			mres, err := a.b.Build(egCtx, m.upstream, sph, 0, 0, m.storePath, false)
+			mres, err := a.b.Build(egCtx, manifester.ModeNar, m.upstream, sph, 0, 0, m.storePath, false)
 			if mres != nil {
 				mcacheForRoot[i] = mres.CacheKey
 			}

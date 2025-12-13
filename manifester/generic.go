@@ -29,8 +29,6 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-const SphGenericTarball = "@generic-tarball"
-
 type tarEntry struct {
 	nar.Header
 	contents []byte
@@ -192,10 +190,8 @@ func (b *ManifestBuilder) BuildFromTarball(
 	// work on lambda)
 	// TODO: we shouldn't write to cache unless we know for sure that other shards are done.
 	// (or else change client to re-request manifest on missing)
-	normalizedUpstream := upstream
-	common.NormalizeUpstream(&normalizedUpstream)
 	cacheKey := (&ManifestReq{
-		Upstream:      normalizedUpstream,
+		Upstream:      resolved,
 		StorePathHash: sph,
 		DigestAlgo:    cdig.Algo,
 		DigestBits:    int(cdig.Bits),
@@ -220,8 +216,8 @@ func (b *ManifestBuilder) BuildFromTarball(
 		broot := &pb.BuildRoot{
 			Meta: &pb.BuildRootMeta{
 				BuildTime:        btime.Unix(),
-				ManifestUpstream: upstream,
-				ManifestSph:      SphGenericTarball,
+				ManifestUpstream: resolved,
+				ManifestSph:      ModeGenericTarball,
 			},
 			Manifest: []string{cacheKey},
 		}

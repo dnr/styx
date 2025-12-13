@@ -32,6 +32,12 @@ import (
 	"github.com/dnr/styx/pb"
 )
 
+const (
+	// Build modes
+	ModeNar            = "" // default
+	ModeGenericTarball = "generic-tarball"
+)
+
 type (
 	BuildArgs struct {
 		SmallFileCutoff int
@@ -140,16 +146,18 @@ func (b *ManifestBuilder) ClearStats() {
 
 func (b *ManifestBuilder) Build(
 	ctx context.Context,
-	upstream, storePathHash string,
+	buildMode, upstream, storePathHash string,
 	shardTotal, shardIndex int,
 	useLocalStoreDump string,
 	writeBuildRoot bool,
 ) (*ManifestBuildRes, error) {
-	switch {
-	case strings.HasPrefix(storePathHash, SphGenericTarball):
+	switch buildMode {
+	case ModeNar:
+		return b.BuildFromNar(ctx, upstream, storePathHash, shardTotal, shardIndex, useLocalStoreDump, writeBuildRoot)
+	case ModeGenericTarball:
 		return b.BuildFromTarball(ctx, upstream, shardTotal, shardIndex, writeBuildRoot)
 	default:
-		return b.BuildFromNar(ctx, upstream, storePathHash, shardTotal, shardIndex, useLocalStoreDump, writeBuildRoot)
+		return nil, fmt.Errorf("unknown build mode %q", buildMode)
 	}
 }
 

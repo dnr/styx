@@ -102,7 +102,7 @@ func (s *server) handleManifest(w http.ResponseWriter, req *http.Request) {
 
 	log.Println("req", r.StorePathHash, "from", r.Upstream)
 
-	mres, err := s.mb.Build(req.Context(), r.Upstream, r.StorePathHash, r.ShardTotal, r.ShardIndex, "", true)
+	mres, err := s.mb.Build(req.Context(), r.BuildMode, r.Upstream, r.StorePathHash, r.ShardTotal, r.ShardIndex, "", true)
 
 	if err != nil {
 		log.Println("build error:", err)

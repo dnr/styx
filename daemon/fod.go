@@ -57,11 +57,11 @@ func (s *Server) getFodNarinfo(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, http.StatusText(http.StatusMethodNotAllowed), http.StatusMethodNotAllowed)
 	} else if m := reNarinfoPath.FindStringSubmatch(r.URL.Path); m == nil {
 		http.NotFound(w, r)
-	} else if ni, ok := s.fodNarinfo.Get(m[1]); !ok {
+	} else if data, ok := s.fakeBinaryCache.Get(m[1]); !ok {
 		http.NotFound(w, r)
 	} else {
 		w.Header().Set("Content-Type", "text/x-nix-narinfo")
-		w.Write(ni)
+		w.Write(data.narinfo)
 	}
 }
 
@@ -72,8 +72,15 @@ func (s *Server) handleGenericFodReq(ctx context.Context, r *GenericFodReq) (*Ge
 		return nil, mwErr(http.StatusPreconditionFailed, "styx is not initialized, call 'styx init --params=...'")
 	}
 
-	// use generic tarball manifest mode
-	envelopeBytes, err := s.getManifestFromManifester(ctx, r.UpstreamUrl, manifester.SphGenericTarball, 0)
+	// use generic tarball build mode
+	mReq := manifester.ManifestReq{
+		Upstream:   r.UpstreamUrl,
+		BuildMode:  manifester.ModeGenericTarball,
+		DigestAlgo: cdig.Algo,
+		DigestBits: int(cdig.Bits),
+		// SmallFileCutoff: s.cfg.SmallFileCutoff,
+	}
+	envelopeBytes, err := s.getNewManifest(ctx, mReq, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -129,7 +136,10 @@ func (s *Server) handleGenericFodReq(ctx context.Context, r *GenericFodReq) (*Ge
 	}
 
 	sph := nipb.StorePath[11:43]
-	s.fodNarinfo.Put(sph, []byte(ni.String()))
+	s.fakeBinaryCache.Put(sph, binaryCacheData{
+		narinfo:  []byte(ni.String()),
+		upstream: mm.GenericTarballResolved,
+	})
 
 	return &GenericFodResp{
 		ResolvedUrl:   mm.GenericTarballResolved,

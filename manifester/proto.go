@@ -32,7 +32,10 @@ var (
 type (
 	ManifestReq struct {
 		Upstream      string // url of nix binary cache or generic file
-		StorePathHash string // see ManifestBuilder.Build for format
+		StorePathHash string
+
+		// TODO: this should really be a new request type
+		BuildMode string `json:",omitempty"`
 
 		// TODO: move this to pb and embed a GlobalParams?
 		DigestAlgo string
@@ -88,6 +91,10 @@ type (
 )
 
 func (r *ManifestReq) CacheKey() string {
+	if r.BuildMode != "" {
+		panic("keys with BuildMode are not cachable")
+	}
+
 	h := sha256.New()
 	h.Write([]byte("styx-manifest-cache-v1\n"))
 	h.Write([]byte(fmt.Sprintf("u=%s\n", r.Upstream)))
