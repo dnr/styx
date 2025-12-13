@@ -74,10 +74,7 @@ func withDaemonConfig(c *cobra.Command) runE {
 	// c.Flags().IntVar(&cfg.SmallFileCutoff, "small_file_cutoff", 224, "cutoff for embedding small files in images")
 	c.Flags().IntVar(&cfg.Workers, "workers", 16, "worker goroutines for cachefilesd serving")
 
-	return func(c *cobra.Command, args []string) error {
-		store(c, cfg)
-		return nil
-	}
+	return storer(&cfg)
 }
 
 func withInitReq(c *cobra.Command) runE {
@@ -113,10 +110,7 @@ func withManifesterConfig(c *cobra.Command) runE {
 	c.Flags().IntVar(&cfg.ChunkDiffZstdLevel, "chunk_diff_zstd_level", 3, "encoder level for chunk diffs")
 	c.Flags().IntVar(&cfg.ChunkDiffParallel, "chunk_diff_parallel", 60, "parallelism for loading chunks for diff")
 
-	return func(c *cobra.Command, args []string) error {
-		store(c, cfg)
-		return nil
-	}
+	return storer(&cfg)
 }
 
 func withSignKeys(c *cobra.Command) runE {
@@ -152,10 +146,7 @@ func withStyxPubKeys(c *cobra.Command) runE {
 
 func withStyxClient(c *cobra.Command) runE {
 	socket := c.Flags().String("addr", "/var/cache/styx/styx.sock", "path to local styx socket")
-	return func(c *cobra.Command, args []string) error {
-		store(c, client.NewClient(*socket))
-		return nil
-	}
+	return storer(client.NewClient(*socket))
 }
 
 func withVaporizeReq(c *cobra.Command) runE {
@@ -224,10 +215,7 @@ func withDebugReq(c *cobra.Command) runE {
 func withRepairReq(c *cobra.Command) runE {
 	var req daemon.RepairReq
 	c.Flags().BoolVar(&req.Presence, "presence", false, "repair presence info")
-	return func(c *cobra.Command, args []string) error {
-		store(c, &req)
-		return nil
-	}
+	return storer(&req)
 }
 
 func main() {
@@ -247,7 +235,7 @@ func main() {
 			&cobra.Command{Use: "daemon", Short: "act as local daemon"},
 			withDaemonConfig,
 			func(c *cobra.Command, args []string) error {
-				err := daemon.NewServer(get[daemon.Config](c)).Start()
+				err := daemon.NewServer(*get[*daemon.Config](c)).Start()
 				if err != nil {
 					return err
 				}
@@ -262,9 +250,9 @@ func main() {
 			withManifesterConfig,
 			withManifestBuilder,
 			func(c *cobra.Command, args []string) error {
-				cfg := get[manifester.Config](c)
+				cfg := get[*manifester.Config](c)
 				mb := get[*manifester.ManifestBuilder](c)
-				m, err := manifester.NewManifestServer(cfg, mb)
+				m, err := manifester.NewManifestServer(*cfg, mb)
 				if err != nil {
 					return err
 				}

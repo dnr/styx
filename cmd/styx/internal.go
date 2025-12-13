@@ -65,10 +65,7 @@ func withRemanifestReq(c *cobra.Command) runE {
 	c.Flags().BoolVar(&req.reqIfNot, "request_if_not", false, "rerequest if not found")
 	c.Flags().StringVar(&req.upstream, "upstream", "https://cache.nixos.org/", "remanifest upstream")
 	c.Flags().StringVar(&req.storePath, "storepath", "", "remanifest store path")
-	return func(c *cobra.Command, args []string) error {
-		store(c, &req)
-		return nil
-	}
+	return storer(&req)
 }
 
 func internalCmd() *cobra.Command {

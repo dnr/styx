@@ -49,6 +49,13 @@ type ckey struct {
 	k any
 }
 
+func storer[T any](v T) runE {
+	return func(c *cobra.Command, args []string) error {
+		store(c, v)
+		return nil
+	}
+}
+
 func store[T any](c *cobra.Command, v T) {
 	t := reflect.TypeOf((*T)(nil)).Elem()
 	c.SetContext(context.WithValue(c.Context(), ckey{t: t}, v))
