@@ -93,14 +93,12 @@ func (s *Server) handleTarballReq(ctx context.Context, r *TarballReq) (*TarballR
 		return nil, fmt.Errorf("chunked manifest global params mismatch")
 	}
 
-	// FIXME: verify something here?
-	// // check entry path to get storepath
-	// storePath := strings.TrimPrefix(entry.Path, common.ManifestContext+"/")
-	// if storePath != req.StorePath {
-	// 	return nil, nil, fmt.Errorf("envelope storepath != requested storepath: %q != %q", storePath, req.StorePath)
-	// }
+	// TODO: we should check the envelope context against what we asked for. but we don't know
+	// the sph of what we asked for, and we don't even know the resolved url. so we can't
+	// really check any more than the signature above.
 
-	// try embedded meta in entry first
+	// get the narinfo that the manifester produced so we can add it to our fake cache.
+	// try embedded meta in entry first (will be present on chunked manifests).
 	mm := entry.ManifestMeta
 	if mm == nil && len(entry.InlineData) > 0 {
 		// manifest is inline, use that
@@ -138,6 +136,7 @@ func (s *Server) handleTarballReq(ctx context.Context, r *TarballReq) (*TarballR
 	}
 
 	sph := nipb.StorePath[11:43]
+	// TODO: prune cache once in a while
 	s.fakeBinaryCache.Put(sph, binaryCacheData{
 		narinfo:  []byte(ni.String()),
 		upstream: mm.GenericTarballResolved,
