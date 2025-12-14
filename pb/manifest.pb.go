@@ -91,93 +91,17 @@ func (x *Manifest) GetMeta() *ManifestMeta {
 	return nil
 }
 
-type ManifestMeta struct {
-	state protoimpl.MessageState `protogen:"open.v1"`
-	// meta info for what this manifest was generated from
-	NarinfoUrl    string   `protobuf:"bytes,1,opt,name=narinfo_url,json=narinfoUrl,proto3" json:"narinfo_url,omitempty"`            // url that narinfo was fetched from
-	Narinfo       *NarInfo `protobuf:"bytes,2,opt,name=narinfo,proto3" json:"narinfo,omitempty"`                                    // parsed narinfo (includes references, signatures, etc.)
-	Generator     string   `protobuf:"bytes,10,opt,name=generator,proto3" json:"generator,omitempty"`                               // software version of generator
-	GeneratedTime int64    `protobuf:"varint,11,opt,name=generated_time,json=generatedTime,proto3" json:"generated_time,omitempty"` // timestamp when this was generated (unix seconds)
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *ManifestMeta) Reset() {
-	*x = ManifestMeta{}
-	mi := &file_manifest_proto_msgTypes[1]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *ManifestMeta) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*ManifestMeta) ProtoMessage() {}
-
-func (x *ManifestMeta) ProtoReflect() protoreflect.Message {
-	mi := &file_manifest_proto_msgTypes[1]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use ManifestMeta.ProtoReflect.Descriptor instead.
-func (*ManifestMeta) Descriptor() ([]byte, []int) {
-	return file_manifest_proto_rawDescGZIP(), []int{1}
-}
-
-func (x *ManifestMeta) GetNarinfoUrl() string {
-	if x != nil {
-		return x.NarinfoUrl
-	}
-	return ""
-}
-
-func (x *ManifestMeta) GetNarinfo() *NarInfo {
-	if x != nil {
-		return x.Narinfo
-	}
-	return nil
-}
-
-func (x *ManifestMeta) GetGenerator() string {
-	if x != nil {
-		return x.Generator
-	}
-	return ""
-}
-
-func (x *ManifestMeta) GetGeneratedTime() int64 {
-	if x != nil {
-		return x.GeneratedTime
-	}
-	return 0
-}
-
 var File_manifest_proto protoreflect.FileDescriptor
 
 const file_manifest_proto_rawDesc = "" +
 	"\n" +
-	"\x0emanifest.proto\x12\x02pb\x1a\fparams.proto\x1a\ventry.proto\x1a\rnarinfo.proto\"\xab\x01\n" +
+	"\x0emanifest.proto\x12\x02pb\x1a\ventry.proto\x1a\x13manifest_meta.proto\x1a\fparams.proto\"\xab\x01\n" +
 	"\bManifest\x12(\n" +
 	"\x06params\x18\x01 \x01(\v2\x10.pb.GlobalParamsR\x06params\x12#\n" +
 	"\aentries\x18\x03 \x03(\v2\t.pb.EntryR\aentries\x12*\n" +
 	"\x11small_file_cutoff\x18\x02 \x01(\x05R\x0fsmallFileCutoff\x12$\n" +
 	"\x04meta\x18\n" +
-	" \x01(\v2\x10.pb.ManifestMetaR\x04meta\"\x9b\x01\n" +
-	"\fManifestMeta\x12\x1f\n" +
-	"\vnarinfo_url\x18\x01 \x01(\tR\n" +
-	"narinfoUrl\x12%\n" +
-	"\anarinfo\x18\x02 \x01(\v2\v.pb.NarInfoR\anarinfo\x12\x1c\n" +
-	"\tgenerator\x18\n" +
-	" \x01(\tR\tgenerator\x12%\n" +
-	"\x0egenerated_time\x18\v \x01(\x03R\rgeneratedTimeB\x18Z\x16github.com/dnr/styx/pbb\x06proto3"
+	" \x01(\v2\x10.pb.ManifestMetaR\x04metaB\x18Z\x16github.com/dnr/styx/pbb\x06proto3"
 
 var (
 	file_manifest_proto_rawDescOnce sync.Once
@@ -191,24 +115,22 @@ func file_manifest_proto_rawDescGZIP() []byte {
 	return file_manifest_proto_rawDescData
 }
 
-var file_manifest_proto_msgTypes = make([]protoimpl.MessageInfo, 2)
+var file_manifest_proto_msgTypes = make([]protoimpl.MessageInfo, 1)
 var file_manifest_proto_goTypes = []any{
 	(*Manifest)(nil),     // 0: pb.Manifest
-	(*ManifestMeta)(nil), // 1: pb.ManifestMeta
-	(*GlobalParams)(nil), // 2: pb.GlobalParams
-	(*Entry)(nil),        // 3: pb.Entry
-	(*NarInfo)(nil),      // 4: pb.NarInfo
+	(*GlobalParams)(nil), // 1: pb.GlobalParams
+	(*Entry)(nil),        // 2: pb.Entry
+	(*ManifestMeta)(nil), // 3: pb.ManifestMeta
 }
 var file_manifest_proto_depIdxs = []int32{
-	2, // 0: pb.Manifest.params:type_name -> pb.GlobalParams
-	3, // 1: pb.Manifest.entries:type_name -> pb.Entry
-	1, // 2: pb.Manifest.meta:type_name -> pb.ManifestMeta
-	4, // 3: pb.ManifestMeta.narinfo:type_name -> pb.NarInfo
-	4, // [4:4] is the sub-list for method output_type
-	4, // [4:4] is the sub-list for method input_type
-	4, // [4:4] is the sub-list for extension type_name
-	4, // [4:4] is the sub-list for extension extendee
-	0, // [0:4] is the sub-list for field type_name
+	1, // 0: pb.Manifest.params:type_name -> pb.GlobalParams
+	2, // 1: pb.Manifest.entries:type_name -> pb.Entry
+	3, // 2: pb.Manifest.meta:type_name -> pb.ManifestMeta
+	3, // [3:3] is the sub-list for method output_type
+	3, // [3:3] is the sub-list for method input_type
+	3, // [3:3] is the sub-list for extension type_name
+	3, // [3:3] is the sub-list for extension extendee
+	0, // [0:3] is the sub-list for field type_name
 }
 
 func init() { file_manifest_proto_init() }
@@ -216,16 +138,16 @@ func file_manifest_proto_init() {
 	if File_manifest_proto != nil {
 		return
 	}
-	file_params_proto_init()
 	file_entry_proto_init()
-	file_narinfo_proto_init()
+	file_manifest_meta_proto_init()
+	file_params_proto_init()
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_manifest_proto_rawDesc), len(file_manifest_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   2,
+			NumMessages:   1,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

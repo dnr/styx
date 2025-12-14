@@ -3,6 +3,8 @@ syntax = "proto3";
 package pb;
 option go_package = "github.com/dnr/styx/pb";
 
+import "manifest_meta.proto";
+
 enum EntryType {
   UNKNOWN = 0;
   REGULAR = 1;
@@ -28,4 +30,6 @@ message Entry {
   int32 stats_present_chunks = 101;
   int32 stats_present_blocks = 102;
   repeated string debug_digests = 103;
+  // Copy of manfest meta for chunked manifests so we can get it without indirection
+  ManifestMeta manifest_meta = 200;
 }

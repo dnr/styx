@@ -32,9 +32,13 @@ with lib;
 
     (mkIf (cfg.enable || cfg.enableNixSettings) {
       nix.settings = {
-        # Add "?styx=1" to default substituter.
-        # TODO: can we do this in overlay style to filter the previous value?
-        substituters = mkForce [ "https://cache.nixos.org/?styx=1" ];
+        substituters = mkForce [
+          # Add "?styx=1" to default substituter.
+          # TODO: can we do this in overlay style to filter the previous value?
+          "https://cache.nixos.org/?styx=1"
+          # styx serves narinfo on localhost for fods only
+          "http://localhost:7444/?styx=1"
+        ];
         styx-ondemand = [ ];
         styx-materialize = [ ];
       };

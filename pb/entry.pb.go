@@ -92,8 +92,10 @@ type Entry struct {
 	StatsPresentChunks int32    `protobuf:"varint,101,opt,name=stats_present_chunks,json=statsPresentChunks,proto3" json:"stats_present_chunks,omitempty"`
 	StatsPresentBlocks int32    `protobuf:"varint,102,opt,name=stats_present_blocks,json=statsPresentBlocks,proto3" json:"stats_present_blocks,omitempty"`
 	DebugDigests       []string `protobuf:"bytes,103,rep,name=debug_digests,json=debugDigests,proto3" json:"debug_digests,omitempty"`
-	unknownFields      protoimpl.UnknownFields
-	sizeCache          protoimpl.SizeCache
+	// Copy of manfest meta for chunked manifests so we can get it without indirection
+	ManifestMeta  *ManifestMeta `protobuf:"bytes,200,opt,name=manifest_meta,json=manifestMeta,proto3" json:"manifest_meta,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *Entry) Reset() {
@@ -210,11 +212,18 @@ func (x *Entry) GetDebugDigests() []string {
 	return nil
 }
 
+func (x *Entry) GetManifestMeta() *ManifestMeta {
+	if x != nil {
+		return x.ManifestMeta
+	}
+	return nil
+}
+
 var File_entry_proto protoreflect.FileDescriptor
 
 const file_entry_proto_rawDesc = "" +
 	"\n" +
-	"\ventry.proto\x12\x02pb\"\xa6\x03\n" +
+	"\ventry.proto\x12\x02pb\x1a\x13manifest_meta.proto\"\xde\x03\n" +
 	"\x05Entry\x12\x12\n" +
 	"\x04path\x18\x01 \x01(\tR\x04path\x12!\n" +
 	"\x04type\x18\x02 \x01(\x0e2\r.pb.EntryTypeR\x04type\x12\x12\n" +
@@ -231,7 +240,8 @@ const file_entry_proto_rawDesc = "" +
 	"\x11stats_inline_data\x18d \x01(\x05R\x0fstatsInlineData\x120\n" +
 	"\x14stats_present_chunks\x18e \x01(\x05R\x12statsPresentChunks\x120\n" +
 	"\x14stats_present_blocks\x18f \x01(\x05R\x12statsPresentBlocks\x12#\n" +
-	"\rdebug_digests\x18g \x03(\tR\fdebugDigests*A\n" +
+	"\rdebug_digests\x18g \x03(\tR\fdebugDigests\x126\n" +
+	"\rmanifest_meta\x18\xc8\x01 \x01(\v2\x10.pb.ManifestMetaR\fmanifestMeta*A\n" +
 	"\tEntryType\x12\v\n" +
 	"\aUNKNOWN\x10\x00\x12\v\n" +
 	"\aREGULAR\x10\x01\x12\r\n" +
@@ -253,16 +263,18 @@ func file_entry_proto_rawDescGZIP() []byte {
 var file_entry_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
 var file_entry_proto_msgTypes = make([]protoimpl.MessageInfo, 1)
 var file_entry_proto_goTypes = []any{
-	(EntryType)(0), // 0: pb.EntryType
-	(*Entry)(nil),  // 1: pb.Entry
+	(EntryType)(0),       // 0: pb.EntryType
+	(*Entry)(nil),        // 1: pb.Entry
+	(*ManifestMeta)(nil), // 2: pb.ManifestMeta
 }
 var file_entry_proto_depIdxs = []int32{
 	0, // 0: pb.Entry.type:type_name -> pb.EntryType
-	1, // [1:1] is the sub-list for method output_type
-	1, // [1:1] is the sub-list for method input_type
-	1, // [1:1] is the sub-list for extension type_name
-	1, // [1:1] is the sub-list for extension extendee
-	0, // [0:1] is the sub-list for field type_name
+	2, // 1: pb.Entry.manifest_meta:type_name -> pb.ManifestMeta
+	2, // [2:2] is the sub-list for method output_type
+	2, // [2:2] is the sub-list for method input_type
+	2, // [2:2] is the sub-list for extension type_name
+	2, // [2:2] is the sub-list for extension extendee
+	0, // [0:2] is the sub-list for field type_name
 }
 
 func init() { file_entry_proto_init() }
@@ -270,6 +282,7 @@ func file_entry_proto_init() {
 	if File_entry_proto != nil {
 		return
 	}
+	file_manifest_meta_proto_init()
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{

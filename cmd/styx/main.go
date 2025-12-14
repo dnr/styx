@@ -106,7 +106,11 @@ func withManifesterConfig(c *cobra.Command) runE {
 
 	c.Flags().StringVar(&cfg.Bind, "bind", ":7420", "address to listen on")
 	c.Flags().StringArrayVar(&cfg.AllowedUpstreams, "allowed_upstream",
-		[]string{"cache.nixos.org"}, "allowed upstream binary caches")
+		[]string{
+			"cache.nixos.org",
+			"releases.nixos.org",
+			"channels.nixos.org",
+		}, "allowed upstream binary caches or tarball sources")
 	c.Flags().IntVar(&cfg.ChunkDiffZstdLevel, "chunk_diff_zstd_level", 3, "encoder level for chunk diffs")
 	c.Flags().IntVar(&cfg.ChunkDiffParallel, "chunk_diff_parallel", 60, "parallelism for loading chunks for diff")
 
@@ -353,6 +357,7 @@ func main() {
 				)
 			},
 		),
+		tarballCmd,
 		cmd(
 			&cobra.Command{
 				Use:   "gc",

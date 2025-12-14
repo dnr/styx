@@ -1,0 +1,18 @@
+syntax = "proto3";
+
+package pb;
+option go_package = "github.com/dnr/styx/pb";
+
+import "narinfo.proto";
+
+message ManifestMeta {
+  // meta info for what this manifest was generated from
+  string narinfo_url = 1;   // url that narinfo was fetched from
+  NarInfo narinfo = 2;      // parsed or generated narinfo (includes references, signatures, etc.)
+
+  string generic_tarball_original = 3; // generic tarball origin and final url
+  string generic_tarball_resolved = 4;
+
+  string generator = 10;     // software version of generator
+  int64 generated_time = 11; // timestamp when this was generated (unix seconds)
+}

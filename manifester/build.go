@@ -32,6 +32,12 @@ import (
 	"github.com/dnr/styx/pb"
 )
 
+const (
+	// Build modes
+	ModeNar            = "" // default
+	ModeGenericTarball = "generic-tarball"
+)
+
 type (
 	BuildArgs struct {
 		SmallFileCutoff int
@@ -86,6 +92,7 @@ type (
 
 	ManifestBuildRes struct {
 		CacheKey string // path relative to ManifestCachePath
+		Sph      string
 		Bytes    []byte
 	}
 )
@@ -140,6 +147,23 @@ func (b *ManifestBuilder) ClearStats() {
 
 func (b *ManifestBuilder) Build(
 	ctx context.Context,
+	buildMode, upstream, storePathHash string,
+	shardTotal, shardIndex int,
+	useLocalStoreDump string,
+	writeBuildRoot bool,
+) (*ManifestBuildRes, error) {
+	switch buildMode {
+	case ModeNar:
+		return b.BuildFromNar(ctx, upstream, storePathHash, shardTotal, shardIndex, useLocalStoreDump, writeBuildRoot)
+	case ModeGenericTarball:
+		return b.BuildFromTarball(ctx, upstream, shardTotal, shardIndex, useLocalStoreDump, writeBuildRoot)
+	default:
+		return nil, fmt.Errorf("unknown build mode %q", buildMode)
+	}
+}
+
+func (b *ManifestBuilder) BuildFromNar(
+	ctx context.Context,
 	upstream, storePathHash string,
 	shardTotal, shardIndex int,
 	useLocalStoreDump string,
@@ -165,8 +189,7 @@ func (b *ManifestBuilder) Build(
 		return nil, fmt.Errorf("%w: upstream http for %s: %s", ErrReq, narinfoUrl, res.Status)
 	}
 
-	var rawNarinfo bytes.Buffer
-	ni, err := narinfo.Parse(io.TeeReader(res.Body, &rawNarinfo))
+	ni, err := narinfo.Parse(res.Body)
 	if err != nil {
 		return nil, fmt.Errorf("%w: narinfo parse for %s: %w", ErrReq, narinfoUrl, err)
 	}
@@ -254,7 +277,7 @@ func (b *ManifestBuilder) Build(
 		ShardTotal:      shardTotal,
 		ShardIndex:      shardIndex,
 	}
-	manifest, err := b.BuildFromNar(ctx, args, io.TeeReader(narOut, narHasher))
+	manifest, err := b.buildFromNar(ctx, args, io.TeeReader(narOut, narHasher))
 	if err != nil {
 		return nil, fmt.Errorf("%w: manifest generation error: %w", ErrInternal, err)
 	}
@@ -321,8 +344,8 @@ func (b *ManifestBuilder) Build(
 	// turn into entry (maybe chunk)
 
 	manifestArgs := BuildArgs{SmallFileCutoff: SmallManifestCutoff}
-	path := common.ManifestContext + "/" + path.Base(ni.StorePath)
-	entry, err := b.ManifestAsEntry(ctx, &manifestArgs, path, manifest)
+	entPath := common.ManifestContext + "/" + path.Base(ni.StorePath)
+	entry, err := b.ManifestAsEntry(ctx, &manifestArgs, entPath, manifest)
 	if err != nil {
 		return nil, fmt.Errorf("%w: make manifest entry error: %w", ErrInternal, err)
 	}
@@ -380,11 +403,12 @@ func (b *ManifestBuilder) Build(
 
 	return &ManifestBuildRes{
 		CacheKey: cacheKey,
+		Sph:      storePathHash,
 		Bytes:    cmpSb,
 	}, nil
 }
 
-func (b *ManifestBuilder) BuildFromNar(ctx context.Context, args *BuildArgs, r io.Reader) (*pb.Manifest, error) {
+func (b *ManifestBuilder) buildFromNar(ctx context.Context, args *BuildArgs, r io.Reader) (*pb.Manifest, error) {
 	m := &pb.Manifest{
 		Params:          b.params,
 		SmallFileCutoff: int32(args.SmallFileCutoff),
@@ -425,6 +449,9 @@ func (b *ManifestBuilder) ManifestAsEntry(ctx context.Context, args *BuildArgs, 
 		entry.InlineData = mb
 		return entry, nil
 	}
+
+	// put copy of manifest meta inline in chunked entry
+	entry.ManifestMeta = manifest.Meta
 
 	egCtx := errgroup.WithContext(ctx)
 	entry.Digests, err = b.chunkData(egCtx, args, int64(len(mb)), shift.ManifestChunkShift, bytes.NewReader(mb))

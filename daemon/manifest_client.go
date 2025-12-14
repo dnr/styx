@@ -30,6 +30,17 @@ func (s *Server) getManifestAndBuildImage(ctx context.Context, req *MountReq) (*
 		return nil, nil, err
 	}
 
+	// handle generic tarball manifests that are being substituted from our fake binary cache
+	if strings.Contains(req.Upstream, fakeCacheBind) {
+		data, ok := s.fakeBinaryCache.Get(sphStr)
+		if !ok {
+			return nil, nil, fmt.Errorf("couldn't find upstream for %s; re-run 'styx tarball'", sphStr)
+		}
+		nreq := *req
+		nreq.Upstream = data.upstream
+		req = &nreq
+	}
+
 	// use a separate "sph" for the manifest itself (a single entry). only used if manifest is chunked.
 	manifestSph := makeManifestSph(sph)
 	manifestSphPrefix := SphPrefixFromBytes(manifestSph[:])
@@ -166,9 +177,8 @@ func (s *Server) getManifestFromManifester(ctx context.Context, upstream, sph st
 	}
 
 	// not found cached, request it
-	u := strings.TrimSuffix(s.p().params.ManifesterUrl, "/") + manifester.ManifestPath
 	s.stats.manifestReqs.Add(1)
-	b, err := s.getNewManifest(ctx, u, mReq, narSize)
+	b, err := s.getNewManifest(ctx, mReq, narSize)
 	if err != nil {
 		s.stats.manifestErrs.Add(1)
 		return nil, err
@@ -176,7 +186,9 @@ func (s *Server) getManifestFromManifester(ctx context.Context, upstream, sph st
 	return b, nil
 }
 
-func (s *Server) getNewManifest(ctx context.Context, url string, req manifester.ManifestReq, narSize int64) ([]byte, error) {
+func (s *Server) getNewManifest(ctx context.Context, req manifester.ManifestReq, narSize int64) ([]byte, error) {
+	url := strings.TrimSuffix(s.p().params.ManifesterUrl, "/") + manifester.ManifestPath
+
 	start := time.Now()
 
 	shardBy := s.p().params.ShardManifestBytes

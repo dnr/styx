@@ -10,6 +10,8 @@ const (
 	manifestSlabPrefix = "_manifests_"
 
 	isManifestPrefix = "M/"
+
+	fakeCacheBind = "localhost:7444"
 )
 
 var (
