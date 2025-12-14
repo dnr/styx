@@ -28,6 +28,7 @@
   nixpkgs.config.allowUnfree = true;
   nixpkgs.overlays = [
     (import ./overlay-xcursor.nix)
+    (import ./overlay-v4l2loopback.nix)
   ];
 
   environment.systemPackages =
