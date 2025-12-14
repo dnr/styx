@@ -67,6 +67,7 @@ type (
 
 	TarballReq struct {
 		UpstreamUrl string
+		Shards      int
 	}
 	TarballResp struct {
 		ResolvedUrl   string

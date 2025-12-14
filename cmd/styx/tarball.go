@@ -17,6 +17,7 @@ import (
 
 type tarballArgs struct {
 	outlink string
+	shards  int
 }
 
 var tarballCmd = cmd(
@@ -29,6 +30,7 @@ var tarballCmd = cmd(
 	func(c *cobra.Command) runE {
 		var args tarballArgs
 		c.Flags().StringVarP(&args.outlink, "out-link", "o", "", "symlink this to output and register as nix root")
+		c.Flags().IntVar(&args.shards, "shards", 0, "split up manifesting")
 		return storer(&args)
 	},
 	func(c *cobra.Command, args []string) error {
@@ -39,6 +41,7 @@ var tarballCmd = cmd(
 		var resp daemon.TarballResp
 		status, err := cli.Call(daemon.TarballPath, &daemon.TarballReq{
 			UpstreamUrl: args[0],
+			Shards:      targs.shards,
 		}, &resp)
 		if err != nil {
 			fmt.Println("call error:", err)

@@ -47,6 +47,7 @@ rec {
   };
   staticConsts = {
     "common.XzBin" = "${xzStaticBin}/bin/xz";
+    # TODO: we should put gzip in here for tarballs
     # GzipBin is not used by manifester or differ, only local
     "common.Version" = version;
   };

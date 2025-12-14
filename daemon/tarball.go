@@ -80,7 +80,7 @@ func (s *Server) handleTarballReq(ctx context.Context, r *TarballReq) (*TarballR
 		DigestBits: int(cdig.Bits),
 		// SmallFileCutoff: s.cfg.SmallFileCutoff,
 	}
-	envelopeBytes, err := s.getNewManifest(ctx, mReq, 0)
+	envelopeBytes, err := s.getNewManifest(ctx, mReq, r.Shards)
 	if err != nil {
 		return nil, err
 	}
