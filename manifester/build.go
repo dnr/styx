@@ -92,6 +92,7 @@ type (
 
 	ManifestBuildRes struct {
 		CacheKey string // path relative to ManifestCachePath
+		Sph      string
 		Bytes    []byte
 	}
 )
@@ -155,7 +156,7 @@ func (b *ManifestBuilder) Build(
 	case ModeNar:
 		return b.BuildFromNar(ctx, upstream, storePathHash, shardTotal, shardIndex, useLocalStoreDump, writeBuildRoot)
 	case ModeGenericTarball:
-		return b.BuildFromTarball(ctx, upstream, shardTotal, shardIndex, writeBuildRoot)
+		return b.BuildFromTarball(ctx, upstream, shardTotal, shardIndex, useLocalStoreDump, writeBuildRoot)
 	default:
 		return nil, fmt.Errorf("unknown build mode %q", buildMode)
 	}
@@ -402,6 +403,7 @@ func (b *ManifestBuilder) BuildFromNar(
 
 	return &ManifestBuildRes{
 		CacheKey: cacheKey,
+		Sph:      storePathHash,
 		Bytes:    cmpSb,
 	}, nil
 }

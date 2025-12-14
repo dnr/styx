@@ -27,6 +27,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/ssm"
 	"github.com/nix-community/go-nix/pkg/narinfo/signature"
+	"github.com/nix-community/go-nix/pkg/storepath"
 	enumspb "go.temporal.io/api/enums/v1"
 	"go.temporal.io/api/workflowservice/v1"
 	"go.temporal.io/sdk/activity"
@@ -538,24 +539,48 @@ func (a *heavyActivities) HeavyBuild(ctx context.Context, req *buildReq) (retBui
 		}
 	}()
 
+	// fetch nixexprs
+
+	l.Info("fetching nixexprs...")
+	stage("NIXEXPRS")
+	nixexprs := makeNixexprsUrl(req.Args.Channel, req.RelID)
+	// even though we will eventually manifest this tarball, we don't need --name here because
+	// it doesn't affect the contents, only the store path.
+	cmd := exec.CommandContext(ctx, common.NixBin+"-prefetch-url", "--unpack", "--print-path", nixexprs)
+	out, err := cmd.Output()
+	if err != nil {
+		l.Error("fetch error", "error", err)
+		return nil, err
+	}
+	var nixexprsLocalPath string
+	for _, line := range strings.Split(string(out), "\n") {
+		if strings.HasPrefix(line, storepath.StoreDir) {
+			nixexprsLocalPath = line
+		}
+	}
+	if nixexprsLocalPath == "" {
+		l.Error("fetch error", "error", "missing local path")
+		return nil, fmt.Errorf("nix-prefetch-url output missing path")
+	}
+
 	// build
 
 	l.Info("building nixos...")
 	stage("BUILD")
 	// Note: global nix config has our nix cache as substituter so we can pull stuff back
 	// from a previous run
-	cmd := exec.CommandContext(ctx,
+	cmd = exec.CommandContext(ctx,
 		common.NixBin+"-build",
 		"-E", "(import <nixpkgs/nixos> { configuration = <styx/ci/config>; }).system",
 		"--no-out-link",
 		"--timeout", strconv.Itoa(int(time.Until(info.Deadline).Seconds())),
 		"--keep-going",
-		"-I", "nixpkgs="+makeNixexprsUrl(req.Args.Channel, req.RelID),
+		"-I", "nixpkgs="+nixexprsLocalPath,
 		"-I", "styx="+makeGithubUrl(req.Args.StyxRepo, req.StyxCommit),
 	)
 	cmd.Stderr = os.Stderr
 	cmd.Env = append(os.Environ(), "NIX_PATH=")
-	out, err := cmd.Output()
+	out, err = cmd.Output()
 	if err != nil {
 		l.Error("build error", "error", err)
 		return nil, err
@@ -590,7 +615,7 @@ func (a *heavyActivities) HeavyBuild(ctx context.Context, req *buildReq) (retBui
 	var toSign, toCopy bytes.Buffer
 	toManifest := make([]manifestReq, 0, len(pathInfo))
 	names := make([]string, 0, len(pathInfo))
-	sphForRoot := make([]string, 0, len(pathInfo))
+	sphForRoot := make([]string, 0, len(pathInfo)+1)
 
 	for piPath, pi := range pathInfo {
 		// add all to root record in case some of these filtered ones end up getting copied
@@ -676,7 +701,8 @@ func (a *heavyActivities) HeavyBuild(ctx context.Context, req *buildReq) (retBui
 	egCtx := errgroup.WithContext(ctx)
 	egCtx.SetLimit(runtime.NumCPU())
 	a.b.ClearStats()
-	mcacheForRoot := make([]string, len(toManifest))
+	mcacheForRoot := make([]string, len(toManifest)+1)
+	nixexprsI := len(toManifest)
 	for i, m := range toManifest {
 		m := m
 		egCtx.Go(func() error {
@@ -688,6 +714,16 @@ func (a *heavyActivities) HeavyBuild(ctx context.Context, req *buildReq) (retBui
 			return err
 		})
 	}
+	// manifest nixexprs too
+	egCtx.Go(func() error {
+		mres, err := a.b.Build(egCtx, manifester.ModeGenericTarball, nixexprs, "", 0, 0, nixexprsLocalPath, false)
+		if mres != nil {
+			mcacheForRoot[nixexprsI] = mres.CacheKey
+			// this is the only goroutine touching sphForRoot at this point so we can do this:
+			sphForRoot = append(sphForRoot, mres.Sph)
+		}
+		return err
+	})
 	if err := egCtx.Wait(); err != nil {
 		l.Error("manifest error", "error", err)
 		return nil, err

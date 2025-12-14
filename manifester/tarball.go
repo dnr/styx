@@ -38,81 +38,107 @@ func (b *ManifestBuilder) BuildFromTarball(
 	ctx context.Context,
 	upstream string,
 	shardTotal, shardIndex int,
+	useLocalStoreDump string,
 	writeBuildRoot bool,
 ) (*ManifestBuildRes, error) {
 	log.Println("manifest tarball", upstream)
 
-	// download body
-	var tarOut io.Reader
-	var decompress *exec.Cmd
-	// TODO: do the equivalent of useLocalStoreDump here since we have it locally in CI
-
-	// start := time.Now()
-	res, err := common.RetryHttpRequest(ctx, http.MethodGet, upstream, "", nil)
-	if err != nil {
-		return nil, fmt.Errorf("%w: tar http error for %s: %w", ErrReq, upstream, err)
-	}
-	defer res.Body.Close()
-	if res.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("%w: tar http status for %s: %s", ErrReq, upstream, res.Status)
-	}
-	tarOut = res.Body
-	resolved := res.Request.URL.String()
-
-	// log.Println("req", storePathHash, "downloading nar")
-
-	switch {
-	case strings.HasSuffix(resolved, ".gz") || strings.HasSuffix(resolved, ".tgz"):
-		decompress = exec.Command(common.GzipBin, "-d")
-	case strings.HasSuffix(resolved, ".xz") || strings.HasSuffix(resolved, ".txz"):
-		decompress = exec.Command(common.XzBin, "-d")
-	//case strings.HasSuffix(resolved, ".zst") || strings.HasSuffix(resolved, ".zstd"):
-	// TODO: use in-memory pipe?
-	// 	decompress = exec.Command(common.ZstdBin, "-d")
-	default:
-		decompress = nil
-	}
-	if decompress != nil {
-		decompress.Stdin = tarOut
-		tarOut, err = decompress.StdoutPipe()
-		if err != nil {
-			return nil, fmt.Errorf("%w: can't create stdout pipe: %w", ErrInternal, err)
+	var narOut io.Reader
+	var dump *exec.Cmd
+	var resolved string
+	if useLocalStoreDump != "" {
+		dump = exec.CommandContext(ctx, common.NixBin+"-store", "--dump", useLocalStoreDump)
+		var err error
+		if narOut, err = dump.StdoutPipe(); err != nil {
+			return nil, err
 		}
-		decompress.Stderr = os.Stderr
-		if err = decompress.Start(); err != nil {
-			return nil, fmt.Errorf("%w: nar decompress start error: %w", ErrInternal, err)
+		if err = dump.Start(); err != nil {
+			return nil, err
 		}
 		defer func() {
-			if decompress != nil {
-				decompress.Process.Kill()
-				decompress.Wait()
+			if dump != nil {
+				dump.Process.Kill()
+				dump.Wait()
 			}
 		}()
-	}
+		// assume caller already resolved redirections
+		resolved = upstream
+	} else {
+		// download body
+		var tarOut io.Reader
+		var decompress *exec.Cmd
+		// TODO: do the equivalent of useLocalStoreDump here since we have it locally in CI
 
-	// extract tar into memory
-	// TODO: allow passing in expected hash somehow
-	tarEnts, err := b.extractTar(tarOut)
-	if err != nil {
-		return nil, fmt.Errorf("%w: tar read error: %w", ErrInternal, err)
-	}
-
-	// ensure we got the whole thing
-	if decompress != nil {
-		if err = decompress.Wait(); err != nil {
-			return nil, fmt.Errorf("%w: nar decompress error: %w", ErrInternal, err)
+		// start := time.Now()
+		res, err := common.RetryHttpRequest(ctx, http.MethodGet, upstream, "", nil)
+		if err != nil {
+			return nil, fmt.Errorf("%w: tar http error for %s: %w", ErrReq, upstream, err)
 		}
-		decompress = nil
-		// elapsed := time.Since(start)
-		// ps := decompress.ProcessState
-		// log.Printf("downloaded %s [%d bytes] in %s [decmp %s user, %s sys]: %.3f MB/s",
-		// 	ni.URL, size, elapsed, ps.UserTime(), ps.SystemTime(),
-		// 	float64(size)/elapsed.Seconds()/1e6)
+		defer res.Body.Close()
+		if res.StatusCode != http.StatusOK {
+			return nil, fmt.Errorf("%w: tar http status for %s: %s", ErrReq, upstream, res.Status)
+		}
+		tarOut = res.Body
+		resolved = res.Request.URL.String()
+
+		// log.Println("req", storePathHash, "downloading nar")
+
+		switch {
+		case strings.HasSuffix(resolved, ".gz") || strings.HasSuffix(resolved, ".tgz"):
+			decompress = exec.Command(common.GzipBin, "-d")
+		case strings.HasSuffix(resolved, ".xz") || strings.HasSuffix(resolved, ".txz"):
+			decompress = exec.Command(common.XzBin, "-d")
+		//case strings.HasSuffix(resolved, ".zst") || strings.HasSuffix(resolved, ".zstd"):
+		// TODO: use in-memory pipe?
+		// 	decompress = exec.Command(common.ZstdBin, "-d")
+		default:
+			decompress = nil
+		}
+		if decompress != nil {
+			decompress.Stdin = tarOut
+			tarOut, err = decompress.StdoutPipe()
+			if err != nil {
+				return nil, fmt.Errorf("%w: can't create stdout pipe: %w", ErrInternal, err)
+			}
+			decompress.Stderr = os.Stderr
+			if err = decompress.Start(); err != nil {
+				return nil, fmt.Errorf("%w: nar decompress start error: %w", ErrInternal, err)
+			}
+			defer func() {
+				if decompress != nil {
+					decompress.Process.Kill()
+					decompress.Wait()
+				}
+			}()
+		}
+
+		// extract tar into memory
+		// TODO: allow passing in expected hash somehow
+		tarEnts, err := b.extractTar(tarOut)
+		if err != nil {
+			return nil, fmt.Errorf("%w: tar read error: %w", ErrInternal, err)
+		}
+
+		// ensure we got the whole thing
+		if decompress != nil {
+			if err = decompress.Wait(); err != nil {
+				return nil, fmt.Errorf("%w: nar decompress error: %w", ErrInternal, err)
+			}
+			decompress = nil
+			// elapsed := time.Since(start)
+			// ps := decompress.ProcessState
+			// log.Printf("downloaded %s [%d bytes] in %s [decmp %s user, %s sys]: %.3f MB/s",
+			// 	ni.URL, size, elapsed, ps.UserTime(), ps.SystemTime(),
+			// 	float64(size)/elapsed.Seconds()/1e6)
+		}
+
+		// construct nar from contents, write to hasher and builder
+		pr, pw := io.Pipe()
+		go b.writeNar(tarEnts, pw)
+		narOut = pr
 	}
 
-	// construct nar from contents, write to hasher and builder
-	pr, pw := io.Pipe()
-	go b.writeNar(tarEnts, pw)
+	// set up to hash nar
 
 	narHasher, _ := hash.New(multihash.SHA2_256)
 
@@ -122,9 +148,16 @@ func (b *ManifestBuilder) BuildFromTarball(
 		ShardTotal:      shardTotal,
 		ShardIndex:      shardIndex,
 	}
-	manifest, err := b.buildFromNar(ctx, args, io.TeeReader(pr, narHasher))
+	manifest, err := b.buildFromNar(ctx, args, io.TeeReader(narOut, narHasher))
 	if err != nil {
 		return nil, fmt.Errorf("%w: manifest generation error: %w", ErrInternal, err)
+	}
+
+	if dump != nil {
+		if err = dump.Wait(); err != nil {
+			return nil, fmt.Errorf("%w: nar dump error: %w", ErrInternal, err)
+		}
+		dump = nil
 	}
 
 	// turn tar hash into store path hash using nix's fod algorithm
@@ -221,11 +254,12 @@ func (b *ManifestBuilder) BuildFromTarball(
 		}
 	}
 
-	log.Println("manifest tarball", upstream, "added to cache as", cacheKey)
+	log.Println("manifest tarball", resolved, "added to cache as", cacheKey)
 	b.stats.Manifests.Add(1)
 
 	return &ManifestBuildRes{
 		CacheKey: cacheKey,
+		Sph:      sph,
 		Bytes:    cmpSb,
 	}, nil
 }
