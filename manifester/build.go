@@ -91,9 +91,10 @@ type (
 	}
 
 	ManifestBuildRes struct {
-		CacheKey string // path relative to ManifestCachePath
-		Sph      string
-		Bytes    []byte
+		CacheKey     string // path relative to ManifestCachePath
+		EtagCacheKey string
+		Sph          string
+		Bytes        []byte
 	}
 )
 

@@ -26,6 +26,7 @@ var _ NotFoundable = (*HttpError)(nil)
 // note: this does not close res.Body, caller should close it
 func HttpErrorFromRes(res *http.Response) HttpError {
 	body, _ := io.ReadAll(io.LimitReader(res.Body, 1024))
+	io.Copy(io.Discard, res.Body)
 	return NewHttpError(res.StatusCode, string(body))
 }
 

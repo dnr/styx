@@ -701,7 +701,7 @@ func (a *heavyActivities) HeavyBuild(ctx context.Context, req *buildReq) (retBui
 	egCtx := errgroup.WithContext(ctx)
 	egCtx.SetLimit(runtime.NumCPU())
 	a.b.ClearStats()
-	mcacheForRoot := make([]string, len(toManifest)+1)
+	mcacheForRoot := make([]string, len(toManifest)+2)
 	nixexprsI := len(toManifest)
 	for i, m := range toManifest {
 		m := m
@@ -719,6 +719,7 @@ func (a *heavyActivities) HeavyBuild(ctx context.Context, req *buildReq) (retBui
 		mres, err := a.b.Build(egCtx, manifester.ModeGenericTarball, nixexprs, "", 0, 0, nixexprsLocalPath, false)
 		if mres != nil {
 			mcacheForRoot[nixexprsI] = mres.CacheKey
+			mcacheForRoot[nixexprsI+1] = mres.EtagCacheKey
 			// this is the only goroutine touching sphForRoot at this point so we can do this:
 			sphForRoot = append(sphForRoot, mres.Sph)
 		}
@@ -727,6 +728,11 @@ func (a *heavyActivities) HeavyBuild(ctx context.Context, req *buildReq) (retBui
 	if err := egCtx.Wait(); err != nil {
 		l.Error("manifest error", "error", err)
 		return nil, err
+	}
+
+	// maybe missing EtagCacheKey
+	for mcacheForRoot[len(mcacheForRoot)-1] == "" {
+		mcacheForRoot = mcacheForRoot[:len(mcacheForRoot)-1]
 	}
 
 	// write root

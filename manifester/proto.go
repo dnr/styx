@@ -41,6 +41,9 @@ type (
 		DigestAlgo string
 		DigestBits int
 
+		// used for tarball cache lookups only
+		ETag string
+
 		// sharded manifesting (not in cache key, only shard 0 writes to cache)
 		ShardTotal int `json:",omitempty"`
 		ShardIndex int `json:",omitempty"`
@@ -91,14 +94,24 @@ type (
 )
 
 func (r *ManifestReq) CacheKey() string {
-	if r.BuildMode != "" {
-		panic("keys with BuildMode are not cachable")
+	if (r.BuildMode == ModeGenericTarball) != (r.ETag != "") {
+		panic("ETag must only be used with ModeGenericTarball")
+	} else if (r.BuildMode == ModeNar) != (r.StorePathHash != "") {
+		panic("StorePathHash must only be used with ModeNar")
 	}
 
 	h := sha256.New()
 	h.Write([]byte("styx-manifest-cache-v1\n"))
 	h.Write([]byte(fmt.Sprintf("u=%s\n", r.Upstream)))
-	h.Write([]byte(fmt.Sprintf("h=%s\n", r.StorePathHash)))
+	switch r.BuildMode {
+	case ModeNar:
+		h.Write([]byte(fmt.Sprintf("h=%s\n", r.StorePathHash)))
+	case ModeGenericTarball:
+		h.Write([]byte(fmt.Sprintf("m=%s\n", ModeGenericTarball)))
+		h.Write([]byte(fmt.Sprintf("e=%s\n", r.ETag)))
+	default:
+		panic("unknown BuildMode")
+	}
 	// use fixed 16 for compatibility, chunk size is now variable
 	h.Write([]byte(fmt.Sprintf("p=16:%s:%d\n", r.DigestAlgo, r.DigestBits)))
 	// note: SmallFileCutoff is not part of key, client may get different one from requested

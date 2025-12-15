@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -72,29 +73,52 @@ func (s *Server) handleTarballReq(ctx context.Context, r *TarballReq) (*TarballR
 		return nil, mwErr(http.StatusPreconditionFailed, "styx is not initialized, call 'styx init --params=...'")
 	}
 
+	// we only have a url at this point, not a sph. the url may redirect to a more permanent
+	// url. do a head request to resolve and get at least an etag if possible.
+	// TODO: consider "lockable tarball protocol"
+	res, err := common.RetryHttpRequest(ctx, http.MethodHead, r.UpstreamUrl, "", nil)
+	if err != nil {
+		return nil, err
+	}
+	io.Copy(io.Discard, res.Body)
+	res.Body.Close()
+
+	resolved := res.Request.URL.String()
+
 	// use generic tarball build mode
 	mReq := manifester.ManifestReq{
-		Upstream:   r.UpstreamUrl,
+		Upstream:   resolved,
 		BuildMode:  manifester.ModeGenericTarball,
 		DigestAlgo: cdig.Algo,
 		DigestBits: int(cdig.Bits),
-		// SmallFileCutoff: s.cfg.SmallFileCutoff,
 	}
-	envelopeBytes, err := s.getNewManifest(ctx, mReq, r.Shards)
-	if err != nil {
-		return nil, err
+
+	var envelopeBytes []byte
+
+	// if we have an etag we can try a cache lookup
+	if etag := res.Header.Get("Etag"); etag != "" {
+		// we have an etag, we can try a cache lookup
+		mReq.ETag = etag
+		envelopeBytes, _ = s.p().mcread.Get(ctx, mReq.CacheKey(), nil)
+		mReq.ETag = ""
+	}
+
+	// fall back to asking manifester
+	if envelopeBytes == nil {
+		envelopeBytes, err = s.getNewManifest(ctx, mReq, r.Shards)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	// verify signature and params
-	entry, smParams, err := common.VerifyMessageAsEntry(s.p().keys, common.ManifestContext, envelopeBytes)
+	entry, _, err := common.VerifyMessageAsEntry(s.p().keys, common.ManifestContext, envelopeBytes)
 	if err != nil {
 		return nil, err
-	} else if smParams.GetDigestBits() != cdig.Bits || smParams.GetDigestAlgo() != cdig.Algo {
-		return nil, fmt.Errorf("chunked manifest global params mismatch")
 	}
 
-	// TODO: we should check the envelope context against what we asked for. but we don't know
-	// the sph of what we asked for, and we don't even know the resolved url. so we can't
+	// TODO: we should check the envelope context against what we asked for, but we don't know
+	// the sph of what we asked for, we either know an etag (md5sum) or nothing. so we can't
 	// really check any more than the signature above.
 
 	// get the narinfo that the manifester produced so we can add it to our fake cache.
@@ -136,7 +160,7 @@ func (s *Server) handleTarballReq(ctx context.Context, r *TarballReq) (*TarballR
 	}
 
 	sph := nipb.StorePath[11:43]
-	// TODO: prune cache once in a while
+	// TODO: prune this cache once in a while
 	s.fakeBinaryCache.Put(sph, binaryCacheData{
 		narinfo:  []byte(ni.String()),
 		upstream: mm.GenericTarballResolved,

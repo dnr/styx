@@ -45,10 +45,20 @@ func (b *ManifestBuilder) BuildFromTarball(
 
 	var narOut io.Reader
 	var dump *exec.Cmd
-	var resolved string
+	var resolved, etag string
 	if useLocalStoreDump != "" {
+		// we need to do a head request to resolve redirections and get the etag if present.
+		res, err := common.RetryHttpRequest(ctx, http.MethodHead, upstream, "", nil)
+		if err != nil {
+			return nil, fmt.Errorf("%w: tar http error for %s: %w", ErrReq, upstream, err)
+		}
+		io.Copy(io.Discard, res.Body)
+		res.Body.Close()
+		resolved = res.Request.URL.String()
+		etag = res.Header.Get("Etag")
+
+		// get the actual data from the local fs
 		dump = exec.CommandContext(ctx, common.NixBin+"-store", "--dump", useLocalStoreDump)
-		var err error
 		if narOut, err = dump.StdoutPipe(); err != nil {
 			return nil, err
 		}
@@ -61,15 +71,11 @@ func (b *ManifestBuilder) BuildFromTarball(
 				dump.Wait()
 			}
 		}()
-		// assume caller already resolved redirections
-		resolved = upstream
 	} else {
 		// download body
 		var tarOut io.Reader
 		var decompress *exec.Cmd
-		// TODO: do the equivalent of useLocalStoreDump here since we have it locally in CI
 
-		// start := time.Now()
 		res, err := common.RetryHttpRequest(ctx, http.MethodGet, upstream, "", nil)
 		if err != nil {
 			return nil, fmt.Errorf("%w: tar http error for %s: %w", ErrReq, upstream, err)
@@ -80,6 +86,7 @@ func (b *ManifestBuilder) BuildFromTarball(
 		}
 		tarOut = res.Body
 		resolved = res.Request.URL.String()
+		etag = res.Header.Get("Etag")
 
 		// log.Println("req", storePathHash, "downloading nar")
 
@@ -125,11 +132,6 @@ func (b *ManifestBuilder) BuildFromTarball(
 				return nil, fmt.Errorf("%w: nar decompress error: %w", ErrInternal, err)
 			}
 			decompress = nil
-			// elapsed := time.Since(start)
-			// ps := decompress.ProcessState
-			// log.Printf("downloaded %s [%d bytes] in %s [decmp %s user, %s sys]: %.3f MB/s",
-			// 	ni.URL, size, elapsed, ps.UserTime(), ps.SystemTime(),
-			// 	float64(size)/elapsed.Seconds()/1e6)
 		}
 
 		// construct nar from contents, write to hasher and builder
@@ -139,7 +141,6 @@ func (b *ManifestBuilder) BuildFromTarball(
 	}
 
 	// set up to hash nar
-
 	narHasher, _ := hash.New(multihash.SHA2_256)
 
 	// TODO: make args configurable again (hashed in manifest cache key)
@@ -225,6 +226,7 @@ func (b *ManifestBuilder) BuildFromTarball(
 	if err != nil {
 		return nil, fmt.Errorf("%w: manifest cache write error: %w", ErrInternal, err)
 	}
+
 	if cmpSb == nil {
 		// already exists in cache, need to compress ourselves
 		zp := common.GetZstdCtxPool()
@@ -233,6 +235,23 @@ func (b *ManifestBuilder) BuildFromTarball(
 		cmpSb, err = z.Compress(nil, sb)
 		if err != nil {
 			return nil, fmt.Errorf("%w: manifest compress error: %w", ErrInternal, err)
+		}
+	}
+
+	// write etag cache entry
+	var etagCacheKey string
+	if etag != "" {
+		etagCacheKey = (&ManifestReq{
+			Upstream:   resolved,
+			BuildMode:  ModeGenericTarball,
+			ETag:       etag,
+			DigestAlgo: cdig.Algo,
+			DigestBits: int(cdig.Bits),
+		}).CacheKey()
+		log.Println("writing etag manifest cache as", etagCacheKey)
+		_, err := b.cs.PutIfNotExists(ctx, ManifestCachePath, etagCacheKey, sb)
+		if err != nil {
+			return nil, fmt.Errorf("%w: etag manifest cache write error: %w", ErrInternal, err)
 		}
 	}
 
@@ -246,6 +265,9 @@ func (b *ManifestBuilder) BuildFromTarball(
 			},
 			Manifest: []string{cacheKey},
 		}
+		if etagCacheKey != "" {
+			broot.Manifest = append(broot.Manifest, etagCacheKey)
+		}
 		if brdata, err := proto.Marshal(broot); err == nil {
 			brkey := strings.Join([]string{"manifest", btime.Format(time.RFC3339), "m", "m"}, "@")
 			if _, err = b.cs.PutIfNotExists(ctx, BuildRootPath, brkey, brdata); err != nil {
@@ -258,9 +280,10 @@ func (b *ManifestBuilder) BuildFromTarball(
 	b.stats.Manifests.Add(1)
 
 	return &ManifestBuildRes{
-		CacheKey: cacheKey,
-		Sph:      sph,
-		Bytes:    cmpSb,
+		CacheKey:     cacheKey,
+		EtagCacheKey: etagCacheKey,
+		Sph:          sph,
+		Bytes:        cmpSb,
 	}, nil
 }
 
