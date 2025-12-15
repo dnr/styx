@@ -2,12 +2,15 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
+	"syscall"
 
 	"github.com/dnr/styx/common/client"
 	"github.com/dnr/styx/daemon"
@@ -50,34 +53,46 @@ var tarballCmd = cmd(
 			fmt.Println("status:", status)
 		}
 
-		// create and add derivation for the store path
-		drvPath, err := instantiateFod(resp.Name, resp.StorePathHash, resp.NarHash, resp.NarHashAlgo)
+		// if running in sudo, try to run commands as original user
+		var spa syscall.SysProcAttr
+		uid, erru := strconv.Atoi(os.Getenv("SUDO_UID"))
+		gid, errg := strconv.Atoi(os.Getenv("SUDO_GID"))
+		if erru == nil && errg == nil {
+			spa.Credential = &syscall.Credential{Uid: uint32(uid), Gid: uint32(gid)}
+		}
+
+		// we want to tell nix to just "substitute this", but it needs a derivation, so
+		// construct a minimal derivation. this is not buildable, it just has the right
+		// store path and is a FOD. the styx daemon acts as a "binary cache" for this store
+		// path, so nix will ask styx to do the substitution.
+		b, err := makeFodJson(resp.Name, resp.StorePathHash, resp.NarHash, resp.NarHashAlgo)
+		if err != nil {
+			return err
+		}
+
+		// add derivation to store
+		drvPath, err := addJsonDerivation(c.Context(), &spa, b)
 		if err != nil {
 			return err
 		}
 
 		// realize the derivation
-		cmd := exec.Command("nix-store", "--realise", drvPath)
+		cmd := exec.CommandContext(c.Context(), "nix-build", drvPath, "--no-fallback")
 		if targs.outlink != "" {
-			cmd.Args = append(cmd.Args, "--add-root", targs.outlink)
+			cmd.Args = append(cmd.Args, "--out-link", targs.outlink)
+		} else {
+			cmd.Args = append(cmd.Args, "--no-out-link")
 		}
 		cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
+		cmd.SysProcAttr = &spa
 		return cmd.Run()
 	},
 )
 
-func instantiateFod(name, sphStr, narHash, narHashAlgo string) (string, error) {
-	// we want to tell nix to just "substitute this", but it needs a derivation, so
-	// construct a minimal derivation. this is not buildable, it just has the right
-	// store path and is a FOD. the styx daemon acts as a "binary cache" for this store
-	// path, so nix will ask styx to do the substitution.
-	b, err := makeFodJson(name, sphStr, narHash, narHashAlgo)
-	if err != nil {
-		return "", err
-	}
-
+func addJsonDerivation(ctx context.Context, spa *syscall.SysProcAttr, b []byte) (string, error) {
 	cmd := exec.Command("nix", "--extra-experimental-features", "nix-command", "derivation", "add")
 	cmd.Stdin = bytes.NewReader(b)
+	cmd.SysProcAttr = spa
 	drvPath, err := cmd.Output()
 	if err != nil {
 		return "", err
