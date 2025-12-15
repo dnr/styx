@@ -150,7 +150,7 @@ rec {
   };
 
   # for styx lambda manifester and chunk differ:
-  styx-lambda-image = pkgs.dockerTools.streamLayeredImage {
+  styx-lambda-image = pkgs.dockerTools.buildImage {
     name = "lambda";
     # TODO: can we make it run on arm?
     # architecture = "arm64";
@@ -165,7 +165,7 @@ rec {
   };
 
   # for light CI worker on non-AWS server (dd5):
-  charon-image = pkgs.dockerTools.streamLayeredImage {
+  charon-image = pkgs.dockerTools.buildImage {
     name = "charon-worker-light";
     contents = [
       pkgs.cacert

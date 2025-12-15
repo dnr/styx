@@ -12,11 +12,11 @@ repourl=$(tfget aws_ecr_repository.repo repository_url)
 skopeo --insecure-policy list-tags docker://$repourl >&/dev/null ||
   aws ecr get-login-password | skopeo login --username AWS --password-stdin ${repourl%%/*}
 
-script=$(nix-build --no-out-link -A styx-lambda-image)
-tag=$(basename $script | cut -c-12)
+img=$(nix-build --no-out-link -A styx-lambda-image)
+tag=$(basename $img | cut -c-12)
 
-$script | gzip --fast | skopeo --insecure-policy copy \
-  docker-archive:/dev/stdin \
+skopeo --insecure-policy copy \
+  docker-archive:$img \
   docker://$repourl:$tag
 
 export TF_VAR_manifester_image_tag="$tag"
