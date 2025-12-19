@@ -123,7 +123,7 @@ data "aws_ami" "nixos_x86_64" {
   most_recent = true
   filter {
     name   = "name"
-    values = ["nixos/25.05*"]
+    values = ["nixos/25.11*"]
   }
   filter {
     name   = "architecture"

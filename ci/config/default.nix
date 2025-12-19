@@ -26,128 +26,117 @@
   hardware.enableRedistributableFirmware = true;
   networking.networkmanager.enable = true;
   nixpkgs.config.allowUnfree = true;
-  nixpkgs.overlays = [
-    (import ./overlay-xcursor.nix)
-    (import ./overlay-v4l2loopback.nix)
+
+  environment.systemPackages = with pkgs; [
+
+    ascii
+    awscli2
+    bc
+    binutils-unwrapped
+    borgbackup
+    brotli
+    btrfs-progs
+    compsize
+    cryptsetup
+    curl
+    darktable
+    ddcutil
+    diffstat
+    diffutils
+    direnv
+    dmenu
+    docker
+    docker-compose
+    dragon-drop
+    dunst
+    easyeffects
+    evince
+    ffmpeg
+    file
+    gcc
+    gdb
+    gh
+    gimp
+    git
+    git-absorb
+    gnome-icon-theme
+    gnupg
+    go
+    gocryptfs
+    (google-chrome.override { speechd-minimal = snappy; }) # hack to avoid bringing in speech deps. non-redistributable?
+    guvcview
+    hdparm
+    hugin
+    imagemagick
+    jq
+    libnotify
+    libsecret
+    lm_sensors
+    lsof
+    ltrace
+    magic-wormhole
+    moreutils
+    mplayer
+    mpv
+    nix-direnv
+    nixos-option
+    nixpkgs-fmt
+    nodejs
+    notion
+    nvme-cli
+    obs-studio
+    openssh
+    openssl
+    opusTools
+    pavucontrol
+    pciutils
+    pipewire
+    protobuf
+    protoc-gen-go
+    psmisc
+    pulseaudio
+    pv
+    python3
+    redshift
+    ripgrep
+    rsync
+    screen
+    scrot
+    signal-desktop
+    skopeo
+    smem
+    socat
+    spacer
+    spotify # non-redistributable?
+    sqlite
+    starship
+    strace
+    sxiv
+    sysstat
+    tcpdump
+    terraform # non-redistributable?
+    tig
+    tree
+    unzip
+    usbutils
+    v4l-utils
+    vim
+    wget
+    wireguard-tools
+    wireplumber
+    xdotool
+    xosd
+    xsel
+    xsettingsd
+    xxd
+    xz
+    yt-dlp
+    zip
+    zoom-us # non-redistributable?
+    zoxide
+    zstd
+
   ];
-
-  environment.systemPackages =
-    with pkgs;
-    let
-      pythonWithMyPkgs = python3.withPackages (
-        pp: with pp; [
-          dbus-python
-          pyserial
-          requests
-          websocket_client
-        ]
-      );
-    in
-    [
-
-      ascii
-      bc
-      binutils-unwrapped
-      borgbackup
-      brotli
-      btrfs-progs
-      compsize
-      cryptsetup
-      curl
-      darktable
-      ddcutil
-      diffstat
-      diffutils
-      direnv
-      dmenu
-      docker
-      docker-compose
-      dunst
-      easyeffects
-      evince
-      ffmpeg
-      file
-      gdb
-      gh
-      gimp
-      git
-      git-absorb
-      gnome-icon-theme
-      gnupg
-      go
-      gocryptfs
-      (google-chrome.override { speechd-minimal = snappy; }) # hack to avoid bringing in speech deps. non-redistributable?
-      guvcview
-      hdparm
-      hugin
-      imagemagick
-      jq
-      libnotify
-      libsecret
-      lm_sensors
-      lsof
-      ltrace
-      magic-wormhole
-      moreutils
-      mplayer
-      mpv
-      nix-direnv
-      nixos-option
-      nixpkgs-fmt
-      nodejs
-      notion
-      nvme-cli
-      obs-studio
-      openssh
-      openssl
-      opusTools
-      pavucontrol
-      pciutils
-      pipewire
-      psmisc
-      pulseaudio
-      pv
-      pythonWithMyPkgs
-      redshift
-      ripgrep
-      rsync
-      screen
-      scrot
-      signal-desktop
-      smem
-      socat
-      spacer
-      spotify # non-redistributable?
-      sqlite
-      starship
-      strace
-      sxiv
-      sysstat
-      tcpdump
-      terraform # non-redistributable?
-      tig
-      tree
-      unzip
-      usbutils
-      v4l-utils
-      vim
-      wget
-      wireguard-tools
-      wireplumber
-      xdotool
-      xdragon
-      xosd
-      xsel
-      xsettingsd
-      xxd
-      xz
-      yt-dlp
-      zip
-      zoom-us # non-redistributable?
-      zoxide
-      zstd
-
-    ];
 
   services.fprintd.enable = true;
   services.fwupd.enable = true;
@@ -158,12 +147,12 @@
   fonts.packages = [
     pkgs.noto-fonts
     pkgs.noto-fonts-cjk-sans
-    pkgs.noto-fonts-emoji
-    pkgs.ubuntu_font_family
+    pkgs.noto-fonts-color-emoji
+    pkgs.ubuntu-classic
     pkgs.nerd-fonts.ubuntu-mono
   ];
 
   documentation.nixos.enable = false;
 
-  system.stateVersion = "25.05";
+  system.stateVersion = "25.11";
 }

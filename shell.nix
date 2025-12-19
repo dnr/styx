@@ -4,18 +4,17 @@
 pkgs.mkShell {
   buildInputs = with pkgs; [
     awscli2
-    erofs-utils
-    jq
+    #brotli.dev # for cbrotli
+    #erofs-utils
+    #gcc
     go
+    #gzip
+    jq
     protobuf
     protoc-gen-go
     skopeo
     terraform
     #xdelta
     #xz
-    #gzip
-    # for cbrotli:
-    #brotli.dev
-    #gcc
   ];
 }
