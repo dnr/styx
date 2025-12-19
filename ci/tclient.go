@@ -20,6 +20,10 @@ import (
 	"github.com/dnr/styx/common"
 )
 
+func getDataConverter() converter.DataConverter {
+	return converter.NewCodecDataConverter(converter.GetDefaultDataConverter(), zstdcodec{})
+}
+
 func getTemporalClient(ctx context.Context, paramSrc string) (client.Client, string, error) {
 	params, err := getParams(paramSrc)
 	if err != nil {
@@ -31,7 +35,7 @@ func getTemporalClient(ctx context.Context, paramSrc string) (client.Client, str
 	}
 	hostPort, namespace, apiKey := parts[0], parts[1], parts[2]
 
-	dc := converter.NewCodecDataConverter(converter.GetDefaultDataConverter(), zstdcodec{})
+	dc := getDataConverter()
 	fc := temporal.NewDefaultFailureConverter(temporal.DefaultFailureConverterOptions{DataConverter: dc})
 
 	co := client.Options{

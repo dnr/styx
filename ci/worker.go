@@ -75,13 +75,20 @@ type (
 	}
 
 	scaler struct {
-		cfg       WorkerConfig
-		ns        string
-		c         client.Client
-		notifyCh  chan struct{}
-		prev      int
-		asgcli    *autoscaling.Client
-		startTime time.Time // non-zero when we scale up asg
+		cfg        WorkerConfig
+		ns         string
+		c          client.Client
+		notifyCh   chan struct{}
+		prev       int
+		asgcli     *autoscaling.Client
+		startTime  time.Time // non-zero when we scale up asg
+		failedTime time.Time // non-zero after a failure
+	}
+
+	scalerInfo struct {
+		scheduled int
+		started   int
+		failed    bool
 	}
 
 	manifestReq struct {
@@ -103,6 +110,8 @@ const (
 	// gc
 	gcInterval = 7 * 24 * time.Hour
 	gcMaxAge   = 210 * 24 * time.Hour
+
+	memoKeyBuildFailed = "buildFailed"
 )
 
 var globalScaler atomic.Pointer[scaler]
@@ -148,7 +157,9 @@ func RunWorker(ctx context.Context, cfg WorkerConfig) error {
 		if err != nil {
 			return err
 		}
-		w = worker.New(c, heavyTaskQueue, worker.Options{})
+		w = worker.New(c, heavyTaskQueue, worker.Options{
+			MaxConcurrentActivityExecutionSize: 1,
+		})
 		s3cli, err := getS3Cli()
 		if err != nil {
 			return err
@@ -231,6 +242,9 @@ func ci(ctx workflow.Context, args *CiArgs) error {
 			Args:       args,
 			RelID:      args.LastRelID,
 			StyxCommit: args.LastStyxCommit,
+		})
+		workflow.UpsertMemo(ctx, map[string]any{
+			memoKeyBuildFailed: err != nil || bres.FakeError != "",
 		})
 		if err != nil {
 			l.Error("build error", "error", err)
@@ -345,28 +359,41 @@ func (s *scaler) run() {
 }
 
 func (s *scaler) iter() {
-	scheduled, started, err := s.getPending()
+	info, err := s.getInfo()
 	if err != nil {
 		log.Println("scaler getPending error:", err)
 		return
 	}
 
 	target := 0
-	if s.startTime.IsZero() {
-		if scheduled > 0 || started > 0 {
-			target = 1
-			s.startTime = time.Now()
+
+	if info.scheduled > 0 || info.started > 0 {
+		if info.started > 0 {
+			s.failedTime = time.Time{}
 		}
-	} else {
-		if scheduled > 0 || started > 0 {
-			target = 1
-			if started == 0 && time.Since(s.startTime) > buildStartTimeout {
+
+		target = 1
+
+		if s.startTime.IsZero() {
+			s.startTime = time.Now()
+		} else {
+			if info.started == 0 && time.Since(s.startTime) > buildStartTimeout {
 				log.Printf("heavy worker did not pick up task in %v, aborting", buildStartTimeout)
 				target = 0
 			}
 		}
-		if target == 0 {
-			s.startTime = time.Time{}
+	}
+
+	if target == 0 {
+		s.startTime = time.Time{}
+
+		if info.failed {
+			if s.failedTime.IsZero() {
+				s.failedTime = time.Now()
+			}
+			if time.Since(s.failedTime) < 20*time.Minute {
+				target = 1
+			}
 		}
 	}
 
@@ -376,7 +403,7 @@ func (s *scaler) iter() {
 	}
 }
 
-func (s *scaler) getPending() (int, int, error) {
+func (s *scaler) getInfo() (scalerInfo, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
@@ -385,27 +412,33 @@ func (s *scaler) getPending() (int, int, error) {
 		Query:     fmt.Sprintf(`WorkflowType = "%s" and ExecutionStatus = "Running"`, workflowType),
 	})
 	if err != nil {
-		return 0, 0, err
+		return scalerInfo{}, err
 	}
 
-	var scheduled, started int
+	var info scalerInfo
 	for _, ex := range res.Executions {
 		desc, err := s.c.DescribeWorkflowExecution(ctx, ex.Execution.WorkflowId, ex.Execution.RunId)
 		if err != nil {
-			return 0, 0, err
+			return scalerInfo{}, err
+		}
+		if p := desc.WorkflowExecutionInfo.GetMemo().GetFields()[memoKeyBuildFailed]; p != nil {
+			var failed bool
+			if getDataConverter().FromPayload(p, &failed) == nil {
+				info.failed = info.failed || failed
+			}
 		}
 		for _, act := range desc.PendingActivities {
 			if strings.Contains(strings.ToLower(act.ActivityType.Name), "heavy") {
 				switch act.State {
 				case enumspb.PENDING_ACTIVITY_STATE_SCHEDULED:
-					scheduled++
+					info.scheduled++
 				case enumspb.PENDING_ACTIVITY_STATE_STARTED:
-					started++
+					info.started++
 				}
 			}
 		}
 	}
-	return scheduled, started, nil
+	return info, nil
 }
 
 func (s *scaler) setSize(size int) {
