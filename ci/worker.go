@@ -608,7 +608,6 @@ func (a *heavyActivities) HeavyBuild(ctx context.Context, req *buildReq) (retBui
 		"-E", "(import <nixpkgs/nixos> { configuration = <styx/ci/config>; }).system",
 		"--no-out-link",
 		"--timeout", strconv.Itoa(int(time.Until(info.Deadline).Seconds())),
-		"--keep-going",
 		"-I", "nixpkgs="+nixexprsLocalPath,
 		"-I", "styx="+makeGithubUrl(req.Args.StyxRepo, req.StyxCommit),
 	)
