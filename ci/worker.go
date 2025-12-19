@@ -249,7 +249,8 @@ func ci(ctx workflow.Context, args *CiArgs) error {
 		if err != nil {
 			l.Error("build error", "error", err)
 			var deets *buildErrDetails
-			if appErr, ok := err.(*temporal.ApplicationError); ok {
+			var appErr *temporal.ApplicationError
+			if errors.As(err, &appErr) {
 				_ = appErr.Details(&deets)
 			}
 			ciNotify(ctx, &notifyReq{
