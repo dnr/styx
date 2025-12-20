@@ -154,5 +154,22 @@ func internalCmd() *cobra.Command {
 				return nil
 			},
 		),
+		cmd(
+			&cobra.Command{
+				Use:   "mcachekey",
+				Short: "print manifest cache key",
+				Args:  cobra.ExactArgs(2),
+			},
+			func(c *cobra.Command, args []string) error {
+				mReq := manifester.ManifestReq{
+					Upstream:      args[0],
+					StorePathHash: args[1],
+					DigestAlgo:    cdig.Algo,
+					DigestBits:    int(cdig.Bits),
+				}
+				log.Printf("req: %#v\nkey: %s\n", mReq, mReq.CacheKey())
+				return nil
+			},
+		),
 	)
 }
