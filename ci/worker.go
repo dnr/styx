@@ -656,7 +656,6 @@ func (a *heavyActivities) HeavyBuild(ctx context.Context, req *buildReq) (retBui
 
 		// filter out tiny build-specific stuff
 		if strings.Contains(piPath, "-nixos-system-") ||
-			strings.Contains(piPath, "-security-wrapper-") ||
 			strings.Contains(piPath, "-unit-") ||
 			strings.Contains(piPath, "-etc-") {
 			continue
