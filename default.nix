@@ -17,7 +17,7 @@ in
   },
 }:
 rec {
-  version = "0.0.12";
+  version = "0.0.13";
 
   baseArgs = {
     pname = "styx";
@@ -46,9 +46,8 @@ rec {
     "common.FilefragBin" = "${pkgs.e2fsprogs}/bin/filefrag";
   };
   staticConsts = {
+    "common.GzipBin" = "${gzipStaticBin}/bin/gzip";
     "common.XzBin" = "${xzStaticBin}/bin/xz";
-    # TODO: we should put gzip in here for tarballs
-    # GzipBin is not used by manifester or differ, only local
     "common.Version" = version;
   };
 
@@ -156,6 +155,11 @@ rec {
     name = "xz-binonly";
     src = pkgs.pkgsStatic.xz;
     installPhase = "mkdir -p $out/bin && cp $src/bin/xz $out/bin/";
+  };
+  gzipStaticBin = pkgs.stdenv.mkDerivation {
+    name = "gzip-binonly";
+    src = pkgs.pkgsStatic.gzip;
+    installPhase = "mkdir -p $out/bin && cp $src/bin/.gzip-wrapped $out/bin/gzip";
   };
 
   # for styx lambda manifester and chunk differ:
