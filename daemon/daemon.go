@@ -87,9 +87,6 @@ type (
 		// connect context for mount request to cachefiles request
 		mountCtxMap common.SimpleSyncMap[string, context.Context]
 
-		// local fake binary cache
-		fakeBinaryCache common.SimpleSyncMap[string, binaryCacheData]
-
 		// keeps track of pending diff/fetch state
 		// note: we open a read-only transaction inside of diffLock.
 		// therefore we must not try to lock diffLock while in a read or write tx.
@@ -127,11 +124,6 @@ type (
 		readFd, cacheFd int
 	}
 
-	binaryCacheData struct {
-		narinfo  []byte
-		upstream string
-	}
-
 	Config struct {
 		DevPath     string
 		CachePath   string
@@ -167,7 +159,6 @@ func NewServer(cfg Config) *Server {
 		presentMap:      *common.NewSimpleSyncMap[erofs.SlabLoc, struct{}](),
 		readKnownMap:    *common.NewSimpleSyncMap[erofs.SlabLoc, int](),
 		mountCtxMap:     *common.NewSimpleSyncMap[string, context.Context](),
-		fakeBinaryCache: *common.NewSimpleSyncMap[string, binaryCacheData](),
 		diffMap:         make(map[erofs.SlabLoc]reqOp),
 		recentReads:     make(map[string]*recentRead),
 		diffSem:         semaphore.NewWeighted(int64(cfg.Workers)),
@@ -278,6 +269,8 @@ func (s *Server) openDb() (err error) {
 		} else if _, err = tx.CreateBucketIfNotExists(catalogFBucket); err != nil {
 			return err
 		} else if _, err = tx.CreateBucketIfNotExists(catalogRBucket); err != nil {
+			return err
+		} else if _, err = tx.CreateBucketIfNotExists(fakeCacheBucket); err != nil {
 			return err
 		} else if err = checkSchemaVer(mb); err != nil {
 			return err

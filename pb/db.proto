@@ -60,3 +60,11 @@ message DbParams {
   DaemonParams params = 1;
   repeated string pubkey = 2;
 }
+
+// key: "fakecache" / <store path hash (nix base32)>
+// value:
+message FakeCacheData {
+  bytes narinfo = 1;
+  string upstream = 2;
+  int64 updated = 3;
+}

@@ -3,12 +3,14 @@ package daemon
 import (
 	"context"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"log"
 	"net"
 	"net/http"
 	"regexp"
+	"time"
 
 	"github.com/dnr/styx/common"
 	"github.com/dnr/styx/common/cdig"
@@ -17,10 +19,25 @@ import (
 	"github.com/nix-community/go-nix/pkg/hash"
 	"github.com/nix-community/go-nix/pkg/narinfo"
 	"github.com/nix-community/go-nix/pkg/nixbase32"
+	"go.etcd.io/bbolt"
 	"google.golang.org/protobuf/proto"
 )
 
 // local binary cache to serve narinfo
+
+var errNotFound = errors.New("not found")
+
+func (s *Server) getFakeCacheData(sphStr string) (*pb.FakeCacheData, error) {
+	var data pb.FakeCacheData
+	err := s.db.View(func(tx *bbolt.Tx) error {
+		v := tx.Bucket(fakeCacheBucket).Get([]byte(sphStr))
+		if v == nil {
+			return errNotFound
+		}
+		return proto.Unmarshal(v, &data)
+	})
+	return common.ValOrErr(&data, err)
+}
 
 func (s *Server) startFakeCacheServer() (err error) {
 	l, err := net.Listen("tcp", fakeCacheBind)
@@ -58,11 +75,11 @@ func (s *Server) getFakeNarinfo(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, http.StatusText(http.StatusMethodNotAllowed), http.StatusMethodNotAllowed)
 	} else if m := reNarinfoPath.FindStringSubmatch(r.URL.Path); m == nil {
 		http.NotFound(w, r)
-	} else if data, ok := s.fakeBinaryCache.Get(m[1]); !ok {
+	} else if data, err := s.getFakeCacheData(m[1]); err != nil {
 		http.NotFound(w, r)
 	} else {
 		w.Header().Set("Content-Type", "text/x-nix-narinfo")
-		w.Write(data.narinfo)
+		w.Write(data.Narinfo)
 	}
 }
 
@@ -160,11 +177,21 @@ func (s *Server) handleTarballReq(ctx context.Context, r *TarballReq) (*TarballR
 	}
 
 	sph := nipb.StorePath[11:43]
-	// TODO: prune this cache once in a while
-	s.fakeBinaryCache.Put(sph, binaryCacheData{
-		narinfo:  []byte(ni.String()),
-		upstream: mm.GenericTarballResolved,
+	b, err := proto.Marshal(&pb.FakeCacheData{
+		Narinfo:  []byte(ni.String()),
+		Upstream: mm.GenericTarballResolved,
+		Updated:  time.Now().Unix(),
 	})
+	if err != nil {
+		return nil, err
+	}
+	// TODO: prune this cache once in a while
+	err = s.db.Update(func(tx *bbolt.Tx) error {
+		return tx.Bucket(fakeCacheBucket).Put([]byte(sph), b)
+	})
+	if err != nil {
+		return nil, err
+	}
 
 	return &TarballResp{
 		ResolvedUrl:   mm.GenericTarballResolved,
