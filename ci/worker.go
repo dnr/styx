@@ -652,7 +652,8 @@ func (a *heavyActivities) HeavyBuild(ctx context.Context, req *buildReq) (retBui
 
 	for piPath, pi := range pathInfo {
 		// add all to root record in case some of these filtered ones end up getting copied
-		sphForRoot = append(sphForRoot, piPath[11:43])
+		sph := piPath[11:43]
+		sphForRoot = append(sphForRoot, sph)
 
 		// filter out tiny build-specific stuff
 		if strings.Contains(piPath, "-nixos-system-") ||
@@ -662,7 +663,7 @@ func (a *heavyActivities) HeavyBuild(ctx context.Context, req *buildReq) (retBui
 		}
 
 		names = append(names, piPath[44:])
-		public := fromPublicCache(pi.Signatures)
+		public := fromPublicCache(ctx, pi.Signatures, sph, req.Args.PublicCacheUpstream)
 		upstream := req.Args.PublicCacheUpstream
 		// only sign if not from public cache
 		if !public {
@@ -904,11 +905,24 @@ var getS3Cli = sync.OnceValues(func() (*s3.Client, error) {
 	return s3.NewFromConfig(awscfg), nil
 })
 
-func fromPublicCache(sigs []string) bool {
+func fromPublicCache(ctx context.Context, sigs []string, sph, publicCache string) bool {
 	for _, s := range sigs {
 		if strings.HasPrefix(s, "cache.nixos.org-1:") {
-			return true
+			return true // signed by public cache, obviously public
 		}
 	}
-	return false
+	if len(sigs) > 0 {
+		return false // signed by some other key (presumably ours), not public
+	}
+	// no signatures. this happens for packages that were built into the AMI.
+	// we need to ask the public cache to tell.
+	if u, err := url.JoinPath(publicCache, sph+".narinfo"); err != nil {
+		return false
+	} else if res, err := common.RetryHttpRequest(ctx, http.MethodHead, u, "", nil); err != nil {
+		return false // includes 403/404
+	} else {
+		io.Copy(io.Discard, res.Body)
+		res.Body.Close()
+		return true
+	}
 }
