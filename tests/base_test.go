@@ -281,6 +281,18 @@ func (tb *testBase) vaporize(path string) {
 	require.True(tb.t, res.Success, "error:", res.Error)
 }
 
+func (tb *testBase) tarball(url string) *daemon.TarballResp {
+	sock := filepath.Join(tb.cachedir, "styx.sock")
+	c := client.NewClient(sock)
+	var res daemon.TarballResp
+	code, err := c.Call(daemon.TarballPath, daemon.TarballReq{
+		UpstreamUrl: url,
+	}, &res)
+	require.NoError(tb.t, err)
+	require.Equal(tb.t, code, http.StatusOK)
+	return &res
+}
+
 func (tb *testBase) nixHash(path string) string {
 	b, err := exec.Command("nix-hash", "--type", "sha256", "--base32", path).Output()
 	require.NoErrorf(tb.t, err, "output: %q %v", b, err)

@@ -113,7 +113,10 @@ rec {
         "kbi7qf642gsxiv51yqank8bnx39w3crd-calf-0.90.3" # 18 MB
         "d30xd6x3669hg2a6xwjb1r3nb9a99sw2-openblas-0.3.27" # 27 MB
       ];
-      hash = "sha256-eSl0bAOueksPX4szbeoqLa3OfUbNtxxOGvfHeoymhmY=";
+      tarPaths = [
+        "https://releases.nixos.org/nix/nix-1.0/nix-1.0.tar.gz"
+      ];
+      hash = "sha256-3loU0H88D/IbN18j/YVQloYJOezqbPzhIyGX+OlPmyU=";
     in
     pkgs.stdenv.mkDerivation {
       name = "styx-test-data";
@@ -128,6 +131,10 @@ rec {
           wget -nv -x -nH https://cache.nixos.org/$ni
           wget -nv -x -nH https://cache.nixos.org/$(sed -ne '/URL/s/.* //p' $ni)
         '') paths}
+        mkdir tarballs && cd tarballs
+        ${pkgs.lib.concatMapStringsSep "\n" (t: ''
+          wget -nv ${t}
+        '') tarPaths}
       '';
       __structuredAttrs = true; # needed for unsafeDiscardReferences
       # this is pure data just for tests, even if references happen to match
