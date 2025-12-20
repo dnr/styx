@@ -42,6 +42,7 @@
     darktable
     ddcutil
     diffstat
+    difftastic
     diffutils
     direnv
     dmenu
@@ -69,6 +70,7 @@
     hugin
     imagemagick
     jq
+    jujutsu
     libnotify
     libsecret
     lm_sensors
@@ -78,9 +80,11 @@
     moreutils
     mplayer
     mpv
+    nil
     nix-direnv
+    nixfmt-rfc-style
     nixos-option
-    nixpkgs-fmt
+    nix-output-monitor
     nodejs
     notion
     nvme-cli
