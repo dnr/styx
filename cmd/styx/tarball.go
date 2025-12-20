@@ -1,9 +1,6 @@
 package main
 
 import (
-	"bytes"
-	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
@@ -14,13 +11,13 @@ import (
 
 	"github.com/dnr/styx/common/client"
 	"github.com/dnr/styx/daemon"
-	"github.com/nix-community/go-nix/pkg/storepath"
 	"github.com/spf13/cobra"
 )
 
 type tarballArgs struct {
-	outlink string
-	shards  int
+	outlink   string
+	printOnly bool
+	shards    int
 }
 
 var tarballCmd = cmd(
@@ -33,6 +30,7 @@ var tarballCmd = cmd(
 	func(c *cobra.Command) runE {
 		var args tarballArgs
 		c.Flags().StringVarP(&args.outlink, "out-link", "o", "", "symlink this to output and register as nix root")
+		c.Flags().BoolVarP(&args.printOnly, "print", "p", false, "print nix code for fixed-output derivation")
 		c.Flags().IntVar(&args.shards, "shards", 0, "split up manifesting")
 		return storer(&args)
 	},
@@ -61,23 +59,31 @@ var tarballCmd = cmd(
 			spa.Credential = &syscall.Credential{Uid: uint32(uid), Gid: uint32(gid)}
 		}
 
+		if strings.ContainsFunc(resp.Name, func(r rune) bool {
+			return r < 32 || r > 126 || r == '$' || r == '/' || r == '\\' || r == '"'
+		}) {
+			return fmt.Errorf("invalid name %q", resp.Name)
+		}
+
 		// we want to tell nix to just "substitute this", but it needs a derivation, so
 		// construct a minimal derivation. this is not buildable, it just has the right
 		// store path and is a FOD. the styx daemon acts as a "binary cache" for this store
 		// path, so nix will ask styx to do the substitution.
-		b, err := makeFodJson(resp.Name, resp.StorePathHash, resp.NarHash, resp.NarHashAlgo)
-		if err != nil {
-			return err
-		}
+		derivationStr := fmt.Sprintf(`derivation {
+  name = "%s";
+  system = builtins.currentSystem;
+  builder = "/bin/false";
+  outputHash = "%s:%s";
+  outputHashMode = "recursive";
+}`, resp.Name, resp.NarHashAlgo, resp.NarHash)
 
-		// add derivation to store
-		drvPath, err := addJsonDerivation(c.Context(), &spa, b)
-		if err != nil {
-			return err
+		if targs.printOnly {
+			fmt.Println(derivationStr)
+			return nil
 		}
 
 		// realize the derivation
-		cmd := exec.CommandContext(c.Context(), "nix-build", drvPath, "--no-fallback")
+		cmd := exec.CommandContext(c.Context(), "nix-build", "-E", derivationStr, "--no-fallback")
 		if targs.outlink != "" {
 			cmd.Args = append(cmd.Args, "--out-link", targs.outlink)
 		} else {
@@ -88,54 +94,3 @@ var tarballCmd = cmd(
 		return cmd.Run()
 	},
 )
-
-func addJsonDerivation(ctx context.Context, spa *syscall.SysProcAttr, b []byte) (string, error) {
-	cmd := exec.Command("nix", "--extra-experimental-features", "nix-command", "derivation", "add")
-	cmd.Stdin = bytes.NewReader(b)
-	cmd.SysProcAttr = spa
-	drvPath, err := cmd.Output()
-	if err != nil {
-		return "", err
-	}
-	return strings.TrimSpace(string(drvPath)), nil
-}
-
-func makeFodJson(name, sphStr, narHash, narHashAlgo string) ([]byte, error) {
-	type drvOutput struct {
-		Hash     string `json:"hash"`
-		HashAlgo string `json:"hashAlgo"`
-		Method   string `json:"method"`
-		Path     string `json:"path"`
-	}
-	type drvJson struct {
-		Name      string               `json:"name"`
-		System    string               `json:"system"`
-		Builder   string               `json:"builder"`
-		Args      []string             `json:"args"`
-		Env       map[string]string    `json:"env"`
-		InputSrcs []any                `json:"inputSrcs"`
-		InputDrvs map[string]any       `json:"inputDrvs"`
-		Outputs   map[string]drvOutput `json:"outputs"`
-	}
-
-	path := storepath.StoreDir + "/" + sphStr + "-" + name
-	return json.Marshal(drvJson{
-		Name:    name,
-		System:  "x86_64-linux", // TODO: does this matter?
-		Builder: "/bin/false",
-		Args:    []string{},
-		Env: map[string]string{
-			"out": path,
-		},
-		InputSrcs: []any{},
-		InputDrvs: map[string]any{},
-		Outputs: map[string]drvOutput{
-			"out": drvOutput{
-				Hash:     narHash,
-				HashAlgo: narHashAlgo,
-				Method:   "nar",
-				Path:     path,
-			},
-		},
-	})
-}
