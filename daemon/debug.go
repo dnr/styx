@@ -48,8 +48,10 @@ func (s *Server) handleDebugReq(ctx context.Context, r *DebugReq) (*DebugResp, e
 					return
 				}
 				var mchunks []string
-				for _, mdig := range mdigs {
-					mchunks = append(mchunks, mdig.String())
+				if r.IncludeManifests {
+					for _, mdig := range mdigs {
+						mchunks = append(mchunks, mdig.String())
+					}
 				}
 				var tchunks, tblocks, pchunks, pblocks int
 				for _, ent := range m.Entries {
@@ -71,6 +73,9 @@ func (s *Server) handleDebugReq(ctx context.Context, r *DebugReq) (*DebugResp, e
 					}
 					ent.InlineData = nil
 					ent.Digests = nil
+				}
+				if !r.IncludeManifests {
+					m = nil
 				}
 
 				res.Images[img.StorePath] = DebugImage{

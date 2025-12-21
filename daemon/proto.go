@@ -108,6 +108,7 @@ type (
 	DebugReq struct {
 		IncludeAllImages bool     `json:",omitempty"`
 		IncludeImages    []string `json:",omitempty"` // list of base32 sph
+		IncludeManifests bool     `json:",omitempty"`
 
 		IncludeSlabs     bool     `json:",omitempty"`
 		IncludeAllChunks bool     `json:",omitempty"`

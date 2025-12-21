@@ -201,6 +201,7 @@ func withDebugReq(c *cobra.Command) runE {
 	var req daemon.DebugReq
 	c.Flags().BoolVar(&req.IncludeAllImages, "all-images", false, "include all images")
 	c.Flags().StringArrayVarP(&req.IncludeImages, "image", "i", nil, "specific images to include")
+	c.Flags().BoolVarP(&req.IncludeManifests, "manifests", "m", false, "include manifest info for images")
 	c.Flags().BoolVar(&req.IncludeAllChunks, "all-chunks", false, "include all chunks")
 	c.Flags().StringArrayVarP(&req.IncludeChunks, "chunk", "c", nil, "specific chunks to include")
 	c.Flags().BoolVar(&req.IncludeChunkSharing, "chunk-sharing", false, "chunk sharing distribution")
