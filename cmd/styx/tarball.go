@@ -9,6 +9,7 @@ import (
 
 	"github.com/dnr/styx/common/client"
 	"github.com/dnr/styx/daemon"
+	"github.com/nix-community/go-nix/pkg/storepath"
 	"github.com/spf13/cobra"
 )
 
@@ -49,9 +50,7 @@ var tarballCmd = cmd(
 			fmt.Println("status:", status)
 		}
 
-		if strings.ContainsFunc(resp.Name, func(r rune) bool {
-			return r < 32 || r > 126 || r == '$' || r == '/' || r == '\\' || r == '"'
-		}) {
+		if storepath.NameRe.FindString(resp.Name) != resp.Name {
 			return fmt.Errorf("invalid name %q", resp.Name)
 		}
 
@@ -60,14 +59,21 @@ var tarballCmd = cmd(
 		// store path and is a FOD. the styx daemon acts as a "binary cache" for this store
 		// path, so nix will ask styx to do the substitution.
 		derivationStr := fmt.Sprintf(`derivation {
-  name = "%s";
+  name = %s;
   system = builtins.currentSystem;
-  builder = "/bin/false";
+  builder = "not buildable: run 'styx tarball <url>' and try again";
   outputHash = "%s:%s";
   outputHashMode = "recursive";
-}`, resp.Name, resp.NarHashAlgo, resp.NarHash)
+
+  styxOriginalUrl = %s;
+  styxResolvedUrl = %s;
+}`,
+			escapeNixString(resp.Name), resp.NarHashAlgo, resp.NarHash, escapeNixString(args[0]), escapeNixString(resp.ResolvedUrl))
 
 		if targs.printOnly {
+			// TODO: this should print something using builtins.fetchTarball instead so it can
+			// be evaluated without styx but also substitute
+			// needs to wait for: https://github.com/NixOS/nix/pull/14138 in 2.32.0
 			fmt.Println(derivationStr)
 			return nil
 		}
@@ -83,3 +89,25 @@ var tarballCmd = cmd(
 		return cmd.Run()
 	},
 )
+
+func escapeNixString(s string) string {
+	var b strings.Builder
+	b.WriteByte('"')
+	for i := range len(s) {
+		switch c := s[i]; c {
+		case '"', '\\', '$':
+			b.WriteByte('\\')
+			b.WriteByte(c)
+		case '\n':
+			b.WriteString(`\n`)
+		case '\r':
+			b.WriteString(`\r`)
+		case '\t':
+			b.WriteString(`\t`)
+		default:
+			b.WriteByte(c)
+		}
+	}
+	b.WriteByte('"')
+	return b.String()
+}

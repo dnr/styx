@@ -93,6 +93,7 @@ func (s *Server) handleTarballReq(ctx context.Context, r *TarballReq) (*TarballR
 	// we only have a url at this point, not a sph. the url may redirect to a more permanent
 	// url. do a head request to resolve and get at least an etag if possible.
 	// TODO: consider "lockable tarball protocol"
+	// TODO: support github urls, generic git urls, etc. basically half of a pin manager
 	res, err := common.RetryHttpRequest(ctx, http.MethodHead, r.UpstreamUrl, "", nil)
 	if err != nil {
 		return nil, err
