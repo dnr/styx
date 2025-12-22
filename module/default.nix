@@ -2,6 +2,7 @@
   config,
   lib,
   pkgs,
+  utils,
   ...
 }:
 let
@@ -15,8 +16,13 @@ with lib;
       enable = mkEnableOption "Styx storage manager for Nix";
       enablePatchedNix = mkEnableOption "Patched Nix for Styx";
       enableNixSettings = mkEnableOption "nix.conf settings for Styx";
-      enableStyxNixCache = mkEnableOption "Add binary cache for Styx and related packages";
-      enableKernelOptions = mkEnableOption "Enable required kernel config for Styx (erofs+cachefiles)";
+      enableStyxNixCache = mkEnableOption "binary cache for Styx and related packages";
+      enableKernelOptions = mkEnableOption "required kernel config for Styx (erofs+cachefiles)";
+      publicCommands = mkOption {
+        default = true;
+        description = "Allow non-root users to run certain styx commands";
+        type = types.bool;
+      };
       package = mkOption {
         description = "Styx package";
         type = types.package;
@@ -109,7 +115,19 @@ with lib;
         serviceConfig = {
           # Use unshare directly instead of PrivateMounts so that our new mounts
           # are propagated normally, but we can remount /nix/store rw.
-          ExecStart = "${pkgs.util-linux}/bin/unshare -m --propagation unchanged ${cfg.package}/bin/styx daemon";
+          ExecStart = utils.escapeSystemdExecArgs (
+            [
+              "${pkgs.util-linux}/bin/unshare"
+              "-m"
+              "--propagation"
+              "unchanged"
+              "${cfg.package}/bin/styx"
+              "daemon"
+            ]
+            ++ optionals (!cfg.publicCommands) [
+              "--public_socket="
+            ]
+          );
           SyslogIdentifier = "styx";
           Type = "notify";
           NotifyAccess = "all";

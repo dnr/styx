@@ -129,6 +129,7 @@ type (
 		CachePath   string
 		CacheTag    string
 		CacheDomain string
+		PublicSock  string
 
 		ErofsBlockShift int
 		// SmallFileCutoff int
@@ -417,13 +418,7 @@ func (s *Server) imageTx(sph string, f func(*pb.DbImage) error) error {
 	})
 }
 
-func (s *Server) startSocketServer() (err error) {
-	socketPath := filepath.Join(s.cfg.CachePath, Socket)
-	os.Remove(socketPath)
-	l, err := net.ListenUnix("unix", &net.UnixAddr{Net: "unix", Name: socketPath})
-	if err != nil {
-		return fmt.Errorf("failed to listen on unix socket %s: %w", socketPath, err)
-	}
+func (s *Server) startSocketServer() error {
 	mux := http.NewServeMux()
 	mux.HandleFunc(InitPath, jsonmw(s.handleInitReq))
 	mux.HandleFunc(MountPath, jsonmw(s.handleMountReq))
@@ -440,6 +435,31 @@ func (s *Server) startSocketServer() (err error) {
 	mux.HandleFunc("/pprof/profile", pprof.Profile)
 	mux.HandleFunc("/pprof/symbol", pprof.Symbol)
 	mux.HandleFunc("/pprof/trace", pprof.Trace)
+	err := s.runSocketServer(filepath.Join(s.cfg.CachePath, Socket), mux)
+	if err != nil {
+		return err
+	}
+
+	if s.cfg.PublicSock != "" {
+		mux := http.NewServeMux()
+		mux.HandleFunc(TarballPath, jsonmw(s.handleTarballReq))
+		mux.HandleFunc(DebugPath, jsonmw(s.handleDebugReq))
+		err := s.runSocketServer(s.cfg.PublicSock, mux)
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (s *Server) runSocketServer(socketPath string, mux http.Handler) error {
+	os.Remove(socketPath)
+	l, err := net.ListenUnix("unix", &net.UnixAddr{Net: "unix", Name: socketPath})
+	if err != nil {
+		return fmt.Errorf("failed to listen on unix socket %s: %w", socketPath, err)
+	}
+	_ = os.Chmod(socketPath, 0o777)
 	s.shutdownWait.Add(1)
 	go func() {
 		defer s.shutdownWait.Done()

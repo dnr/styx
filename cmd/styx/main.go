@@ -70,6 +70,8 @@ func withDaemonConfig(c *cobra.Command) runE {
 	c.Flags().StringVar(&cfg.CachePath, "cache", "/var/cache/styx", "path to local cache (also socket and db)")
 	c.Flags().StringVar(&cfg.CacheTag, "cachetag", "styx0", "cachefiles tag")
 	c.Flags().StringVar(&cfg.CacheDomain, "cachedomain", "styx", "cachefiles domain")
+	c.Flags().StringVar(&cfg.PublicSock, "public_socket", "/var/run/styx.sock",
+		"socket for non-root users to run limited commands, set to empty string to disable")
 	c.Flags().IntVar(&cfg.ErofsBlockShift, "block_shift", 12, "block size bits for local fs images")
 	// c.Flags().IntVar(&cfg.SmallFileCutoff, "small_file_cutoff", 224, "cutoff for embedding small files in images")
 	c.Flags().IntVar(&cfg.Workers, "workers", 16, "worker goroutines for cachefilesd serving")
@@ -150,7 +152,12 @@ func withStyxPubKeys(c *cobra.Command) runE {
 
 func withStyxClient(c *cobra.Command) runE {
 	socket := c.Flags().String("addr", "/var/cache/styx/styx.sock", "path to local styx socket")
-	return storer(client.NewClient(*socket))
+	public_socket := c.Flags().String("public_addr", "/var/run/styx.sock", "path to public styx socket")
+	return func(c *cobra.Command, args []string) error {
+		store(c, client.NewClient(*socket))
+		storeKeyed(c, client.NewClient(*public_socket), "public")
+		return nil
+	}
 }
 
 func withVaporizeReq(c *cobra.Command) runE {
@@ -380,7 +387,7 @@ func main() {
 			withStyxClient,
 			withDebugReq,
 			func(c *cobra.Command, args []string) error {
-				return get[*client.StyxClient](c).CallAndPrint(
+				return getKeyed[*client.StyxClient](c, "public").CallAndPrint(
 					daemon.DebugPath, get[*daemon.DebugReq](c))
 			},
 		),

@@ -5,9 +5,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
-	"strconv"
 	"strings"
-	"syscall"
 
 	"github.com/dnr/styx/common/client"
 	"github.com/dnr/styx/daemon"
@@ -35,7 +33,7 @@ var tarballCmd = cmd(
 		return storer(&args)
 	},
 	func(c *cobra.Command, args []string) error {
-		cli := get[*client.StyxClient](c)
+		cli := getKeyed[*client.StyxClient](c, "public")
 		targs := get[*tarballArgs](c)
 
 		// ask daemon to ask manifester to ingest this tarball
@@ -49,14 +47,6 @@ var tarballCmd = cmd(
 			return err
 		} else if status != http.StatusOK {
 			fmt.Println("status:", status)
-		}
-
-		// if running in sudo, try to run commands as original user
-		var spa syscall.SysProcAttr
-		uid, erru := strconv.Atoi(os.Getenv("SUDO_UID"))
-		gid, errg := strconv.Atoi(os.Getenv("SUDO_GID"))
-		if erru == nil && errg == nil {
-			spa.Credential = &syscall.Credential{Uid: uint32(uid), Gid: uint32(gid)}
 		}
 
 		if strings.ContainsFunc(resp.Name, func(r rune) bool {
@@ -90,7 +80,6 @@ var tarballCmd = cmd(
 			cmd.Args = append(cmd.Args, "--no-out-link")
 		}
 		cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
-		cmd.SysProcAttr = &spa
 		return cmd.Run()
 	},
 )
