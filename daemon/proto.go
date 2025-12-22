@@ -70,11 +70,11 @@ type (
 		Shards      int
 	}
 	TarballResp struct {
-		ResolvedUrl   string
-		StorePathHash string
-		Name          string
-		NarHash       string
-		NarHashAlgo   string
+		ResolvedUrl   string `json:"resolvedUrl"`
+		StorePathHash string `json:"storePathHash"`
+		StorePathName string `json:"storePathName"`
+		NarHash       string `json:"narHash"`
+		NarHashAlgo   string `json:"narHashAlgo"`
 	}
 
 	GcReq struct {

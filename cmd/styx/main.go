@@ -112,6 +112,11 @@ func withManifesterConfig(c *cobra.Command) runE {
 			"cache.nixos.org",
 			"releases.nixos.org",
 			"channels.nixos.org",
+			"github.com",
+			"gitlab.com",
+			"bitbucket.org",
+			"codeberg.org",
+			"git.sr.ht",
 		}, "allowed upstream binary caches or tarball sources")
 	c.Flags().IntVar(&cfg.ChunkDiffZstdLevel, "chunk_diff_zstd_level", 3, "encoder level for chunk diffs")
 	c.Flags().IntVar(&cfg.ChunkDiffParallel, "chunk_diff_parallel", 60, "parallelism for loading chunks for diff")
