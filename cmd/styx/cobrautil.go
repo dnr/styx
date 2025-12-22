@@ -57,21 +57,17 @@ func storer[T any](v T) runE {
 }
 
 func store[T any](c *cobra.Command, v T) {
-	t := reflect.TypeOf((*T)(nil)).Elem()
-	c.SetContext(context.WithValue(c.Context(), ckey{t: t}, v))
+	c.SetContext(context.WithValue(c.Context(), ckey{t: reflect.TypeFor[T]()}, v))
 }
 
 func get[T any](c *cobra.Command) T {
-	t := reflect.TypeOf((*T)(nil)).Elem()
-	return c.Context().Value(ckey{t: t}).(T)
+	return c.Context().Value(ckey{t: reflect.TypeFor[T]()}).(T)
 }
 
 func storeKeyed[T any](c *cobra.Command, v T, key any) {
-	t := reflect.TypeOf((*T)(nil)).Elem()
-	c.SetContext(context.WithValue(c.Context(), ckey{t: t, k: key}, v))
+	c.SetContext(context.WithValue(c.Context(), ckey{t: reflect.TypeFor[T](), k: key}, v))
 }
 
 func getKeyed[T any](c *cobra.Command, key any) T {
-	t := reflect.TypeOf((*T)(nil)).Elem()
-	return c.Context().Value(ckey{t: t, k: key}).(T)
+	return c.Context().Value(ckey{t: reflect.TypeFor[T](), k: key}).(T)
 }

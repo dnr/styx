@@ -1,8 +1,6 @@
 module github.com/dnr/styx
 
-go 1.24.0
-
-toolchain go1.24.6
+go 1.25.0
 
 replace github.com/DataDog/zstd => github.com/dnr/datadog-zstd-go v0.0.0-20250916100506-79345d875ce7
 
