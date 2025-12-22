@@ -5,7 +5,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"io"
 	"log"
 	"net"
 	"net/http"
@@ -14,6 +13,7 @@ import (
 
 	"github.com/dnr/styx/common"
 	"github.com/dnr/styx/common/cdig"
+	"github.com/dnr/styx/common/resolve"
 	"github.com/dnr/styx/manifester"
 	"github.com/dnr/styx/pb"
 	"github.com/nix-community/go-nix/pkg/hash"
@@ -90,33 +90,27 @@ func (s *Server) handleTarballReq(ctx context.Context, r *TarballReq) (*TarballR
 		return nil, mwErr(http.StatusPreconditionFailed, "styx is not initialized, call 'styx init --params=...'")
 	}
 
-	// we only have a url at this point, not a sph. the url may redirect to a more permanent
-	// url. do a head request to resolve and get at least an etag if possible.
-	// TODO: consider "lockable tarball protocol"
-	// TODO: support github urls, generic git urls, etc. basically half of a pin manager
-	res, err := common.RetryHttpRequest(ctx, http.MethodHead, r.UpstreamUrl, "", nil)
+	// we only have a url at this point, not a sph. resolve the url to a hopefully-immutable
+	// url with etag for cache lookup if possible.
+	rr, err := resolve.ResolveUrl(ctx, r.UpstreamUrl)
 	if err != nil {
 		return nil, err
 	}
-	io.Copy(io.Discard, res.Body)
-	res.Body.Close()
-
-	resolved := res.Request.URL.String()
 
 	// use generic tarball build mode
 	mReq := manifester.ManifestReq{
-		Upstream:   resolved,
+		Upstream:   rr.Url,
 		BuildMode:  manifester.ModeGenericTarball,
 		DigestAlgo: cdig.Algo,
 		DigestBits: int(cdig.Bits),
+		ETag:       rr.Etag,
 	}
 
 	var envelopeBytes []byte
 
 	// if we have an etag we can try a cache lookup
-	if etag := res.Header.Get("Etag"); etag != "" {
+	if rr.Etag != "" {
 		// we have an etag, we can try a cache lookup
-		mReq.ETag = etag
 		envelopeBytes, _ = s.p().mcread.Get(ctx, mReq.CacheKey(), nil)
 		mReq.ETag = ""
 	}
@@ -197,7 +191,7 @@ func (s *Server) handleTarballReq(ctx context.Context, r *TarballReq) (*TarballR
 	return &TarballResp{
 		ResolvedUrl:   mm.GenericTarballResolved,
 		StorePathHash: sph,
-		Name:          nipb.StorePath[44:],
+		StorePathName: nipb.StorePath[44:],
 		NarHash:       hex.EncodeToString(nh.Digest()),
 		NarHashAlgo:   nh.HashTypeString(),
 	}, nil

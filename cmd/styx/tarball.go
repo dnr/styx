@@ -1,12 +1,14 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
 	"os/exec"
 	"strings"
 
+	"github.com/dnr/styx/common"
 	"github.com/dnr/styx/common/client"
 	"github.com/dnr/styx/daemon"
 	"github.com/nix-community/go-nix/pkg/storepath"
@@ -15,7 +17,8 @@ import (
 
 type tarballArgs struct {
 	outlink   string
-	printOnly bool
+	printDrv  bool
+	printJson bool
 	shards    int
 }
 
@@ -29,7 +32,8 @@ var tarballCmd = cmd(
 	func(c *cobra.Command) runE {
 		var args tarballArgs
 		c.Flags().StringVarP(&args.outlink, "out-link", "o", "", "symlink this to output and register as nix root")
-		c.Flags().BoolVarP(&args.printOnly, "print", "p", false, "print nix code for fixed-output derivation")
+		c.Flags().BoolVarP(&args.printDrv, "print", "p", false, "print nix code for fixed-output derivation")
+		c.Flags().BoolVarP(&args.printJson, "json", "j", false, "print json info for fixed-output derivation")
 		c.Flags().IntVar(&args.shards, "shards", 0, "split up manifesting")
 		return storer(&args)
 	},
@@ -38,20 +42,23 @@ var tarballCmd = cmd(
 		targs := get[*tarballArgs](c)
 
 		// ask daemon to ask manifester to ingest this tarball
-		var resp daemon.TarballResp
+		var res daemon.TarballResp
 		status, err := cli.Call(daemon.TarballPath, &daemon.TarballReq{
 			UpstreamUrl: args[0],
 			Shards:      targs.shards,
-		}, &resp)
+		}, &res)
 		if err != nil {
-			fmt.Println("call error:", err)
 			return err
 		} else if status != http.StatusOK {
-			fmt.Println("status:", status)
+			return common.NewHttpError(status, "")
 		}
 
-		if storepath.NameRe.FindString(resp.Name) != resp.Name {
-			return fmt.Errorf("invalid name %q", resp.Name)
+		if storepath.NameRe.FindString(res.StorePathName) != res.StorePathName {
+			return fmt.Errorf("invalid name %q", res.StorePathName)
+		}
+
+		if targs.printJson {
+			return json.NewEncoder(os.Stdout).Encode(res)
 		}
 
 		// we want to tell nix to just "substitute this", but it needs a derivation, so
@@ -67,12 +74,11 @@ var tarballCmd = cmd(
 
   styxOriginalUrl = %s;
   styxResolvedUrl = %s;
-}`,
-			escapeNixString(resp.Name), resp.NarHashAlgo, resp.NarHash, escapeNixString(args[0]), escapeNixString(resp.ResolvedUrl))
+}`, escapeNixString(res.StorePathName), res.NarHashAlgo, res.NarHash, escapeNixString(args[0]), escapeNixString(res.ResolvedUrl))
 
-		if targs.printOnly {
-			// TODO: this should print something using builtins.fetchTarball instead so it can
-			// be evaluated without styx but also substitute
+		if targs.printDrv {
+			// TODO: print something using builtins.fetchTarball instead so it can be
+			// evaluated without styx but also substitute.
 			// needs to wait for: https://github.com/NixOS/nix/pull/14138 in 2.32.0
 			fmt.Println(derivationStr)
 			return nil

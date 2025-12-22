@@ -1,4 +1,4 @@
-package manifester
+package resolve
 
 import (
 	"testing"

@@ -5,7 +5,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -13,13 +12,13 @@ import (
 	"os"
 	"os/exec"
 	"path"
-	"regexp"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/dnr/styx/common"
 	"github.com/dnr/styx/common/cdig"
+	"github.com/dnr/styx/common/resolve"
 	"github.com/dnr/styx/pb"
 	"github.com/multiformats/go-multihash"
 	"github.com/nix-community/go-nix/pkg/hash"
@@ -43,20 +42,15 @@ func (b *ManifestBuilder) BuildFromTarball(
 ) (*ManifestBuildRes, error) {
 	log.Println("manifest tarball", upstream)
 
+	// resolve the url to a hopefully-immutable url and get an etag for constructing a cache key
+	rr, err := resolve.ResolveUrl(ctx, upstream)
+	if err != nil {
+		return nil, err
+	}
+
 	var narOut io.Reader
 	var dump *exec.Cmd
-	var resolved, etag string
 	if useLocalStoreDump != "" {
-		// we need to do a head request to resolve redirections and get the etag if present.
-		res, err := common.RetryHttpRequest(ctx, http.MethodHead, upstream, "", nil)
-		if err != nil {
-			return nil, fmt.Errorf("%w: tar http error for %s: %w", ErrReq, upstream, err)
-		}
-		io.Copy(io.Discard, res.Body)
-		res.Body.Close()
-		resolved = res.Request.URL.String()
-		etag = res.Header.Get("Etag")
-
 		// get the actual data from the local fs
 		dump = exec.CommandContext(ctx, common.NixBin+"-store", "--dump", useLocalStoreDump)
 		if narOut, err = dump.StdoutPipe(); err != nil {
@@ -76,24 +70,19 @@ func (b *ManifestBuilder) BuildFromTarball(
 		var tarOut io.Reader
 		var decompress *exec.Cmd
 
-		res, err := common.RetryHttpRequest(ctx, http.MethodGet, upstream, "", nil)
+		res, err := common.RetryHttpRequest(ctx, http.MethodGet, rr.Url, "", nil)
 		if err != nil {
 			return nil, fmt.Errorf("%w: tar http error for %s: %w", ErrReq, upstream, err)
 		}
 		defer res.Body.Close()
-		if res.StatusCode != http.StatusOK {
-			return nil, fmt.Errorf("%w: tar http status for %s: %s", ErrReq, upstream, res.Status)
-		}
 		tarOut = res.Body
-		resolved = res.Request.URL.String()
-		etag = res.Header.Get("Etag")
 
 		// log.Println("req", storePathHash, "downloading nar")
 
 		switch {
-		case strings.HasSuffix(resolved, ".gz") || strings.HasSuffix(resolved, ".tgz"):
+		case strings.HasSuffix(rr.Url, ".gz") || strings.HasSuffix(rr.Url, ".tgz"):
 			decompress = exec.Command(common.GzipBin, "-d")
-		case strings.HasSuffix(resolved, ".xz") || strings.HasSuffix(resolved, ".txz"):
+		case strings.HasSuffix(rr.Url, ".xz") || strings.HasSuffix(rr.Url, ".txz"):
 			decompress = exec.Command(common.XzBin, "-d")
 		//case strings.HasSuffix(resolved, ".zst") || strings.HasSuffix(resolved, ".zstd"):
 		// TODO: use in-memory pipe?
@@ -120,7 +109,7 @@ func (b *ManifestBuilder) BuildFromTarball(
 		}
 
 		// extract tar into memory
-		// TODO: allow passing in expected hash somehow
+		// TODO: maybe allow passing in expected hash somehow?
 		tarEnts, err := b.extractTar(tarOut)
 		if err != nil {
 			return nil, fmt.Errorf("%w: tar read error: %w", ErrInternal, err)
@@ -162,15 +151,14 @@ func (b *ManifestBuilder) BuildFromTarball(
 	}
 
 	// turn tar hash into store path hash using nix's fod algorithm
-	spName := getSpNameFromUrl(resolved)
 	innerHash := hex.EncodeToString(narHasher.Digest())
 	fpHasher := sha256.New()
 	// "source" is specific to nar hashing method. we don't support flat here yet.
-	fmt.Fprintf(fpHasher, "source:sha256:%s:%s:%s", innerHash, storepath.StoreDir, spName)
+	fmt.Fprintf(fpHasher, "source:sha256:%s:%s:%s", innerHash, storepath.StoreDir, rr.StorePathName)
 	cmpHash := hash.CompressHash(fpHasher.Sum(nil), storepath.PathHashSize)
 	sph := nixbase32.EncodeToString(cmpHash)
 
-	log.Println("manifest tarball", upstream, "->", resolved, "built manifest", sph)
+	log.Println("manifest tarball", upstream, "->", rr.Url, "built manifest", sph)
 
 	b.stats.Shards.Add(1)
 
@@ -182,7 +170,7 @@ func (b *ManifestBuilder) BuildFromTarball(
 	// add metadata
 
 	nipb := &pb.NarInfo{
-		StorePath:   storepath.StoreDir + "/" + sph + "-" + spName,
+		StorePath:   storepath.StoreDir + "/" + sph + "-" + rr.StorePathName,
 		Url:         "nar/dummy.nar",
 		Compression: "none",
 		FileHash:    narHasher.NixString(),
@@ -192,7 +180,7 @@ func (b *ManifestBuilder) BuildFromTarball(
 	}
 	manifest.Meta = &pb.ManifestMeta{
 		GenericTarballOriginal: upstream,
-		GenericTarballResolved: resolved,
+		GenericTarballResolved: rr.Url,
 		Narinfo:                nipb,
 		Generator:              "styx-" + common.Version,
 		GeneratedTime:          time.Now().Unix(),
@@ -217,7 +205,7 @@ func (b *ManifestBuilder) BuildFromTarball(
 	// TODO: we shouldn't write to cache unless we know for sure that other shards are done.
 	// (or else change client to re-request manifest on missing)
 	cacheKey := (&ManifestReq{
-		Upstream:      resolved,
+		Upstream:      rr.Url,
 		StorePathHash: sph,
 		DigestAlgo:    cdig.Algo,
 		DigestBits:    int(cdig.Bits),
@@ -240,11 +228,11 @@ func (b *ManifestBuilder) BuildFromTarball(
 
 	// write etag cache entry
 	var etagCacheKey string
-	if etag != "" {
+	if rr.Etag != "" {
 		etagCacheKey = (&ManifestReq{
-			Upstream:   resolved,
+			Upstream:   rr.Url,
 			BuildMode:  ModeGenericTarball,
-			ETag:       etag,
+			ETag:       rr.Etag,
 			DigestAlgo: cdig.Algo,
 			DigestBits: int(cdig.Bits),
 		}).CacheKey()
@@ -260,7 +248,7 @@ func (b *ManifestBuilder) BuildFromTarball(
 		broot := &pb.BuildRoot{
 			Meta: &pb.BuildRootMeta{
 				BuildTime:        btime.Unix(),
-				ManifestUpstream: resolved,
+				ManifestUpstream: rr.Url,
 				ManifestSph:      ModeGenericTarball,
 			},
 			Manifest: []string{cacheKey},
@@ -276,7 +264,7 @@ func (b *ManifestBuilder) BuildFromTarball(
 		}
 	}
 
-	log.Println("manifest tarball", resolved, "added to cache as", cacheKey)
+	log.Println("manifest tarball", rr.Url, "added to cache as", cacheKey)
 	b.stats.Manifests.Add(1)
 
 	return &ManifestBuildRes{
@@ -330,6 +318,8 @@ func (b *ManifestBuilder) tarEntry(tr *tar.Reader, lenSoFar int) (*tarEntry, *ta
 	h, err := tr.Next()
 	if err != nil { // including io.EOF
 		return nil, nil, err
+	} else if h.Typeflag == tar.TypeXGlobalHeader {
+		return nil, nil, nil // skip PAX global headers
 	}
 
 	name := path.Clean(h.Name)
@@ -382,7 +372,7 @@ func (b *ManifestBuilder) tarEntry(tr *tar.Reader, lenSoFar int) (*tarEntry, *ta
 	// TODO: hard link?
 
 	default:
-		return nil, nil, errors.New("unknown type")
+		return nil, nil, fmt.Errorf("unknown type %v", h.Typeflag)
 	}
 
 	return fakeEnt, e, nil
@@ -434,16 +424,4 @@ func stripRoot(ents []*tarEntry) []*tarEntry {
 	first.Path = "/"
 
 	return ents
-}
-
-var reNixExprs = regexp.MustCompile(`^https://releases\.nixos\.org/.*/(nix(os|pkgs)-\d\d\.\d\d(\.|pre)\d+).[a-z0-9]+/nixexprs\.tar`)
-
-func getSpNameFromUrl(url string) string {
-	// hack: tweak name, e.g. we want
-	//   https://releases.nixos.org/nixos/25.11/nixos-25.11.1056.d9bc5c7dceb3/nixexprs.tar.xz
-	// to turn into "nixexprs-nixos-25.11.1056" for better diffing
-	if m := reNixExprs.FindStringSubmatch(url); m != nil {
-		return "nixexprs-" + m[1]
-	}
-	return path.Base(url)
 }
