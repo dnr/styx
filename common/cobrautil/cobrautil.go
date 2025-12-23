@@ -49,116 +49,96 @@ func ChainRunEC(fs ...RunEC) RunEC {
 
 // Cmd is a wrapper around cobra.Command to make commands easier to declare in a more
 // declarative style. Call it with a base command, followed by things to modify the command.
+// The general pattern is to define reusable sets of flags or argument handling in filter
+// functions and then pass the results through the Command's Context to actions.
 //
 // There's a distinction between "init time" and "run time": things that run before Cmd returns
-// are init time, things that run after cobra's Execute are run time. Depending on the types
-// provided to Cmd, code will be called at either time:
-//
-// func(*cobra.Command):
-//
-//	Generic command filter, called at init time.
+// are init time, things that run after cobra's Execute are run time. Note that at init time,
+// c.Context() is nil. Depending on the types provided to Cmd, code will be called at either or
+// both times:
 //
 // *cobra.Command:
 //
 //	Subcommand: added to base command at init time.
 //
-// func(*cobra.Command) error:
-// func(*cobra.Command, []string) error:
+// func(<anything>) error:
 //
-//	Action: chained to command's RunE, called at run time. Typically the action will get flag
-//	values from c.Context() using Get/GetKeyed.
+//	Action: will be chaned to base command's RunE to run at run time. Must be a function that
+//	accepts 0 or more arguments and returns error. Arguments will be filled in with c, args,
+//	c.Context(), and Get(c) as needed using reflection. Think of this like a mini-DI system.
 //
-// func(*cobra.Command) func(*cobra.Command) error:
-// func(*cobra.Command) func(*cobra.Command, []string) error:
+// func(*cobra.Command):
+// func(*cobra.Command) func(<anything>) error:
 //
-//	Filter plus action: call outer function now, chain result to RunE to run at run time.
+//	Filter [plus action]: call outer function now, chain result to RunE to run at run time.
 //	Typically the outer function will add some flags to c.Flags(), and the inner function will
 //	store values in c.Context() using Store/StoreKeyed/Storer.
-//
-// Other function:
-//
-//	Treated as action: must be a function that accepts 0 or more arguments and returns error.
-//	Arguments will be filled in with c, args, c.Context(), and Get(c) as needed using
-//	reflection. Think of this like a mini-DI system.
 func Cmd(c *cobra.Command, stuff ...any) *cobra.Command {
-	for _, gthing := range stuff {
-		switch thing := gthing.(type) {
-		case func(*cobra.Command):
-			thing(c)
-		case *cobra.Command:
-			// Subcommand: add to parent command
-			c.AddCommand(thing)
-		case RunE:
-			// Action: add to command's RunE
-			c.RunE = ChainRunE(c.RunE, thing)
-		case RunEC:
-			// Action: add to command's RunE
-			runE := func(c *cobra.Command, ignored []string) error { return thing(c) }
-			c.RunE = ChainRunE(c.RunE, runE)
-		case func(*cobra.Command) RunE:
-			// Filter plus action: call filter now, add result to RunE
-			c.RunE = ChainRunE(c.RunE, thing(c))
-		case func(*cobra.Command) RunEC:
-			// Filter plus action: call filter now, add result to RunE
-			runEC := thing(c)
-			runE := func(c *cobra.Command, ignored []string) error { return runEC(c) }
-			c.RunE = ChainRunE(c.RunE, runE)
-		default:
-			// Generic action: try to filter
-			v := reflect.ValueOf(thing)
-			t := v.Type()
-			if t.Kind() != reflect.Func {
-				log.Panicf("argument to Cmd %T %v must be function type", thing, thing)
-			} else if t.NumOut() != 1 || t.Out(0) != reflect.TypeFor[error]() {
-				log.Panicf("generic function %T %v must return error", thing, thing)
-			}
-			// we don't know what types we'll have available, do the rest at run time
-			runE := func(c *cobra.Command, args []string) error {
-				ins := make([]reflect.Value, t.NumIn())
-				for i := range t.NumIn() {
-					switch t.In(i) {
-					case reflect.TypeFor[*cobra.Command]():
-						ins[i] = reflect.ValueOf(c)
-					case reflect.TypeFor[context.Context]():
-						ins[i] = reflect.ValueOf(c.Context())
-					case reflect.TypeFor[[]string]():
-						ins[i] = reflect.ValueOf(args)
-					default:
-						ins[i] = reflect.ValueOf(c.Context().Value(ckey{t: t.In(i)}))
-					}
-				}
-				return v.Call(ins)[0].Interface().(error)
-			}
-			c.RunE = ChainRunE(c.RunE, runE)
+	for _, thing := range stuff {
+		if subCmd, ok := thing.(*cobra.Command); ok {
+			c.AddCommand(subCmd) // add to parent command
+			continue
+		}
+		v := reflect.ValueOf(thing)
+		t := v.Type()
+		// Generic action or filter
+		if validAction(t) {
+			c.RunE = ChainRunE(c.RunE, asAction(v))
+		} else if validFilter(t) {
+			action := callFilter(v, c)
+			c.RunE = ChainRunE(c.RunE, action)
+		} else {
+			log.Panicf("bad Cmd argument: %T %v", thing, thing)
 		}
 	}
 	return c
 }
 
-type ckey struct {
-	t reflect.Type
-	k any
+func validAction(t reflect.Type) bool {
+	return t.Kind() == reflect.Func && // must be func
+		t.NumOut() == 1 && // must return exactly one value
+		// must return error
+		t.Out(0) == reflect.TypeFor[error]()
 }
 
-func Store[T any](c *cobra.Command, v T) {
-	c.SetContext(context.WithValue(c.Context(), ckey{t: reflect.TypeFor[T]()}, v))
-}
-
-func Get[T any](c *cobra.Command) T {
-	return c.Context().Value(ckey{t: reflect.TypeFor[T]()}).(T)
-}
-
-func StoreKeyed[T any](c *cobra.Command, v T, key any) {
-	c.SetContext(context.WithValue(c.Context(), ckey{t: reflect.TypeFor[T](), k: key}, v))
-}
-
-func GetKeyed[T any](c *cobra.Command, key any) T {
-	return c.Context().Value(ckey{t: reflect.TypeFor[T](), k: key}).(T)
-}
-
-func Storer[T any](v T) RunE {
-	return func(c *cobra.Command, ignored []string) error {
-		Store(c, v)
-		return nil
+func asAction(v reflect.Value) RunE {
+	return func(c *cobra.Command, args []string) error {
+		t := v.Type()
+		ins := make([]reflect.Value, t.NumIn())
+		for i := range t.NumIn() {
+			switch t.In(i) {
+			case reflect.TypeFor[*cobra.Command]():
+				ins[i] = reflect.ValueOf(c)
+			case reflect.TypeFor[context.Context]():
+				ins[i] = reflect.ValueOf(c.Context())
+			case reflect.TypeFor[[]string]():
+				ins[i] = reflect.ValueOf(args)
+			default:
+				ins[i] = reflect.ValueOf(c.Context().Value(ckey{t: t.In(i)}))
+			}
+		}
+		if err := v.Call(ins)[0].Interface(); err == nil {
+			return nil
+		} else {
+			return err.(error)
+		}
 	}
+}
+
+func validFilter(t reflect.Type) bool {
+	return t.Kind() == reflect.Func &&
+		// filter must accept exactly one arg
+		t.NumIn() == 1 &&
+		// must accept *cobra.Command
+		t.In(0) == reflect.TypeFor[*cobra.Command]() &&
+		// don't handle more than one return value (could be added later)
+		(t.NumOut() == 0 || (t.NumOut() == 1 && validAction(t.Out(0))))
+}
+
+func callFilter(v reflect.Value, c *cobra.Command) RunE {
+	out := v.Call([]reflect.Value{reflect.ValueOf(c)})
+	if len(out) == 0 {
+		return nil // we're done
+	}
+	return asAction(out[0])
 }
