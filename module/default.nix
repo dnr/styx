@@ -28,6 +28,8 @@ with lib;
         type = types.package;
         default = styx.styx-local;
       };
+      # Not included in "enable":
+      includeSpin = mkEnableOption "'spin' pinning tool also";
     };
   };
 
@@ -137,6 +139,10 @@ with lib;
           Restart = "on-failure";
         };
       };
+    })
+
+    (mkIf cfg.includeSpin {
+      environment.systemPackages = [ styx.spin ];
     })
   ];
 }

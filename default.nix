@@ -146,6 +146,11 @@ rec {
   # for light CI worker on non-AWS server (dd5):
   charon-light = buildCharon { } { };
 
+  spin = buildStyx { } {
+    pname = "spin";
+    subPackages = [ "cmd/spin" ];
+  };
+
   # Use static binaries and take only the main binaries to make the image as
   # small as possible:
   xzStaticBin = pkgs.stdenv.mkDerivation {
