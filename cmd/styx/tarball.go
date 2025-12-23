@@ -10,6 +10,7 @@ import (
 
 	"github.com/dnr/styx/common"
 	"github.com/dnr/styx/common/client"
+	"github.com/dnr/styx/common/cobrautil"
 	"github.com/dnr/styx/daemon"
 	"github.com/nix-community/go-nix/pkg/storepath"
 	"github.com/spf13/cobra"
@@ -22,24 +23,24 @@ type tarballArgs struct {
 	shards    int
 }
 
-var tarballCmd = cmd(
+var tarballCmd = cobrautil.Cmd(
 	&cobra.Command{
 		Use:   "tarball <url>",
 		Short: "'substitute' a generic tarball to the local store",
 		Args:  cobra.ExactArgs(1),
 	},
 	withStyxClient,
-	func(c *cobra.Command) runE {
+	func(c *cobra.Command) cobrautil.RunE {
 		var args tarballArgs
 		c.Flags().StringVarP(&args.outlink, "out-link", "o", "", "symlink this to output and register as nix root")
 		c.Flags().BoolVarP(&args.printDrv, "print", "p", false, "print nix code for fixed-output derivation")
 		c.Flags().BoolVarP(&args.printJson, "json", "j", false, "print json info for fixed-output derivation")
 		c.Flags().IntVar(&args.shards, "shards", 0, "split up manifesting")
-		return storer(&args)
+		return cobrautil.Storer(&args)
 	},
 	func(c *cobra.Command, args []string) error {
-		cli := getKeyed[*client.StyxClient](c, "public")
-		targs := get[*tarballArgs](c)
+		cli := cobrautil.GetKeyed[*client.StyxClient](c, "public")
+		targs := cobrautil.Get[*tarballArgs](c)
 
 		// ask daemon to ask manifester to ingest this tarball
 		var res daemon.TarballResp

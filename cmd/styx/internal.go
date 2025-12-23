@@ -15,6 +15,7 @@ import (
 
 	"github.com/dnr/styx/common"
 	"github.com/dnr/styx/common/cdig"
+	"github.com/dnr/styx/common/cobrautil"
 	"github.com/dnr/styx/daemon"
 	"github.com/dnr/styx/manifester"
 	"github.com/dnr/styx/pb"
@@ -36,8 +37,8 @@ func withInFile(c *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	storeKeyed(c, in, "in")
-	c.PostRunE = chainRunE(c.PostRunE, func(c *cobra.Command, args []string) error {
+	cobrautil.StoreKeyed(c, in, "in")
+	c.PostRunE = cobrautil.ChainRunE(c.PostRunE, func(c *cobra.Command, args []string) error {
 		return in.Close()
 	})
 	return nil
@@ -48,14 +49,14 @@ func withOutFile(c *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	storeKeyed(c, out, "out")
-	c.PostRunE = chainRunE(c.PostRunE, func(c *cobra.Command, args []string) error {
+	cobrautil.StoreKeyed(c, out, "out")
+	c.PostRunE = cobrautil.ChainRunE(c.PostRunE, func(c *cobra.Command, args []string) error {
 		return out.Close()
 	})
 	return nil
 }
 
-func withRemanifestReq(c *cobra.Command) runE {
+func withRemanifestReq(c *cobra.Command) cobrautil.RunE {
 	var req remanifestReq
 	c.Flags().StringVar(&req.cacheurl, "cacheurl", "", "manifest cache url")
 	c.MarkFlagRequired("cacheurl")
@@ -65,13 +66,13 @@ func withRemanifestReq(c *cobra.Command) runE {
 	c.Flags().BoolVar(&req.reqIfNot, "request_if_not", false, "rerequest if not found")
 	c.Flags().StringVar(&req.upstream, "upstream", "https://cache.nixos.org/", "remanifest upstream")
 	c.Flags().StringVar(&req.storePath, "storepath", "", "remanifest store path")
-	return storer(&req)
+	return cobrautil.Storer(&req)
 }
 
 func internalCmd() *cobra.Command {
-	return cmd(
+	return cobrautil.Cmd(
 		&cobra.Command{Use: "internal", Short: "internal commands"},
-		cmd(
+		cobrautil.Cmd(
 			&cobra.Command{
 				Use:  "signdaemonparams <daemon params json> <out file image>",
 				Args: cobra.ExactArgs(2),
@@ -80,9 +81,9 @@ func internalCmd() *cobra.Command {
 			withInFile,
 			withOutFile,
 			func(c *cobra.Command, args []string) error {
-				in := getKeyed[*os.File](c, "in")
-				out := getKeyed[*os.File](c, "out")
-				keys := get[[]signature.SecretKey](c)
+				in := cobrautil.GetKeyed[*os.File](c, "in")
+				out := cobrautil.GetKeyed[*os.File](c, "out")
+				keys := cobrautil.Get[[]signature.SecretKey](c)
 				var params pb.DaemonParams
 				var sb []byte
 				if b, err := io.ReadAll(in); err != nil {
@@ -97,14 +98,14 @@ func internalCmd() *cobra.Command {
 				return nil
 			},
 		),
-		cmd(
+		cobrautil.Cmd(
 			&cobra.Command{
 				Use:   "remanifest",
 				Short: "re-request manifests",
 			},
 			withRemanifestReq,
 			func(c *cobra.Command, args []string) error {
-				req := get[*remanifestReq](c)
+				req := cobrautil.Get[*remanifestReq](c)
 				_, sphStr, _ := daemon.ParseSph(req.storePath)
 				mReq := manifester.ManifestReq{
 					Upstream:      req.upstream,
@@ -154,7 +155,7 @@ func internalCmd() *cobra.Command {
 				return nil
 			},
 		),
-		cmd(
+		cobrautil.Cmd(
 			&cobra.Command{
 				Use:   "mcachekey",
 				Short: "print manifest cache key",

@@ -10,9 +10,10 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/dnr/styx/ci"
+	"github.com/dnr/styx/common/cobrautil"
 )
 
-func withAxiomLogs(c *cobra.Command) runE {
+func withAxiomLogs(c *cobra.Command) cobrautil.RunE {
 	useAxiom := c.Flags().Bool("log_axiom", false, "")
 
 	return func(c *cobra.Command, args []string) error {
@@ -21,14 +22,15 @@ func withAxiomLogs(c *cobra.Command) runE {
 			if err != nil {
 				return err
 			}
-			c.PostRunE = chainRunE(c.PostRunE, func(*cobra.Command, []string) error { h.Close(); return nil })
+			closeH := func(*cobra.Command, []string) error { h.Close(); return nil }
+			c.PostRunE = cobrautil.ChainRunE(c.PostRunE, closeH)
 			slog.SetDefault(slog.New(h))
 		}
 		return nil
 	}
 }
 
-func withWorkerConfig(c *cobra.Command) runE {
+func withWorkerConfig(c *cobra.Command) cobrautil.RunE {
 	var cfg ci.WorkerConfig
 
 	c.Flags().StringVar(&cfg.TemporalParams, "temporal_params", "", "source for temporal params")
@@ -51,13 +53,10 @@ func withWorkerConfig(c *cobra.Command) runE {
 	c.Flags().StringVar(&cfg.CSWCfg.ChunkBucket, "chunkbucket", "", "s3 bucket to put chunks")
 	c.Flags().IntVar(&cfg.CSWCfg.ZstdEncoderLevel, "zstd_level", 9, "encoder level for zstd chunks")
 
-	return func(c *cobra.Command, args []string) error {
-		store(c, cfg)
-		return nil
-	}
+	return cobrautil.Storer(&cfg)
 }
 
-func withStartConfig(c *cobra.Command) runE {
+func withStartConfig(c *cobra.Command) cobrautil.RunE {
 	var cfg ci.StartConfig
 
 	c.Flags().StringVar(&cfg.TemporalParams, "temporal_params", "keys/temporal-creds-charon.secret", "source for temporal params")
@@ -79,42 +78,42 @@ func withStartConfig(c *cobra.Command) runE {
 	c.Flags().StringVar(&cfg.Args.ManifestUpstream, "manifest_upstream", defUpstream, "read-only url for dest store")
 	c.Flags().StringVar(&cfg.Args.PublicCacheUpstream, "public_upstream", "https://cache.nixos.org/", "read-only url for public cache")
 
-	return storer(&cfg)
+	return cobrautil.Storer(&cfg)
 }
 
-func withGCConfig(c *cobra.Command) runE {
+func withGCConfig(c *cobra.Command) cobrautil.RunE {
 	var cfg ci.GCConfig
 	c.Flags().StringVar(&cfg.Bucket, "bucket", "styx-1", "s3 bucket")
 	c.Flags().DurationVar(&cfg.MaxAge, "max_age", 210*24*time.Hour, "gc age")
-	return storer(&cfg)
+	return cobrautil.Storer(&cfg)
 }
 
 func main() {
-	root := cmd(
+	root := cobrautil.Cmd(
 		&cobra.Command{
 			Use:   "charon",
 			Short: "charon - CI for styx",
 		},
-		cmd(
+		cobrautil.Cmd(
 			&cobra.Command{Use: "worker", Short: "act as temporal worker"},
 			withAxiomLogs,
 			withWorkerConfig,
 			func(c *cobra.Command, args []string) error {
-				return ci.RunWorker(c.Context(), get[ci.WorkerConfig](c))
+				return ci.RunWorker(c.Context(), *cobrautil.Get[*ci.WorkerConfig](c))
 			},
 		),
-		cmd(
+		cobrautil.Cmd(
 			&cobra.Command{Use: "start", Short: "start ci workflow"},
 			withStartConfig,
 			func(c *cobra.Command, args []string) error {
-				return ci.Start(c.Context(), *get[*ci.StartConfig](c))
+				return ci.Start(c.Context(), *cobrautil.Get[*ci.StartConfig](c))
 			},
 		),
-		cmd(
+		cobrautil.Cmd(
 			&cobra.Command{Use: "gclocal", Short: "run gc from this process (mostly for testing)"},
 			withGCConfig,
 			func(c *cobra.Command, args []string) error {
-				return ci.GCLocal(c.Context(), *get[*ci.GCConfig](c))
+				return ci.GCLocal(c.Context(), *cobrautil.Get[*ci.GCConfig](c))
 			},
 		),
 	)
