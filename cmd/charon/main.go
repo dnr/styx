@@ -13,10 +13,10 @@ import (
 	"github.com/dnr/styx/common/cobrautil"
 )
 
-func withAxiomLogs(c *cobra.Command) cobrautil.RunE {
+func withAxiomLogs(c *cobra.Command) cobrautil.RunEC {
 	useAxiom := c.Flags().Bool("log_axiom", false, "")
 
-	return func(c *cobra.Command, args []string) error {
+	return func(c *cobra.Command) error {
 		if *useAxiom {
 			h, err := axiom_slog_adapter.New()
 			if err != nil {
@@ -98,21 +98,21 @@ func main() {
 			&cobra.Command{Use: "worker", Short: "act as temporal worker"},
 			withAxiomLogs,
 			withWorkerConfig,
-			func(c *cobra.Command, args []string) error {
+			func(c *cobra.Command) error {
 				return ci.RunWorker(c.Context(), *cobrautil.Get[*ci.WorkerConfig](c))
 			},
 		),
 		cobrautil.Cmd(
 			&cobra.Command{Use: "start", Short: "start ci workflow"},
 			withStartConfig,
-			func(c *cobra.Command, args []string) error {
+			func(c *cobra.Command) error {
 				return ci.Start(c.Context(), *cobrautil.Get[*ci.StartConfig](c))
 			},
 		),
 		cobrautil.Cmd(
 			&cobra.Command{Use: "gclocal", Short: "run gc from this process (mostly for testing)"},
 			withGCConfig,
-			func(c *cobra.Command, args []string) error {
+			func(c *cobra.Command) error {
 				return ci.GCLocal(c.Context(), *cobrautil.Get[*ci.GCConfig](c))
 			},
 		),

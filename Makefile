@@ -2,7 +2,7 @@
 styx: */*.go */*/*.go
 	go build ./cmd/styx
 
-charon: cmd/charon/*.go ci/*.go
+charon: */*.go */*/*.go
 	go build ./cmd/charon
 
 gen generate:
