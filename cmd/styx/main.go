@@ -252,8 +252,8 @@ func main() {
 		cobrautil.Cmd(
 			&cobra.Command{Use: "daemon", Short: "act as local daemon"},
 			withDaemonConfig,
-			func(c *cobra.Command) error {
-				err := daemon.NewServer(*cobrautil.Get[*daemon.Config](c)).Start()
+			func(c *cobra.Command, cfg *daemon.Config) error {
+				err := daemon.NewServer(*cfg).Start()
 				if err != nil {
 					return err
 				}
@@ -267,9 +267,7 @@ func main() {
 			},
 			withManifesterConfig,
 			withManifestBuilder,
-			func(c *cobra.Command) error {
-				cfg := cobrautil.Get[*manifester.Config](c)
-				mb := cobrautil.Get[*manifester.ManifestBuilder](c)
+			func(cfg *manifester.Config, mb *manifester.ManifestBuilder) error {
 				m, err := manifester.NewManifestServer(*cfg, mb)
 				if err != nil {
 					return err
@@ -284,9 +282,8 @@ func main() {
 			},
 			withStyxClient,
 			withInitReq,
-			func(c *cobra.Command) error {
-				return cobrautil.Get[*client.StyxClient](c).CallAndPrint(
-					daemon.InitPath, cobrautil.Get[*daemon.InitReq](c))
+			func(cli *client.StyxClient, req *daemon.InitReq) error {
+				return cli.CallAndPrint(daemon.InitPath, req)
 			},
 		),
 		cobrautil.Cmd(
@@ -296,8 +293,8 @@ func main() {
 				Args:  cobra.ExactArgs(3),
 			},
 			withStyxClient,
-			func(c *cobra.Command, args []string) error {
-				return cobrautil.Get[*client.StyxClient](c).CallAndPrint(
+			func(cli *client.StyxClient, args []string) error {
+				return cli.CallAndPrint(
 					daemon.MountPath, &daemon.MountReq{
 						Upstream:   args[0],
 						StorePath:  args[1],
@@ -313,8 +310,8 @@ func main() {
 				Args:  cobra.ExactArgs(1),
 			},
 			withStyxClient,
-			func(c *cobra.Command, args []string) error {
-				return cobrautil.Get[*client.StyxClient](c).CallAndPrint(
+			func(cli *client.StyxClient, args []string) error {
+				return cli.CallAndPrint(
 					daemon.UmountPath, &daemon.UmountReq{
 						StorePath: args[0],
 					},
@@ -328,8 +325,8 @@ func main() {
 				Args:  cobra.ExactArgs(3),
 			},
 			withStyxClient,
-			func(c *cobra.Command, args []string) error {
-				return cobrautil.Get[*client.StyxClient](c).CallAndPrint(
+			func(cli *client.StyxClient, args []string) error {
+				return cli.CallAndPrint(
 					daemon.MaterializePath, &daemon.MaterializeReq{
 						Upstream:  args[0],
 						StorePath: args[1],
@@ -346,10 +343,8 @@ func main() {
 			},
 			withStyxClient,
 			withVaporizeReq,
-			func(c *cobra.Command) error {
-				return cobrautil.Get[*client.StyxClient](c).CallAndPrint(
-					daemon.VaporizePath, cobrautil.Get[*daemon.VaporizeReq](c),
-				)
+			func(cli *client.StyxClient, req *daemon.VaporizeReq) error {
+				return cli.CallAndPrint(daemon.VaporizePath, req)
 			},
 		),
 		cobrautil.Cmd(
@@ -359,12 +354,12 @@ func main() {
 				Args:  cobra.ExactArgs(1),
 			},
 			withStyxClient,
-			func(c *cobra.Command, args []string) error {
+			func(cli *client.StyxClient, args []string) error {
 				arg, err := filepath.Abs(args[0])
 				if err != nil {
 					return err
 				}
-				return cobrautil.Get[*client.StyxClient](c).CallAndPrint(
+				return cli.CallAndPrint(
 					daemon.PrefetchPath, &daemon.PrefetchReq{
 						Path: arg,
 					},
@@ -379,10 +374,8 @@ func main() {
 			},
 			withStyxClient,
 			withGcReq,
-			func(c *cobra.Command) error {
-				return cobrautil.Get[*client.StyxClient](c).CallAndPrint(
-					daemon.GcPath, cobrautil.Get[*daemon.GcReq](c),
-				)
+			func(cli *client.StyxClient, req *daemon.GcReq) error {
+				return cli.CallAndPrint(daemon.GcPath, req)
 			},
 		),
 		cobrautil.Cmd(
@@ -392,9 +385,9 @@ func main() {
 			},
 			withStyxClient,
 			withDebugReq,
-			func(c *cobra.Command) error {
+			func(c *cobra.Command, req *daemon.DebugReq) error {
 				return cobrautil.GetKeyed[*client.StyxClient](c, "public").CallAndPrint(
-					daemon.DebugPath, cobrautil.Get[*daemon.DebugReq](c))
+					daemon.DebugPath, req)
 			},
 		),
 		cobrautil.Cmd(
@@ -404,9 +397,8 @@ func main() {
 			},
 			withStyxClient,
 			withRepairReq,
-			func(c *cobra.Command) error {
-				return cobrautil.Get[*client.StyxClient](c).CallAndPrint(
-					daemon.RepairPath, cobrautil.Get[*daemon.RepairReq](c))
+			func(cli *client.StyxClient, req *daemon.RepairReq) error {
+				return cli.CallAndPrint(daemon.RepairPath, req)
 			},
 		),
 		internalCmd(),
