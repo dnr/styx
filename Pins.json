@@ -1,0 +1,22 @@
+{
+  "$doc": "nix pins using the 'spin' styx-based pinning tool",
+  "$schema": "todo",
+  "$storeDir": "/nix/store",
+  "$version": "spin-1",
+  "pins": [
+    {
+      "name": "nixpkgs",
+      "storePathName": "nixexprs-nixos-25.11.2222",
+      "outputHash": "sha256:bfd9db41ed01830071f8a73145fea2da46d2f04c0a8c11518c06b003dd41fce1",
+      "originalUrl": "https://channels.nixos.org/nixos-25.11/nixexprs.tar.xz",
+      "resolvedUrl": "https://releases.nixos.org/nixos/25.11/nixos-25.11.2222.b3aad468604d/nixexprs.tar.xz"
+    },
+    {
+      "name": "nix-gocacheprog",
+      "storePathName": "349d679ae547.tar.gz",
+      "outputHash": "sha256:4e055682ea2d2449893735340f686dbd8c3e68d713104d8d47d563c1689e4db0",
+      "originalUrl": "https://github.com/dnr/nix-gocacheprog/archive/main.tar.gz",
+      "resolvedUrl": "https://github.com/dnr/nix-gocacheprog/archive/349d679ae5471b2857f229e8e4530cd0c6415eb4.tar.gz"
+    }
+  ]
+}
