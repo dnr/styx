@@ -1,5 +1,8 @@
+let
+  pins = import ./Pins.nix;
+in
 {
-  hostPkgs ? import <nixpkgs> {
+  hostPkgs ? import pins.nixpkgs {
     config = { };
     overlays = [ ];
   },
