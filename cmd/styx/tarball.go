@@ -38,9 +38,8 @@ var tarballCmd = cobrautil.Cmd(
 		c.Flags().IntVar(&args.shards, "shards", 0, "split up manifesting")
 		return cobrautil.Storer(&args)
 	},
-	func(c *cobra.Command, args []string) error {
+	func(c *cobra.Command, args []string, targs *tarballArgs) error {
 		cli := cobrautil.GetKeyed[*client.StyxClient](c, "public")
-		targs := cobrautil.Get[*tarballArgs](c)
 
 		// ask daemon to ask manifester to ingest this tarball
 		var res daemon.TarballResp

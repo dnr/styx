@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"log/slog"
@@ -98,22 +99,22 @@ func main() {
 			&cobra.Command{Use: "worker", Short: "act as temporal worker"},
 			withAxiomLogs,
 			withWorkerConfig,
-			func(c *cobra.Command) error {
-				return ci.RunWorker(c.Context(), *cobrautil.Get[*ci.WorkerConfig](c))
+			func(ctx context.Context, wc *ci.WorkerConfig) error {
+				return ci.RunWorker(ctx, *wc)
 			},
 		),
 		cobrautil.Cmd(
 			&cobra.Command{Use: "start", Short: "start ci workflow"},
 			withStartConfig,
-			func(c *cobra.Command) error {
-				return ci.Start(c.Context(), *cobrautil.Get[*ci.StartConfig](c))
+			func(ctx context.Context, sc *ci.StartConfig) error {
+				return ci.Start(ctx, *sc)
 			},
 		),
 		cobrautil.Cmd(
 			&cobra.Command{Use: "gclocal", Short: "run gc from this process (mostly for testing)"},
 			withGCConfig,
-			func(c *cobra.Command) error {
-				return ci.GCLocal(c.Context(), *cobrautil.Get[*ci.GCConfig](c))
+			func(ctx context.Context, gc *ci.GCConfig) error {
+				return ci.GCLocal(ctx, *gc)
 			},
 		),
 	)
