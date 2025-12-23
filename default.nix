@@ -1,20 +1,17 @@
 let
+  pins = import ./Pins.nix;
   overlay =
     if builtins.getEnv "USE_NIX_GOCACHEPROG" == "" then
       null
     else
-      (import "${
-        fetchTarball {
-          url = "https://github.com/dnr/nix-gocacheprog/archive/349d679ae547.tar.gz";
-          sha256 = "1c2dkrlc2qym8y6ls40ksxl3x35xdml0yd1m6y4lj91dxa15c1af";
-        }
-      }/overlay.nix");
-in
-{
-  pkgs ? import <nixpkgs> {
+      import (pins.nix-gocacheprog + "/overlay.nix");
+  defPkgs = import pins.nixpkgs {
     config = { };
     overlays = if overlay == null then [ ] else [ overlay ];
-  },
+  };
+in
+{
+  pkgs ? defPkgs,
 }:
 rec {
   version = "0.0.13";

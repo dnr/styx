@@ -526,7 +526,7 @@ runvm
 # then run "sudo StyxInitTest1" to set up parameters
 ```
 
-The VM will be set up with `<nixpkgs>` shared on `/tmp/nixpkgs` and set on
+The VM will be set up with the pinned nixpkgs shared on `/tmp/nixpkgs` and set on
 `NIX_PATH`. Styx will be configured to substitute all packages ≥ 32KiB. So start
 with `nix-shell -p ...` and see what happens.
 

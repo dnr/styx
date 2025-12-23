@@ -1,5 +1,8 @@
+let
+  pins = import ./Pins.nix;
+in
 {
-  pkgs ? import <nixpkgs> { },
+  pkgs ? import pins.nixpkgs { },
 }:
 pkgs.mkShell {
   buildInputs = with pkgs; [

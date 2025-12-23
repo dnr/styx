@@ -1,3 +1,6 @@
+let
+  pins = import ./Pins.nix;
+in
 {
   config,
   lib,
@@ -8,7 +11,7 @@
   imports = [
     ./vm-base.nix
     ./module
-    <nixpkgs/nixos/modules/virtualisation/qemu-vm.nix>
+    (pins.nixpkgs + "/nixos/modules/virtualisation/qemu-vm.nix")
   ];
   assertions = [
     {
@@ -31,7 +34,7 @@
   # provide nixpkgs and this dir for convenience
   virtualisation.sharedDirectories = {
     nixpkgs = {
-      source = toString <nixpkgs>;
+      source = toString pins.nixpkgs;
       target = "/tmp/nixpkgs";
     };
     styxsrc = {

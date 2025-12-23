@@ -13,13 +13,14 @@ done
 
 set -eux
 
+buildPinned() { nix-build --no-out-link -E 'import (import ./Pins.nix).nixpkgs {}' -A "$@"; }
 case $fstype in
-  ext4)  mkfs=$(nix-build --no-out-link '<nixpkgs>' -A e2fsprogs)/bin/mkfs.ext4 ;;
-  btrfs) mkfs=$(nix-build --no-out-link '<nixpkgs>' -A btrfs-progs)/bin/mkfs.btrfs ;;
+  ext4)  mkfs=$(buildPinned e2fsprogs)/bin/mkfs.ext4 ;;
+  btrfs) mkfs=$(buildPinned btrfs-progs)/bin/mkfs.btrfs ;;
   *) echo "unknown fstype, use ext4 or btrfs"; exit 1;;
 esac
 
-vm=$(VMFSTYPE=$fstype nix-build --no-out-link '<nixpkgs/nixos>' -A vm -I nixos-config=./vm-interactive.nix)
+vm=$(VMFSTYPE=$fstype nix-build --no-out-link -E 'import ((import ./Pins.nix).nixpkgs + "/nixos")' -A vm -I nixos-config=./vm-interactive.nix)
 if size="$(stty size | tr ' ' :)"; then
   # hack to transfer console size
   export QEMU_KERNEL_PARAMS="styx.consolesize=$size"
