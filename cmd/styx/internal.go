@@ -80,7 +80,7 @@ func internalCmd() *cobra.Command {
 			withSignKeys,
 			withInFile,
 			withOutFile,
-			func(c *cobra.Command, args []string) error {
+			func(c *cobra.Command) error {
 				in := cobrautil.GetKeyed[*os.File](c, "in")
 				out := cobrautil.GetKeyed[*os.File](c, "out")
 				keys := cobrautil.Get[[]signature.SecretKey](c)
@@ -104,7 +104,7 @@ func internalCmd() *cobra.Command {
 				Short: "re-request manifests",
 			},
 			withRemanifestReq,
-			func(c *cobra.Command, args []string) error {
+			func(c *cobra.Command) error {
 				req := cobrautil.Get[*remanifestReq](c)
 				_, sphStr, _ := daemon.ParseSph(req.storePath)
 				mReq := manifester.ManifestReq{
