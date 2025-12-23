@@ -30,6 +30,21 @@ func ChainRunE(fs ...RunE) RunE {
 	}
 }
 
+func ChainRunEC(fs ...RunEC) RunEC {
+	fs = slices.DeleteFunc(fs, func(e RunEC) bool { return e == nil })
+	if len(fs) == 1 {
+		return fs[0]
+	}
+	return func(c *cobra.Command) error {
+		for _, f := range fs {
+			if err := f(c); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+}
+
 func Cmd(c *cobra.Command, stuff ...any) *cobra.Command {
 	for _, gthing := range stuff {
 		switch thing := gthing.(type) {
