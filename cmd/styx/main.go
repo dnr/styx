@@ -11,13 +11,14 @@ import (
 
 	"github.com/dnr/styx/common"
 	"github.com/dnr/styx/common/client"
+	"github.com/dnr/styx/common/cobrautil"
 	"github.com/dnr/styx/common/systemd"
 	"github.com/dnr/styx/daemon"
 	"github.com/dnr/styx/manifester"
 	"github.com/dnr/styx/pb"
 )
 
-func withChunkStoreWrite(c *cobra.Command) runE {
+func withChunkStoreWrite(c *cobra.Command) cobrautil.RunE {
 	var cscfg manifester.ChunkStoreWriteConfig
 
 	c.Flags().StringVar(&cscfg.ChunkBucket, "chunkbucket", "", "s3 bucket to put chunks")
@@ -29,19 +30,19 @@ func withChunkStoreWrite(c *cobra.Command) runE {
 		if err != nil {
 			return err
 		}
-		store(c, cs)
+		cobrautil.Store(c, cs)
 		return nil
 	}
 }
 
-func withManifestBuilder(c *cobra.Command) runE {
+func withManifestBuilder(c *cobra.Command) cobrautil.RunE {
 	var mbcfg manifester.ManifestBuilderConfig
 
 	pubkeys := c.Flags().StringArray("nix_pubkey",
 		[]string{"cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY="},
 		"verify narinfo with this public key")
 
-	return chainRunE(
+	return cobrautil.ChainRunE(
 		withChunkStoreWrite(c),
 		withSignKeys(c),
 		func(c *cobra.Command, args []string) error {
@@ -49,19 +50,19 @@ func withManifestBuilder(c *cobra.Command) runE {
 			if mbcfg.PublicKeys, err = common.LoadPubKeys(*pubkeys); err != nil {
 				return err
 			}
-			mbcfg.SigningKeys = get[[]signature.SecretKey](c)
-			cs := get[manifester.ChunkStoreWrite](c)
+			mbcfg.SigningKeys = cobrautil.Get[[]signature.SecretKey](c)
+			cs := cobrautil.Get[manifester.ChunkStoreWrite](c)
 			mb, err := manifester.NewManifestBuilder(mbcfg, cs)
 			if err != nil {
 				return err
 			}
-			store(c, mb)
+			cobrautil.Store(c, mb)
 			return nil
 		},
 	)
 }
 
-func withDaemonConfig(c *cobra.Command) runE {
+func withDaemonConfig(c *cobra.Command) cobrautil.RunE {
 	cfg := daemon.Config{
 		FdStore: systemd.SystemdFdStore{},
 	}
@@ -76,19 +77,19 @@ func withDaemonConfig(c *cobra.Command) runE {
 	// c.Flags().IntVar(&cfg.SmallFileCutoff, "small_file_cutoff", 224, "cutoff for embedding small files in images")
 	c.Flags().IntVar(&cfg.Workers, "workers", 16, "worker goroutines for cachefilesd serving")
 
-	return storer(&cfg)
+	return cobrautil.Storer(&cfg)
 }
 
-func withInitReq(c *cobra.Command) runE {
+func withInitReq(c *cobra.Command) cobrautil.RunE {
 	var req daemon.InitReq
 
 	paramsUrl := c.Flags().String("params", "", "url to read global parameters from")
 	c.MarkFlagRequired("params")
 
-	return chainRunE(
+	return cobrautil.ChainRunE(
 		withStyxPubKeys(c),
 		func(c *cobra.Command, args []string) error {
-			keys := get[[]signature.PublicKey](c)
+			keys := cobrautil.Get[[]signature.PublicKey](c)
 			for _, k := range keys {
 				req.PubKeys = append(req.PubKeys, k.String())
 			}
@@ -97,13 +98,13 @@ func withInitReq(c *cobra.Command) runE {
 			} else if err = common.VerifyInlineMessage(keys, common.DaemonParamsContext, paramsBytes, &req.Params); err != nil {
 				return err
 			}
-			store(c, &req)
+			cobrautil.Store(c, &req)
 			return nil
 		},
 	)
 }
 
-func withManifesterConfig(c *cobra.Command) runE {
+func withManifesterConfig(c *cobra.Command) cobrautil.RunE {
 	var cfg manifester.Config
 
 	c.Flags().StringVar(&cfg.Bind, "bind", ":7420", "address to listen on")
@@ -121,10 +122,10 @@ func withManifesterConfig(c *cobra.Command) runE {
 	c.Flags().IntVar(&cfg.ChunkDiffZstdLevel, "chunk_diff_zstd_level", 3, "encoder level for chunk diffs")
 	c.Flags().IntVar(&cfg.ChunkDiffParallel, "chunk_diff_parallel", 60, "parallelism for loading chunks for diff")
 
-	return storer(&cfg)
+	return cobrautil.Storer(&cfg)
 }
 
-func withSignKeys(c *cobra.Command) runE {
+func withSignKeys(c *cobra.Command) cobrautil.RunE {
 	signkeys := c.Flags().StringArray("styx_signkey", nil, "sign manifest with key from this file")
 	ssmsignkey := c.Flags().StringArray("styx_ssm_signkey", nil, "sign manifest with key from SSM")
 	return func(c *cobra.Command, args []string) error {
@@ -138,44 +139,44 @@ func withSignKeys(c *cobra.Command) runE {
 		if err != nil {
 			return err
 		}
-		store(c, keys)
+		cobrautil.Store(c, keys)
 		return nil
 	}
 }
 
-func withStyxPubKeys(c *cobra.Command) runE {
+func withStyxPubKeys(c *cobra.Command) cobrautil.RunE {
 	pubkeys := c.Flags().StringArray("styx_pubkey", nil, "verify params and manifests with this key")
 	return func(c *cobra.Command, args []string) error {
 		keys, err := common.LoadPubKeys(*pubkeys)
 		if err != nil {
 			return err
 		}
-		store(c, keys)
+		cobrautil.Store(c, keys)
 		return nil
 	}
 }
 
-func withStyxClient(c *cobra.Command) runE {
+func withStyxClient(c *cobra.Command) cobrautil.RunE {
 	socket := c.Flags().String("addr", "/var/cache/styx/styx.sock", "path to local styx socket")
 	public_socket := c.Flags().String("public_addr", "/var/run/styx.sock", "path to public styx socket")
 	return func(c *cobra.Command, args []string) error {
-		store(c, client.NewClient(*socket))
-		storeKeyed(c, client.NewClient(*public_socket), "public")
+		cobrautil.Store(c, client.NewClient(*socket))
+		cobrautil.StoreKeyed(c, client.NewClient(*public_socket), "public")
 		return nil
 	}
 }
 
-func withVaporizeReq(c *cobra.Command) runE {
+func withVaporizeReq(c *cobra.Command) cobrautil.RunE {
 	var req daemon.VaporizeReq
 	c.Flags().StringVar(&req.Name, "name", "", "store name, if not same as path basename")
 	return func(c *cobra.Command, args []string) error {
 		req.Path = args[0]
-		store(c, &req)
+		cobrautil.Store(c, &req)
 		return nil
 	}
 }
 
-func withGcReq(c *cobra.Command) runE {
+func withGcReq(c *cobra.Command) cobrautil.RunE {
 	var req daemon.GcReq
 	dryRunSlow := c.Flags().Bool("with_freed_stats", false, "return stats on bytes freed too")
 	doIt := c.Flags().Bool("doit", false, "actually do the gc")
@@ -204,12 +205,12 @@ func withGcReq(c *cobra.Command) runE {
 			req.GcByState[pb.MountState_UnmountRequested] = true
 			req.GcByState[pb.MountState_Deleted] = true
 		}
-		store(c, &req)
+		cobrautil.Store(c, &req)
 		return nil
 	}
 }
 
-func withDebugReq(c *cobra.Command) runE {
+func withDebugReq(c *cobra.Command) cobrautil.RunE {
 	var req daemon.DebugReq
 	c.Flags().BoolVar(&req.IncludeAllImages, "all-images", false, "include all images")
 	c.Flags().StringArrayVarP(&req.IncludeImages, "image", "i", nil, "specific images to include")
@@ -224,15 +225,15 @@ func withDebugReq(c *cobra.Command) runE {
 			img, _, _ = strings.Cut(img, "-")
 			req.IncludeImages[i] = img
 		}
-		store(c, &req)
+		cobrautil.Store(c, &req)
 		return nil
 	}
 }
 
-func withRepairReq(c *cobra.Command) runE {
+func withRepairReq(c *cobra.Command) cobrautil.RunE {
 	var req daemon.RepairReq
 	c.Flags().BoolVar(&req.Presence, "presence", false, "repair presence info")
-	return storer(&req)
+	return cobrautil.Storer(&req)
 }
 
 func main() {
@@ -243,23 +244,23 @@ func main() {
 		log.SetFlags(log.LstdFlags | log.Lshortfile)
 	}
 
-	root := cmd(
+	root := cobrautil.Cmd(
 		&cobra.Command{
 			Use:   "styx",
 			Short: "styx - streaming filesystem for nix",
 		},
-		cmd(
+		cobrautil.Cmd(
 			&cobra.Command{Use: "daemon", Short: "act as local daemon"},
 			withDaemonConfig,
 			func(c *cobra.Command, args []string) error {
-				err := daemon.NewServer(*get[*daemon.Config](c)).Start()
+				err := daemon.NewServer(*cobrautil.Get[*daemon.Config](c)).Start()
 				if err != nil {
 					return err
 				}
 				return <-make(chan error) // block forever
 			},
 		),
-		cmd(
+		cobrautil.Cmd(
 			&cobra.Command{
 				Use:   "manifester",
 				Short: "act as manifester server",
@@ -267,8 +268,8 @@ func main() {
 			withManifesterConfig,
 			withManifestBuilder,
 			func(c *cobra.Command, args []string) error {
-				cfg := get[*manifester.Config](c)
-				mb := get[*manifester.ManifestBuilder](c)
+				cfg := cobrautil.Get[*manifester.Config](c)
+				mb := cobrautil.Get[*manifester.ManifestBuilder](c)
 				m, err := manifester.NewManifestServer(*cfg, mb)
 				if err != nil {
 					return err
@@ -276,7 +277,7 @@ func main() {
 				return m.Run()
 			},
 		),
-		cmd(
+		cobrautil.Cmd(
 			&cobra.Command{
 				Use:   "init",
 				Short: "initializes daemon with required configuration (client)",
@@ -284,11 +285,11 @@ func main() {
 			withStyxClient,
 			withInitReq,
 			func(c *cobra.Command, args []string) error {
-				return get[*client.StyxClient](c).CallAndPrint(
-					daemon.InitPath, get[*daemon.InitReq](c))
+				return cobrautil.Get[*client.StyxClient](c).CallAndPrint(
+					daemon.InitPath, cobrautil.Get[*daemon.InitReq](c))
 			},
 		),
-		cmd(
+		cobrautil.Cmd(
 			&cobra.Command{
 				Use:   "mount <upstream> <store path> <mount point>",
 				Short: "mounts a nix package (client)",
@@ -296,7 +297,7 @@ func main() {
 			},
 			withStyxClient,
 			func(c *cobra.Command, args []string) error {
-				return get[*client.StyxClient](c).CallAndPrint(
+				return cobrautil.Get[*client.StyxClient](c).CallAndPrint(
 					daemon.MountPath, &daemon.MountReq{
 						Upstream:   args[0],
 						StorePath:  args[1],
@@ -305,7 +306,7 @@ func main() {
 				)
 			},
 		),
-		cmd(
+		cobrautil.Cmd(
 			&cobra.Command{
 				Use:   "umount <store path>",
 				Short: "unmounts a nix package that was previously mounted (client)",
@@ -313,14 +314,14 @@ func main() {
 			},
 			withStyxClient,
 			func(c *cobra.Command, args []string) error {
-				return get[*client.StyxClient](c).CallAndPrint(
+				return cobrautil.Get[*client.StyxClient](c).CallAndPrint(
 					daemon.UmountPath, &daemon.UmountReq{
 						StorePath: args[0],
 					},
 				)
 			},
 		),
-		cmd(
+		cobrautil.Cmd(
 			&cobra.Command{
 				Use:   "materialize <upstream> <store path> <dest>",
 				Short: "downloads a nix package to a regular filesystem (client)",
@@ -328,7 +329,7 @@ func main() {
 			},
 			withStyxClient,
 			func(c *cobra.Command, args []string) error {
-				return get[*client.StyxClient](c).CallAndPrint(
+				return cobrautil.Get[*client.StyxClient](c).CallAndPrint(
 					daemon.MaterializePath, &daemon.MaterializeReq{
 						Upstream:  args[0],
 						StorePath: args[1],
@@ -337,7 +338,7 @@ func main() {
 				)
 			},
 		),
-		cmd(
+		cobrautil.Cmd(
 			&cobra.Command{
 				Use:   "vaporize [--name] <path>",
 				Short: "imports data from the local filesystem into styx (client)",
@@ -346,12 +347,12 @@ func main() {
 			withStyxClient,
 			withVaporizeReq,
 			func(c *cobra.Command, args []string) error {
-				return get[*client.StyxClient](c).CallAndPrint(
-					daemon.VaporizePath, get[*daemon.VaporizeReq](c),
+				return cobrautil.Get[*client.StyxClient](c).CallAndPrint(
+					daemon.VaporizePath, cobrautil.Get[*daemon.VaporizeReq](c),
 				)
 			},
 		),
-		cmd(
+		cobrautil.Cmd(
 			&cobra.Command{
 				Use:   "prefetch <path>",
 				Short: "prefetch the given file or directory (client)",
@@ -363,7 +364,7 @@ func main() {
 				if err != nil {
 					return err
 				}
-				return get[*client.StyxClient](c).CallAndPrint(
+				return cobrautil.Get[*client.StyxClient](c).CallAndPrint(
 					daemon.PrefetchPath, &daemon.PrefetchReq{
 						Path: arg,
 					},
@@ -371,7 +372,7 @@ func main() {
 			},
 		),
 		tarballCmd,
-		cmd(
+		cobrautil.Cmd(
 			&cobra.Command{
 				Use:   "gc",
 				Short: "garbage collects the styx store",
@@ -379,12 +380,12 @@ func main() {
 			withStyxClient,
 			withGcReq,
 			func(c *cobra.Command, args []string) error {
-				return get[*client.StyxClient](c).CallAndPrint(
-					daemon.GcPath, get[*daemon.GcReq](c),
+				return cobrautil.Get[*client.StyxClient](c).CallAndPrint(
+					daemon.GcPath, cobrautil.Get[*daemon.GcReq](c),
 				)
 			},
 		),
-		cmd(
+		cobrautil.Cmd(
 			&cobra.Command{
 				Use:   "debug",
 				Short: "dumps info from daemon (client)",
@@ -392,11 +393,11 @@ func main() {
 			withStyxClient,
 			withDebugReq,
 			func(c *cobra.Command, args []string) error {
-				return getKeyed[*client.StyxClient](c, "public").CallAndPrint(
-					daemon.DebugPath, get[*daemon.DebugReq](c))
+				return cobrautil.GetKeyed[*client.StyxClient](c, "public").CallAndPrint(
+					daemon.DebugPath, cobrautil.Get[*daemon.DebugReq](c))
 			},
 		),
-		cmd(
+		cobrautil.Cmd(
 			&cobra.Command{
 				Use:   "repair",
 				Short: "tries to repair bad states (client)",
@@ -404,8 +405,8 @@ func main() {
 			withStyxClient,
 			withRepairReq,
 			func(c *cobra.Command, args []string) error {
-				return get[*client.StyxClient](c).CallAndPrint(
-					daemon.RepairPath, get[*daemon.RepairReq](c))
+				return cobrautil.Get[*client.StyxClient](c).CallAndPrint(
+					daemon.RepairPath, cobrautil.Get[*daemon.RepairReq](c))
 			},
 		),
 		internalCmd(),
