@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"path"
@@ -96,6 +97,8 @@ func ResolveUrl(ctx context.Context, input string) (Result, error) {
 	}
 	hostPath := u.Host + u.Path
 
+	log.Println("resolving url", input)
+
 	// try forges
 	for _, h := range handlers {
 		if m := h.re.FindStringSubmatch(hostPath); m != nil {
@@ -108,6 +111,9 @@ func ResolveUrl(ctx context.Context, input string) (Result, error) {
 
 			commit, err := resolveGitRef(ctx, gitURL, gitref)
 			if err == nil {
+				// FIXME: pass this back through h.re to ensure that it's idempotent
+				resolved := h.f(m, commit)
+				log.Println("using", h.name, "url pattern ->", resolved)
 				// FIXME: add commit date to this so they sort in the right order in the catalog
 				name := sanitizeStorePathName(fmt.Sprintf("%s-%s-%s", h.name, owner, repo))
 				// note that the url we return here may still redirect. that's okay, as long as
@@ -116,7 +122,7 @@ func ResolveUrl(ctx context.Context, input string) (Result, error) {
 				// commit as a fake etag and not worry about the actual etag.
 				fakeEtag := fmt.Sprintf(`G/"%s"`, commit)
 				return Result{
-					Url:           h.f(m, commit),
+					Url:           resolved,
 					StorePathName: name,
 					Etag:          fakeEtag,
 				}, nil
@@ -126,6 +132,7 @@ func ResolveUrl(ctx context.Context, input string) (Result, error) {
 
 	// follow http redirects (for nix channels, releases, etc.)
 	// TODO: actually do lockable tarball protocol here
+	log.Println("doing head request on", input)
 	res, err := common.RetryHttpRequest(ctx, http.MethodHead, input, "", nil)
 	if err != nil {
 		return Result{}, err
@@ -138,6 +145,7 @@ func ResolveUrl(ctx context.Context, input string) (Result, error) {
 	// if we don't have an etag then we can't write an etag cache entry, but we can still
 	// ingest it and return a manifest.
 	etag := res.Header.Get("Etag")
+	log.Println("using redirect ->", resolved, "has etag", etag != "")
 	return Result{
 		Url:           resolved,
 		StorePathName: spName,
