@@ -69,6 +69,9 @@ var handlers = []handler{
 
 // resolveGitRef returns the 40-char SHA for a given ref
 func resolveGitRef(ctx context.Context, gitURL, ref string) (string, error) {
+	if isGitHash(ref) {
+		return ref, nil // already is a hash
+	}
 	rem := git.NewRemote(memory.NewStorage(), &config.RemoteConfig{
 		Name: "origin",
 		URLs: []string{gitURL},
@@ -80,7 +83,6 @@ func resolveGitRef(ctx context.Context, gitURL, ref string) (string, error) {
 	for _, r := range refs {
 		n := r.Name().String()
 		if n == "refs/heads/"+ref || n == "refs/tags/"+ref || n == ref {
-			// TODO: get date here too
 			return r.Hash().String(), nil
 		}
 	}
@@ -162,4 +164,10 @@ func getSpNameFromUrl(url string) string {
 
 func sanitizeStorePathName(s string) string {
 	return strings.Join(storepath.NameRe.FindAllString(s, -1), "_")
+}
+
+var reGitHash = regexp.MustCompile(`[0-9a-f]{40}([0-9a-f]{24})?`)
+
+func isGitHash(s string) bool {
+	return reGitHash.FindString(s) == s
 }
