@@ -38,6 +38,7 @@ type pinJson struct {
 type pinData struct {
 	Name          string `json:"name"`
 	StorePathName string `json:"storePathName"`
+	StorePathHash string `json:"storePathHash"`
 	OutputHash    string `json:"outputHash"`
 	OriginalUrl   string `json:"originalUrl"`
 	ResolvedUrl   string `json:"resolvedUrl"`
@@ -101,6 +102,7 @@ func (d *pinData) update(ctx context.Context) error {
 	log.Println("using name", out.StorePathName)
 	d.ResolvedUrl = out.ResolvedUrl
 	d.StorePathName = out.StorePathName
+	d.StorePathHash = out.StorePathHash
 	d.OutputHash = out.NarHashAlgo + ":" + out.NarHash
 	return nil
 }
