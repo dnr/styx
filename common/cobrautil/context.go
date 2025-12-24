@@ -31,11 +31,3 @@ func StoreKeyed[T any](c *cobra.Command, v T, key any) {
 func GetKeyed[T any](c *cobra.Command, key any) T {
 	return c.Context().Value(ckey{t: reflect.TypeFor[T](), k: key}).(T)
 }
-
-// Storer returns a function that stores the given argument in the context at run time.
-func Storer[T any](v T) RunE {
-	return func(c *cobra.Command, ignored []string) error {
-		Store(c, v)
-		return nil
-	}
-}

@@ -30,13 +30,13 @@ var tarballCmd = cobrautil.Cmd(
 		Args:  cobra.ExactArgs(1),
 	},
 	withStyxClient,
-	func(c *cobra.Command) cobrautil.RunE {
+	func(c *cobra.Command) *tarballArgs {
 		var args tarballArgs
 		c.Flags().StringVarP(&args.outlink, "out-link", "o", "", "symlink this to output and register as nix root")
 		c.Flags().BoolVarP(&args.printDrv, "print", "p", false, "print nix code for fixed-output derivation")
 		c.Flags().BoolVarP(&args.printJson, "json", "j", false, "print json info for fixed-output derivation")
 		c.Flags().IntVar(&args.shards, "shards", 0, "split up manifesting")
-		return cobrautil.Storer(&args)
+		return &args
 	},
 	func(c *cobra.Command, args []string, targs *tarballArgs) error {
 		cli := cobrautil.GetKeyed[*client.StyxClient](c, "public")

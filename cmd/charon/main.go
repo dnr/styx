@@ -31,7 +31,7 @@ func withAxiomLogs(c *cobra.Command) cobrautil.RunEC {
 	}
 }
 
-func withWorkerConfig(c *cobra.Command) cobrautil.RunE {
+func withWorkerConfig(c *cobra.Command) *ci.WorkerConfig {
 	var cfg ci.WorkerConfig
 
 	c.Flags().StringVar(&cfg.TemporalParams, "temporal_params", "", "source for temporal params")
@@ -54,10 +54,10 @@ func withWorkerConfig(c *cobra.Command) cobrautil.RunE {
 	c.Flags().StringVar(&cfg.CSWCfg.ChunkBucket, "chunkbucket", "", "s3 bucket to put chunks")
 	c.Flags().IntVar(&cfg.CSWCfg.ZstdEncoderLevel, "zstd_level", 9, "encoder level for zstd chunks")
 
-	return cobrautil.Storer(&cfg)
+	return &cfg
 }
 
-func withStartConfig(c *cobra.Command) cobrautil.RunE {
+func withStartConfig(c *cobra.Command) *ci.StartConfig {
 	var cfg ci.StartConfig
 
 	c.Flags().StringVar(&cfg.TemporalParams, "temporal_params", "keys/temporal-creds-charon.secret", "source for temporal params")
@@ -79,14 +79,14 @@ func withStartConfig(c *cobra.Command) cobrautil.RunE {
 	c.Flags().StringVar(&cfg.Args.ManifestUpstream, "manifest_upstream", defUpstream, "read-only url for dest store")
 	c.Flags().StringVar(&cfg.Args.PublicCacheUpstream, "public_upstream", "https://cache.nixos.org/", "read-only url for public cache")
 
-	return cobrautil.Storer(&cfg)
+	return &cfg
 }
 
-func withGCConfig(c *cobra.Command) cobrautil.RunE {
+func withGCConfig(c *cobra.Command) *ci.GCConfig {
 	var cfg ci.GCConfig
 	c.Flags().StringVar(&cfg.Bucket, "bucket", "styx-1", "s3 bucket")
 	c.Flags().DurationVar(&cfg.MaxAge, "max_age", 210*24*time.Hour, "gc age")
-	return cobrautil.Storer(&cfg)
+	return &cfg
 }
 
 func main() {
