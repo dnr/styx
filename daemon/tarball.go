@@ -113,6 +113,7 @@ func (s *Server) handleTarballReq(ctx context.Context, r *TarballReq) (*TarballR
 	// if we have an etag we can try a cache lookup
 	if rr.Etag != "" {
 		// we have an etag, we can try a cache lookup
+		log.Println("checking manifest cache for tarball", rr.Url, "etag", rr.Etag)
 		envelopeBytes, _ = s.p().mcread.Get(ctx, mReq.CacheKey(), nil)
 		mReq.ETag = ""
 	}
@@ -123,6 +124,8 @@ func (s *Server) handleTarballReq(ctx context.Context, r *TarballReq) (*TarballR
 		if err != nil {
 			return nil, err
 		}
+	} else {
+		log.Println("tarball manifest cache hit on", rr.Url)
 	}
 
 	// verify signature and params
