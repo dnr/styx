@@ -33,7 +33,7 @@ Then use commands:
 spin add nixpkgs https://channels.nixos.org/nixos-25.11/nixexprs.tar.xz
 spin add other https://github.com/owner/repo/archive/branch.tar.gz
 spin update nixpkgs
-spin updateall
+spin update --all
 ```
 
 Tarball URLs from `channels.nixos.org`, `releases.nixos.org`, `github.com`,
@@ -83,7 +83,16 @@ system:
 
 ## Help, it broke
 
-`export SPIN_FALLBACK=1` and try whatever you tried again.
+Due to limited integration between Styx and Nix, the Styx daemon can't "just
+know" about all your pins to make them Styx-substitutable, there's some state
+stored in the local daemon that's updated when you add/update a pin. So the
+first time you use code with pins on a different machine, it might not work.
+
+To refresh the daemon, run `spin refresh --all`, then try again (the error
+message should have suggested this).
+
+If that doesn't work, or if you're not using Styx at all, you can `export
+SPIN_FALLBACK=1` and try again.
 
 That makes it use `builtins.fetchTarball` so it should properly fall back to
 direct downloads. It doesn't do this all the time because

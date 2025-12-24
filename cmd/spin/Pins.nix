@@ -11,7 +11,7 @@ let
     derivation {
       name = p.storePathName;
       system = builtins.currentSystem;
-      builder = "not buildable: run 'styx tarball ${p.resolvedUrl}' or set SPIN_FALLBACK=1 and try again";
+      builder = "not buildable: run `spin refresh --all` or set `SPIN_FALLBACK=1` and try again";
       outputHash = p.outputHash;
       outputHashMode = "recursive";
     };
