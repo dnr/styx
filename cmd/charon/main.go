@@ -23,8 +23,8 @@ func withAxiomLogs(c *cobra.Command) cobrautil.RunEC {
 			if err != nil {
 				return err
 			}
-			closeH := func(*cobra.Command, []string) error { h.Close(); return nil }
-			c.PostRunE = cobrautil.ChainRunE(c.PostRunE, closeH)
+			closeH := func() error { h.Close(); return nil }
+			c.PostRunE = cobrautil.Chain(c.PostRunE, closeH)
 			slog.SetDefault(slog.New(h))
 		}
 		return nil
