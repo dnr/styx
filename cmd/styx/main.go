@@ -62,7 +62,7 @@ func withManifestBuilder(c *cobra.Command) cobrautil.RunEC {
 	)
 }
 
-func withDaemonConfig(c *cobra.Command) cobrautil.RunE {
+func withDaemonConfig(c *cobra.Command) *daemon.Config {
 	cfg := daemon.Config{
 		FdStore: systemd.SystemdFdStore{},
 	}
@@ -77,7 +77,7 @@ func withDaemonConfig(c *cobra.Command) cobrautil.RunE {
 	// c.Flags().IntVar(&cfg.SmallFileCutoff, "small_file_cutoff", 224, "cutoff for embedding small files in images")
 	c.Flags().IntVar(&cfg.Workers, "workers", 16, "worker goroutines for cachefilesd serving")
 
-	return cobrautil.Storer(&cfg)
+	return &cfg
 }
 
 func withInitReq(c *cobra.Command) cobrautil.RunEC {
@@ -104,7 +104,7 @@ func withInitReq(c *cobra.Command) cobrautil.RunEC {
 	)
 }
 
-func withManifesterConfig(c *cobra.Command) cobrautil.RunE {
+func withManifesterConfig(c *cobra.Command) *manifester.Config {
 	var cfg manifester.Config
 
 	c.Flags().StringVar(&cfg.Bind, "bind", ":7420", "address to listen on")
@@ -122,7 +122,7 @@ func withManifesterConfig(c *cobra.Command) cobrautil.RunE {
 	c.Flags().IntVar(&cfg.ChunkDiffZstdLevel, "chunk_diff_zstd_level", 3, "encoder level for chunk diffs")
 	c.Flags().IntVar(&cfg.ChunkDiffParallel, "chunk_diff_parallel", 60, "parallelism for loading chunks for diff")
 
-	return cobrautil.Storer(&cfg)
+	return &cfg
 }
 
 func withSignKeys(c *cobra.Command) cobrautil.RunEC {
@@ -230,10 +230,10 @@ func withDebugReq(c *cobra.Command) cobrautil.RunEC {
 	}
 }
 
-func withRepairReq(c *cobra.Command) cobrautil.RunE {
+func withRepairReq(c *cobra.Command) *daemon.RepairReq {
 	var req daemon.RepairReq
 	c.Flags().BoolVar(&req.Presence, "presence", false, "repair presence info")
-	return cobrautil.Storer(&req)
+	return &req
 }
 
 func main() {

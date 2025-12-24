@@ -56,7 +56,7 @@ func withOutFile(c *cobra.Command, args []string) error {
 	return nil
 }
 
-func withRemanifestReq(c *cobra.Command) cobrautil.RunE {
+func withRemanifestReq(c *cobra.Command) *remanifestReq {
 	var req remanifestReq
 	c.Flags().StringVar(&req.cacheurl, "cacheurl", "", "manifest cache url")
 	c.MarkFlagRequired("cacheurl")
@@ -66,7 +66,7 @@ func withRemanifestReq(c *cobra.Command) cobrautil.RunE {
 	c.Flags().BoolVar(&req.reqIfNot, "request_if_not", false, "rerequest if not found")
 	c.Flags().StringVar(&req.upstream, "upstream", "https://cache.nixos.org/", "remanifest upstream")
 	c.Flags().StringVar(&req.storePath, "storepath", "", "remanifest store path")
-	return cobrautil.Storer(&req)
+	return &req
 }
 
 func internalCmd() *cobra.Command {

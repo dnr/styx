@@ -2,6 +2,7 @@ package cobrautil
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"reflect"
 	"slices"
@@ -72,7 +73,7 @@ func ChainRunEC(fs ...RunEC) RunEC {
 //
 //	Filter [plus action]: call outer function now, chain result to RunE to run at run time.
 //	Typically the outer function will add some flags to c.Flags(), and the inner function will
-//	store values in c.Context() using Store/StoreKeyed/Storer.
+//	store values in c.Context() using Store/StoreKeyed.
 func Cmd(c *cobra.Command, stuff ...any) *cobra.Command {
 	for _, thing := range stuff {
 		if subCmd, ok := thing.(*cobra.Command); ok {
@@ -106,7 +107,8 @@ func asAction(v reflect.Value) RunE {
 		t := v.Type()
 		ins := make([]reflect.Value, t.NumIn())
 		for i := range t.NumIn() {
-			switch t.In(i) {
+			tin := t.In(i)
+			switch tin {
 			case reflect.TypeFor[*cobra.Command]():
 				ins[i] = reflect.ValueOf(c)
 			case reflect.TypeFor[context.Context]():
@@ -114,13 +116,17 @@ func asAction(v reflect.Value) RunE {
 			case reflect.TypeFor[[]string]():
 				ins[i] = reflect.ValueOf(args)
 			default:
-				ins[i] = reflect.ValueOf(c.Context().Value(ckey{t: t.In(i)}))
+				in := c.Context().Value(ckey{t: tin})
+				if in == nil {
+					panic(fmt.Sprintf("couldn't find value for %s in context", tin))
+				}
+				ins[i] = reflect.ValueOf(in)
 			}
 		}
-		if err := v.Call(ins)[0].Interface(); err == nil {
+		if out := v.Call(ins)[0]; out.IsNil() {
 			return nil
 		} else {
-			return err.(error)
+			return out.Interface().(error)
 		}
 	}
 }
@@ -132,7 +138,8 @@ func validFilter(t reflect.Type) bool {
 		// must accept *cobra.Command
 		t.In(0) == reflect.TypeFor[*cobra.Command]() &&
 		// don't handle more than one return value (could be added later)
-		(t.NumOut() == 0 || (t.NumOut() == 1 && validAction(t.Out(0))))
+		// disallow 'error' since that would be confused with actions
+		(t.NumOut() == 0 || t.Out(0) != reflect.TypeFor[error]())
 }
 
 func callFilter(v reflect.Value, c *cobra.Command) RunE {
@@ -140,5 +147,13 @@ func callFilter(v reflect.Value, c *cobra.Command) RunE {
 	if len(out) == 0 {
 		return nil // we're done
 	}
-	return asAction(out[0])
+	o0 := out[0]
+	if validAction(o0.Type()) {
+		return asAction(o0) // run action at run time
+	}
+	// store value
+	return func(c *cobra.Command, ignored []string) error {
+		c.SetContext(context.WithValue(c.Context(), ckey{t: o0.Type()}, o0.Interface()))
+		return nil
+	}
 }
