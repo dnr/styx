@@ -1,4 +1,4 @@
-commit 881203f67d18b06ed18cfdd659ae82d1c2683f7d
+commit 6cb99ad5ee02d018ea0b3cdcb3d02311511f14db
 Author: David Reiss <dnr@dnr.im>
 Date:   Thu Dec 18 21:14:41 2025 -0800
 
@@ -121,7 +121,7 @@ index 73fb14b1b..e49bb79d3 100644
  
          uint64_t bytesFreed;
 diff --git a/src/libstore/http-binary-cache-store.cc b/src/libstore/http-binary-cache-store.cc
-index a499bb948..77e92676a 100644
+index a499bb948..058975223 100644
 --- a/src/libstore/http-binary-cache-store.cc
 +++ b/src/libstore/http-binary-cache-store.cc
 @@ -4,6 +4,8 @@
@@ -133,12 +133,16 @@ index a499bb948..77e92676a 100644
  namespace nix {
  
  MakeError(UploadToHTTP, Error);
-@@ -73,6 +75,22 @@ public:
+@@ -73,6 +75,26 @@ public:
          }
      }
  
 +    StyxMode canUseStyx(int narSize, std::string name) override {
-+        if (!useStyx || narSize < settings.styxMinSize)
++        // always use styx on fake cache, even if nar is too small
++        // TODO: maybe easier to do this a different way so we don't need a
++        // special case here
++        auto fakeCache = (getUri() == "http://localhost:7444");
++        if (!fakeCache && (!useStyx || narSize < settings.styxMinSize))
 +            return StyxDisable;
 +        // TODO: compile these only once
 +        for (auto & exc : settings.styxExclude.get())

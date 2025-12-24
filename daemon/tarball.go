@@ -76,8 +76,10 @@ func (s *Server) getFakeNarinfo(w http.ResponseWriter, r *http.Request) {
 	} else if m := reNarinfoPath.FindStringSubmatch(r.URL.Path); m == nil {
 		http.NotFound(w, r)
 	} else if data, err := s.getFakeCacheData(m[1]); err != nil {
+		log.Printf("fake narinfo for %s: %s", m[1], err)
 		http.NotFound(w, r)
 	} else {
+		log.Printf("serving fake narinfo for %s from %s", m[1], data.Upstream)
 		w.Header().Set("Content-Type", "text/x-nix-narinfo")
 		w.Write(data.Narinfo)
 	}
@@ -187,6 +189,7 @@ func (s *Server) handleTarballReq(ctx context.Context, r *TarballReq) (*TarballR
 	if err != nil {
 		return nil, err
 	}
+	log.Printf("added fake narinfo for %s from %s (orig %s)", sph, rr.Url, r.UpstreamUrl)
 
 	return &TarballResp{
 		ResolvedUrl:   mm.GenericTarballResolved,
