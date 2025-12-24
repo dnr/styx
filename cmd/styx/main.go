@@ -35,23 +35,22 @@ func withChunkStoreWrite(c *cobra.Command) cobrautil.RunEC {
 	}
 }
 
-func withManifestBuilder(c *cobra.Command) cobrautil.RunEC {
+func withManifestBuilder(c *cobra.Command) cobrautil.RunE {
 	var mbcfg manifester.ManifestBuilderConfig
 
 	pubkeys := c.Flags().StringArray("nix_pubkey",
 		[]string{"cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY="},
 		"verify narinfo with this public key")
 
-	return cobrautil.ChainRunEC(
+	return cobrautil.Chain(
 		withChunkStoreWrite(c),
 		withSignKeys(c),
-		func(c *cobra.Command) error {
+		func(c *cobra.Command, skeys []signature.SecretKey, cs manifester.ChunkStoreWrite) error {
 			var err error
 			if mbcfg.PublicKeys, err = common.LoadPubKeys(*pubkeys); err != nil {
 				return err
 			}
-			mbcfg.SigningKeys = cobrautil.Get[[]signature.SecretKey](c)
-			cs := cobrautil.Get[manifester.ChunkStoreWrite](c)
+			mbcfg.SigningKeys = skeys
 			mb, err := manifester.NewManifestBuilder(mbcfg, cs)
 			if err != nil {
 				return err
@@ -80,16 +79,15 @@ func withDaemonConfig(c *cobra.Command) *daemon.Config {
 	return &cfg
 }
 
-func withInitReq(c *cobra.Command) cobrautil.RunEC {
+func withInitReq(c *cobra.Command) cobrautil.RunE {
 	var req daemon.InitReq
 
 	paramsUrl := c.Flags().String("params", "", "url to read global parameters from")
 	c.MarkFlagRequired("params")
 
-	return cobrautil.ChainRunEC(
+	return cobrautil.Chain(
 		withStyxPubKeys(c),
-		func(c *cobra.Command) error {
-			keys := cobrautil.Get[[]signature.PublicKey](c)
+		func(c *cobra.Command, keys []signature.PublicKey) error {
 			for _, k := range keys {
 				req.PubKeys = append(req.PubKeys, k.String())
 			}

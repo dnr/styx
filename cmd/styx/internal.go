@@ -38,9 +38,7 @@ func withInFile(c *cobra.Command, args []string) error {
 		return err
 	}
 	cobrautil.StoreKeyed(c, in, "in")
-	c.PostRunE = cobrautil.ChainRunE(c.PostRunE, func(c *cobra.Command, args []string) error {
-		return in.Close()
-	})
+	c.PostRunE = cobrautil.Chain(c.PostRunE, in.Close)
 	return nil
 }
 
@@ -50,9 +48,7 @@ func withOutFile(c *cobra.Command, args []string) error {
 		return err
 	}
 	cobrautil.StoreKeyed(c, out, "out")
-	c.PostRunE = cobrautil.ChainRunE(c.PostRunE, func(c *cobra.Command, args []string) error {
-		return out.Close()
-	})
+	c.PostRunE = cobrautil.Chain(c.PostRunE, out.Close)
 	return nil
 }
 

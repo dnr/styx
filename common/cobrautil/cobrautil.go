@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log"
 	"reflect"
-	"slices"
 
 	"github.com/spf13/cobra"
 )
@@ -16,31 +15,33 @@ type RunE = func(c *cobra.Command, args []string) error
 // RunEC is like RunE but doesn't take args.
 type RunEC = func(c *cobra.Command) error
 
-// ChainRunE returns a RunE that runs its arguments in order and stops on the first error.
-func ChainRunE(fs ...RunE) RunE {
-	fs = slices.DeleteFunc(fs, func(e RunE) bool { return e == nil })
-	if len(fs) == 1 {
-		return fs[0]
+// Chain returns a RunE that runs its arguments in order and stops on the first error.
+// Each argument must be a func(...) error.
+func Chain(fs ...any) RunE {
+	actions := make([]RunE, 0, len(fs))
+	for _, f := range fs {
+		if f == nil {
+			// ignore
+		} else if runE, ok := f.(RunE); ok {
+			if runE != nil { // typed nil
+				actions = append(actions, runE)
+			}
+		} else {
+			v := reflect.ValueOf(f)
+			if !validAction(v.Type()) {
+				panic("invalid action to Chain")
+			}
+			actions = append(actions, asAction(v))
+		}
+	}
+	if len(actions) == 0 {
+		return func(*cobra.Command, []string) error { return nil }
+	} else if len(actions) == 1 {
+		return actions[0]
 	}
 	return func(c *cobra.Command, args []string) error {
-		for _, f := range fs {
+		for _, f := range actions {
 			if err := f(c, args); err != nil {
-				return err
-			}
-		}
-		return nil
-	}
-}
-
-// ChainRunEC returns a RunEC that runs its arguments in order and stops on the first error.
-func ChainRunEC(fs ...RunEC) RunEC {
-	fs = slices.DeleteFunc(fs, func(e RunEC) bool { return e == nil })
-	if len(fs) == 1 {
-		return fs[0]
-	}
-	return func(c *cobra.Command) error {
-		for _, f := range fs {
-			if err := f(c); err != nil {
 				return err
 			}
 		}
@@ -82,12 +83,11 @@ func Cmd(c *cobra.Command, stuff ...any) *cobra.Command {
 		}
 		v := reflect.ValueOf(thing)
 		t := v.Type()
-		// Generic action or filter
 		if validAction(t) {
-			c.RunE = ChainRunE(c.RunE, asAction(v))
+			c.RunE = Chain(c.RunE, asAction(v))
 		} else if validFilter(t) {
 			action := callFilter(v, c)
-			c.RunE = ChainRunE(c.RunE, action)
+			c.RunE = Chain(c.RunE, action)
 		} else {
 			log.Panicf("bad Cmd argument: %T %v", thing, thing)
 		}
