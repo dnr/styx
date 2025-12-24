@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
-	"strings"
 
 	"github.com/dnr/styx/common"
 	"github.com/dnr/styx/common/client"
@@ -17,8 +16,7 @@ import (
 )
 
 type tarballArgs struct {
-	outlink   string
-	printDrv  bool
+	realise   bool
 	printJson bool
 	shards    int
 }
@@ -27,14 +25,16 @@ var tarballCmd = cobrautil.Cmd(
 	&cobra.Command{
 		Use:   "tarball <url>",
 		Short: "'substitute' a generic tarball to the local store",
-		Args:  cobra.ExactArgs(1),
+		Long: `With no flags, realises the tarball with Styx and prints the store path on stdout.
+With --json, does not realise and prints json metadata that can be used to build a derivation.
+With --json --realise, realises and then prints json.`,
+		Args: cobra.ExactArgs(1),
 	},
 	withStyxClient,
 	func(c *cobra.Command) *tarballArgs {
 		var args tarballArgs
-		c.Flags().StringVarP(&args.outlink, "out-link", "o", "", "symlink this to output and register as nix root")
-		c.Flags().BoolVarP(&args.printDrv, "print", "p", false, "print nix code for fixed-output derivation")
 		c.Flags().BoolVarP(&args.printJson, "json", "j", false, "print json info for fixed-output derivation")
+		c.Flags().BoolVar(&args.realise, "realise", false, "realise tarball (always without --json)")
 		c.Flags().IntVar(&args.shards, "shards", 0, "split up manifesting")
 		return &args
 	},
@@ -57,63 +57,23 @@ var tarballCmd = cobrautil.Cmd(
 			return fmt.Errorf("invalid name %q", res.StorePathName)
 		}
 
+		// realise it
+		if targs.realise || !targs.printJson {
+			sp := "/nix/store/" + res.StorePathHash + "-" + res.StorePathName
+			cmd := exec.CommandContext(c.Context(), "nix-store", "--realise", sp)
+			if targs.printJson {
+				cmd.Stdout, cmd.Stderr = os.Stderr, os.Stderr
+			} else {
+				cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
+			}
+			if err := cmd.Run(); err != nil {
+				return err
+			}
+		}
+
 		if targs.printJson {
 			return json.NewEncoder(os.Stdout).Encode(res)
 		}
-
-		// we want to tell nix to just "substitute this", but it needs a derivation, so
-		// construct a minimal derivation. this is not buildable, it just has the right
-		// store path and is a FOD. the styx daemon acts as a "binary cache" for this store
-		// path, so nix will ask styx to do the substitution.
-		derivationStr := fmt.Sprintf(`derivation {
-  name = %s;
-  system = builtins.currentSystem;
-  builder = "not buildable: run 'styx tarball <url>' and try again";
-  outputHash = "%s:%s";
-  outputHashMode = "recursive";
-
-  styxOriginalUrl = %s;
-  styxResolvedUrl = %s;
-}`, escapeNixString(res.StorePathName), res.NarHashAlgo, res.NarHash, escapeNixString(args[0]), escapeNixString(res.ResolvedUrl))
-
-		if targs.printDrv {
-			// TODO: print something using builtins.fetchTarball instead so it can be
-			// evaluated without styx but also substitute.
-			// needs to wait for: https://github.com/NixOS/nix/pull/14138 in 2.32.0
-			fmt.Println(derivationStr)
-			return nil
-		}
-
-		// realize the derivation
-		cmd := exec.CommandContext(c.Context(), "nix-build", "-E", derivationStr, "--no-fallback")
-		if targs.outlink != "" {
-			cmd.Args = append(cmd.Args, "--out-link", targs.outlink)
-		} else {
-			cmd.Args = append(cmd.Args, "--no-out-link")
-		}
-		cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
-		return cmd.Run()
+		return nil
 	},
 )
-
-func escapeNixString(s string) string {
-	var b strings.Builder
-	b.WriteByte('"')
-	for i := range len(s) {
-		switch c := s[i]; c {
-		case '"', '\\', '$':
-			b.WriteByte('\\')
-			b.WriteByte(c)
-		case '\n':
-			b.WriteString(`\n`)
-		case '\r':
-			b.WriteString(`\r`)
-		case '\t':
-			b.WriteString(`\t`)
-		default:
-			b.WriteByte(c)
-		}
-	}
-	b.WriteByte('"')
-	return b.String()
-}
