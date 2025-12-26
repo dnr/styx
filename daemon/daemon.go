@@ -172,6 +172,10 @@ func (s *Server) p() *postinit {
 	return s.post.Load()
 }
 
+func (s *Server) ondemand() bool {
+	return s.devnode.Load() > 0
+}
+
 func (s *Server) postInit(params *pb.DaemonParams, keys []signature.PublicKey) error {
 	post := &postinit{
 		keys:   keys,
@@ -589,6 +593,8 @@ func (s *Server) handleInitReq(ctx context.Context, r *InitReq) (*Status, error)
 func (s *Server) handleMountReq(ctx context.Context, r *MountReq) (*Status, error) {
 	if s.p() == nil {
 		return nil, mwErr(http.StatusPreconditionFailed, "styx is not initialized, call 'styx init --params=...'")
+	} else if !s.ondemand() {
+		return nil, mwErr(http.StatusPreconditionFailed, "styx on-demand features disabled")
 	}
 	_, sphStr, _, err := ParseSphAndName(r.StorePath)
 	if err != nil {
@@ -721,6 +727,8 @@ func (s *Server) tryMount(ctx context.Context, req *MountReq, haveImageSize int6
 func (s *Server) handleUmountReq(ctx context.Context, r *UmountReq) (*Status, error) {
 	if s.p() == nil {
 		return nil, mwErr(http.StatusPreconditionFailed, "styx is not initialized, call 'styx init --params=...'")
+	} else if !s.ondemand() {
+		return nil, mwErr(http.StatusPreconditionFailed, "styx on-demand features disabled")
 	}
 
 	// allowed to leave out the name part here
@@ -816,7 +824,8 @@ func (s *Server) Start() error {
 		return fmt.Errorf("error setting up manifest slab: %w", err)
 	}
 	if err := s.setupDevNode(); err != nil {
-		return err
+		log.Println("on-demand features disabled:", err)
+		// don't abort, support manifest only
 	}
 	if err := s.startSocketServer(); err != nil {
 		return err
@@ -825,14 +834,22 @@ func (s *Server) Start() error {
 		return err
 	}
 	go s.pruneRecentCaches()
-	go s.cachefilesServer()
-	// TODO: get number of slabs from db and mount them all
-	if err := s.mountSlabImage(0); err != nil {
-		log.Print(err)
-		// don't exit here, we can operate, just without diffing
+	if s.ondemand() {
+		go s.cachefilesServer()
+		// TODO: get number of slabs from db and mount them all
+		if err := s.mountSlabImage(0); err != nil {
+			log.Print(err)
+			// don't exit here, we can operate, just without diffing
+		}
+		log.Println("cachefiles server ready, using", s.cfg.CachePath)
+		s.restoreMounts()
+	} else {
+		if err := s.setupFakeSlabImage(0); err != nil {
+			log.Print(err)
+			// don't exit here, we can operate, just without diffing
+		}
+		log.Printf("set up slab %d for non-on-demand mode", 0)
 	}
-	log.Println("cachefiles server ready, using", s.cfg.CachePath)
-	s.restoreMounts()
 	s.cfg.FdStore.Ready()
 	return nil
 }
@@ -1301,10 +1318,36 @@ func (s *Server) mountSlabImage(slabId uint16) error {
 	}
 
 	s.stateLock.Lock()
-	s.readfdBySlab[common.TruncU16(slabId)] = slabFds{slabFd, cacheFd}
+	s.readfdBySlab[slabId] = slabFds{slabFd, cacheFd}
 	s.stateLock.Unlock()
 
 	log.Println(logMsg, fsid)
+	return nil
+}
+
+func (s *Server) setupFakeSlabImage(slabId uint16) error {
+	// If we're not in on-demand mode, set up a plain file in the same place where cachefiles
+	// would have put it, so that we can get fds to use. Also if this system does switch to
+	// cachefiles later, it should just work from there.
+	tag, totalBlocks := s.SlabInfo(slabId)
+	backingPath := filepath.Join(s.cfg.CachePath, fscachePath(s.cfg.CacheDomain, tag))
+	_ = os.MkdirAll(filepath.Dir(backingPath), 0o755)
+	fd, err := unix.Open(backingPath, unix.O_RDWR|unix.O_CREAT, 0o600)
+	if err != nil {
+		return err
+	}
+	// this doesn't really matter, it might only matter for a transition to cachefiles
+	_ = unix.Ftruncate(fd, int64(totalBlocks)<<s.blockShift)
+
+	s.stateLock.Lock()
+	defer s.stateLock.Unlock()
+	s.stateBySlab[slabId] = &openFileState{
+		writeFd: common.TruncU32(fd), // write and read to same fd
+		tp:      typeSlab,
+		slabId:  slabId,
+	}
+	s.readfdBySlab[slabId] = slabFds{fd, fd}
+
 	return nil
 }
 

@@ -1,10 +1,13 @@
 package main
 
 import (
+	"context"
 	"log"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
 
 	"github.com/nix-community/go-nix/pkg/narinfo/signature"
 	"github.com/spf13/cobra"
@@ -250,12 +253,16 @@ func main() {
 		cobrautil.Cmd(
 			&cobra.Command{Use: "daemon", Short: "act as local daemon"},
 			withDaemonConfig,
-			func(c *cobra.Command, cfg *daemon.Config) error {
-				err := daemon.NewServer(*cfg).Start()
-				if err != nil {
+			func(ctx context.Context, cfg *daemon.Config) error {
+				s := daemon.NewServer(*cfg)
+				if err := s.Start(); err != nil {
 					return err
 				}
-				return <-make(chan error) // block forever
+				sctx, cancel := signal.NotifyContext(ctx, syscall.SIGTERM)
+				defer cancel()
+				<-sctx.Done()
+				s.Stop(false)
+				return nil
 			},
 		),
 		cobrautil.Cmd(
