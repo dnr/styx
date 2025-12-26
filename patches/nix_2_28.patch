@@ -1,39 +1,18 @@
-commit 6cb99ad5ee02d018ea0b3cdcb3d02311511f14db
-Author: David Reiss <dnr@dnr.im>
-Date:   Thu Dec 18 21:14:41 2025 -0800
-
-    Port Styx patch to 2.28
-
-diff --git a/src/libstore/binary-cache-store.cc b/src/libstore/binary-cache-store.cc
-index 5c36da5a7..94525537b 100644
---- a/src/libstore/binary-cache-store.cc
-+++ b/src/libstore/binary-cache-store.cc
-@@ -104,6 +104,11 @@ std::optional<std::string> BinaryCacheStore::getFile(const std::string & path)
-     return std::move(sink.s);
- }
- 
-+StyxMode BinaryCacheStore::canUseStyx(int narSize, std::string name)
-+{
-+    return StyxDisable;
-+}
-+
- std::string BinaryCacheStore::narInfoFileFor(const StorePath & storePath)
- {
-     return std::string(storePath.hashPart()) + ".narinfo";
 diff --git a/src/libstore/build/substitution-goal.cc b/src/libstore/build/substitution-goal.cc
-index 8869d9a0e..cec5aed11 100644
+index 8869d9a0e..404d71272 100644
 --- a/src/libstore/build/substitution-goal.cc
 +++ b/src/libstore/build/substitution-goal.cc
-@@ -3,6 +3,8 @@
+@@ -3,6 +3,9 @@
  #include "nix/store/nar-info.hh"
  #include "nix/util/finally.hh"
  #include "nix/util/signals.hh"
 +#include "nix/store/binary-cache-store.hh"
 +#include "nix/store/local-store.hh"
++#include "nix/store/styx.hh"
  #include <coroutine>
  
  namespace nix {
-@@ -202,18 +204,42 @@ Goal::Co PathSubstitutionGoal::tryToRun(
+@@ -202,18 +205,42 @@ Goal::Co PathSubstitutionGoal::tryToRun(
  #endif
  
      auto promise = std::promise<void>();
@@ -51,7 +30,7 @@ index 8869d9a0e..cec5aed11 100644
 +            // Get styx mode
 +            auto cacheSrc = sub.dynamic_pointer_cast<BinaryCacheStore>();
 +            auto localDst = dynamic_cast<LocalStore *>(&worker.store);
-+            styxMode = cacheSrc && localDst ? cacheSrc->canUseStyx(info->narSize, std::string(info->path.name())) : StyxDisable;
++            styxMode = (cacheSrc && localDst) ? canUseStyx(cacheSrc->getUri(), info->narSize, std::string(info->path.name())) : StyxDisable;
 +            std::string uriPrefix = styxMode == StyxDisable ? "" : "STYX:";
 +            auto checkSigs = sub->isTrusted ? NoCheckSigs : CheckSigs;
 +
@@ -79,7 +58,7 @@ index 8869d9a0e..cec5aed11 100644
  
              promise.set_value();
          } catch (...) {
-@@ -261,7 +287,17 @@ Goal::Co PathSubstitutionGoal::tryToRun(
+@@ -261,7 +288,17 @@ Goal::Co PathSubstitutionGoal::tryToRun(
  
      worker.markContentsGood(storePath);
  
@@ -120,68 +99,6 @@ index 73fb14b1b..e49bb79d3 100644
          results.paths.insert(path);
  
          uint64_t bytesFreed;
-diff --git a/src/libstore/http-binary-cache-store.cc b/src/libstore/http-binary-cache-store.cc
-index a499bb948..058975223 100644
---- a/src/libstore/http-binary-cache-store.cc
-+++ b/src/libstore/http-binary-cache-store.cc
-@@ -4,6 +4,8 @@
- #include "nix/store/nar-info-disk-cache.hh"
- #include "nix/util/callback.hh"
- 
-+#include <regex>
-+
- namespace nix {
- 
- MakeError(UploadToHTTP, Error);
-@@ -73,6 +75,26 @@ public:
-         }
-     }
- 
-+    StyxMode canUseStyx(int narSize, std::string name) override {
-+        // always use styx on fake cache, even if nar is too small
-+        // TODO: maybe easier to do this a different way so we don't need a
-+        // special case here
-+        auto fakeCache = (getUri() == "http://localhost:7444");
-+        if (!fakeCache && (!useStyx || narSize < settings.styxMinSize))
-+            return StyxDisable;
-+        // TODO: compile these only once
-+        for (auto & exc : settings.styxExclude.get())
-+            if (std::regex_match(name, std::regex(exc)))
-+                return StyxDisable;
-+        for (auto & inc : settings.styxOndemand.get())
-+            if (std::regex_match(name, std::regex(inc)))
-+                return StyxMount;
-+        for (auto & inc : settings.styxMaterialize.get())
-+            if (std::regex_match(name, std::regex(inc)))
-+                return StyxMaterialize;
-+        return StyxDisable;
-+    }
-+
- protected:
- 
-     void maybeDisable()
-diff --git a/src/libstore/include/nix/store/binary-cache-store.hh b/src/libstore/include/nix/store/binary-cache-store.hh
-index a8469074a..a6091cf4d 100644
---- a/src/libstore/include/nix/store/binary-cache-store.hh
-+++ b/src/libstore/include/nix/store/binary-cache-store.hh
-@@ -6,6 +6,7 @@
- #include "nix/store/log-store.hh"
- 
- #include "nix/util/pool.hh"
-+#include "nix/store/styx.hh"
- 
- #include <atomic>
- 
-@@ -108,6 +109,9 @@ public:
- 
-     std::optional<std::string> getFile(const std::string & path);
- 
-+    // just for HttpBinaryCacheStore, but has to be defined here
-+    virtual StyxMode canUseStyx(int narSize, std::string name);
-+
- public:
- 
-     virtual void init() override;
 diff --git a/src/libstore/include/nix/store/build-result.hh b/src/libstore/include/nix/store/build-result.hh
 index eade22e42..e9c562ba7 100644
 --- a/src/libstore/include/nix/store/build-result.hh
@@ -204,14 +121,16 @@ index eade22e42..e9c562ba7 100644
                  return "Unknown";
              };
 diff --git a/src/libstore/include/nix/store/globals.hh b/src/libstore/include/nix/store/globals.hh
-index 8b0650faa..c7e684675 100644
+index 8b0650faa..f1a82052b 100644
 --- a/src/libstore/include/nix/store/globals.hh
 +++ b/src/libstore/include/nix/store/globals.hh
-@@ -1360,6 +1360,17 @@ public:
+@@ -1360,8 +1360,22 @@ public:
            Default is 0, which disables the warning.
            Set it to 1 to warn on all paths.
          )"};
 +
++    Setting<Strings> styxSubstituters{this, Strings{"https://cache.nixos.org/"}, "styx-substituters",
++        "Use Styx for these substituters."};
 +    Setting<int> styxMinSize{this, 64*1024, "styx-min-size",
 +        "Use Styx only for paths larger than this nar size."};
 +    Setting<Strings> styxOndemand{this, Strings{}, "styx-ondemand",
@@ -224,20 +143,10 @@ index 8b0650faa..c7e684675 100644
 +        "Path to Styx socket."};
  };
  
- // FIXME: don't use a global variable.
-diff --git a/src/libstore/include/nix/store/http-binary-cache-store.hh b/src/libstore/include/nix/store/http-binary-cache-store.hh
-index 88caadb44..3fd1bb529 100644
---- a/src/libstore/include/nix/store/http-binary-cache-store.hh
-+++ b/src/libstore/include/nix/store/http-binary-cache-store.hh
-@@ -10,6 +10,8 @@ struct HttpBinaryCacheStoreConfig : virtual BinaryCacheStoreConfig
- 
-     Path cacheUri;
- 
-+    const Setting<bool> useStyx{this, false, "styx", "Use styx for this store."};
 +
-     const std::string name() override
-     {
-         return "HTTP Binary Cache Store";
+ // FIXME: don't use a global variable.
+ extern Settings settings;
+ 
 diff --git a/src/libstore/include/nix/store/local-store.hh b/src/libstore/include/nix/store/local-store.hh
 index 5893b7d8b..b33bab76f 100644
 --- a/src/libstore/include/nix/store/local-store.hh
@@ -266,10 +175,10 @@ index 312fd5e87..0201c056d 100644
    'worker-protocol-impl.hh',
 diff --git a/src/libstore/include/nix/store/styx.hh b/src/libstore/include/nix/store/styx.hh
 new file mode 100644
-index 000000000..3cfe5eb11
+index 000000000..78ac36e0f
 --- /dev/null
 +++ b/src/libstore/include/nix/store/styx.hh
-@@ -0,0 +1,20 @@
+@@ -0,0 +1,21 @@
 +#pragma once
 +///@file
 +
@@ -283,6 +192,7 @@ index 000000000..3cfe5eb11
 +    StyxMaterialize
 +} StyxMode;
 +
++StyxMode canUseStyx(const std::string storeUri, int narSize, std::string name);
 +void makeStyxMount(const std::string upstream, const std::string storePath, const std::string mountPoint, int narSize);
 +void makeStyxMaterialize(const std::string upstream, const std::string storePath, const std::string dest, int narSize);
 +bool isStyxMount(const std::string path);
@@ -377,10 +287,10 @@ index c2e2fc969..30ceb7852 100644
    'worker-protocol.cc',
 diff --git a/src/libstore/styx.cc b/src/libstore/styx.cc
 new file mode 100644
-index 000000000..993e778e1
+index 000000000..62691d20f
 --- /dev/null
 +++ b/src/libstore/styx.cc
-@@ -0,0 +1,116 @@
+@@ -0,0 +1,142 @@
 +
 +#include "nix/util/error.hh"
 +#include "nix/util/file-system.hh"
@@ -388,6 +298,7 @@ index 000000000..993e778e1
 +#include "nix/util/logging.hh"
 +#include "nix/store/styx.hh"
 +
++#include <regex>
 +#include <map>
 +#include <sys/vfs.h>
 +
@@ -429,12 +340,37 @@ index 000000000..993e778e1
 +        throw Error("styx error: curl: %d", curlRes);
 +    }
 +    nlohmann::json res = nlohmann::json::parse(resData);
-+    if (res.at("Success") != true) {
-+        std::string error = res.at("Error");
-+        throw Error("styx error: %s", error);
++    if (!res.value("Success", false)) {
++        throw Error(res.value("Error", "<missing>"));
 +    }
 +}
 +
++StyxMode canUseStyx(const std::string storeUri, int narSize, std::string name) {
++    auto trim = [](std::string_view s) {
++        return s.back() == '/' ? s.substr(0, s.size() - 1) : s;
++    };
++    // always use styx on fake cache, even if nar is too small
++    // TODO: maybe easier to do this a different way so we don't need a
++    // special case here
++    if (trim(storeUri) != trim("http://localhost:7444")) {
++        bool useStyx = false;
++        for (auto & uri : settings.styxSubstituters.get())
++            if (trim(uri) == trim(storeUri)) { useStyx = true; break; }
++        if (!useStyx || narSize < settings.styxMinSize)
++            return StyxDisable;
++    }
++    // TODO: compile these only once
++    for (auto & exc : settings.styxExclude.get())
++        if (std::regex_match(name, std::regex(exc)))
++            return StyxDisable;
++    for (auto & inc : settings.styxOndemand.get())
++        if (std::regex_match(name, std::regex(inc)))
++            return StyxMount;
++    for (auto & inc : settings.styxMaterialize.get())
++        if (std::regex_match(name, std::regex(inc)))
++            return StyxMaterialize;
++    return StyxDisable;
++}
 +
 +void makeStyxMount(const std::string upstream, const std::string storePath, const std::string mountPoint, int narSize)
 +{
