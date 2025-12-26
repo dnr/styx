@@ -40,13 +40,9 @@ with lib;
 
     (mkIf (cfg.enable || cfg.enableNixSettings) {
       nix.settings = {
-        substituters = mkForce [
-          # Add "?styx=1" to default substituter.
-          # TODO: can we do this in overlay style to filter the previous value?
-          "https://cache.nixos.org/?styx=1"
-          # styx serves narinfo on localhost for fods only
-          "http://localhost:7444/?styx=1"
-        ];
+        # styx serves narinfo on localhost for fods only
+        substituters = [ "http://localhost:7444/" ];
+        styx-substituters = [ "https://cache.nixos.org/" ];
         styx-ondemand = [ ];
         styx-materialize = [ ];
       };
@@ -55,7 +51,8 @@ with lib;
     (mkIf (cfg.enable || cfg.enableStyxNixCache) {
       nix.settings = {
         # Use binary cache to avoid rebuilds:
-        extra-substituters = [ "https://styx-1.s3.amazonaws.com/nixcache/?styx=1" ];
+        extra-substituters = [ "https://styx-1.s3.amazonaws.com/nixcache/" ];
+        extra-styx-substituters = [ "https://styx-1.s3.amazonaws.com/nixcache/" ];
         extra-trusted-public-keys = [ "styx-nixcache-test-1:IbJB9NG5antB2WpE+aE5QzmXapT2yLQb8As/FRkbm3Q=" ];
       };
     })

@@ -88,7 +88,7 @@ rec {
   # TODO: switch to nixVersions.stable
   patchedNix = pkgs.nixVersions.nix_2_28.overrideAttrs (prev: {
     patches = prev.patches ++ [ ./patches/nix_2_28.patch ];
-    # doCheck = false doesn't work since it needs checkInputs to build
+    # "doCheck = false" doesn't work since it needs checkInputs to build
     checkPhase = "true"; # broke nix-functional-tests:ca / build, ignore for now
     doInstallCheck = false; # broke tests/ca, ignore for now
   });
