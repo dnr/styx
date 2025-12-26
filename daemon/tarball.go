@@ -76,7 +76,7 @@ func (s *Server) getFakeNarinfo(w http.ResponseWriter, r *http.Request) {
 	} else if m := reNarinfoPath.FindStringSubmatch(r.URL.Path); m == nil {
 		http.NotFound(w, r)
 	} else if data, err := s.getFakeCacheData(m[1]); err != nil {
-		log.Printf("fake narinfo for %s: %s", m[1], err)
+		// too noisy: log.Printf("fake narinfo for %s: %s", m[1], err)
 		http.NotFound(w, r)
 	} else {
 		log.Printf("serving fake narinfo for %s from %s", m[1], data.Upstream)

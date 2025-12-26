@@ -96,7 +96,7 @@ with lib;
           "shutdown.target"
         ];
         conflicts = [ "shutdown.target" ];
-        requires = [
+        wants = [
           "modprobe@cachefiles.service"
         ];
         after = [

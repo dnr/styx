@@ -17,7 +17,8 @@ func (s *Server) handleDebugReq(ctx context.Context, r *DebugReq) (*DebugResp, e
 	// allow this even before "initialized"
 
 	res := &DebugResp{
-		DbStats: s.db.Stats(),
+		OnDemand: s.ondemand(),
+		DbStats:  s.db.Stats(),
 	}
 	return res, s.db.View(func(tx *bbolt.Tx) error {
 		// meta

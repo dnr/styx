@@ -117,12 +117,13 @@ type (
 		IncludeChunkSharing bool `json:",omitempty"`
 	}
 	DebugResp struct {
-		Params  *pb.DbParams
-		Stats   Stats
-		DbStats bbolt.Stats
-		Images  map[string]DebugImage      `json:",omitempty"`
-		Slabs   []*DebugSlabInfo           `json:",omitempty"`
-		Chunks  map[string]*DebugChunkInfo `json:",omitempty"`
+		Params   *pb.DbParams
+		OnDemand bool
+		Stats    Stats
+		DbStats  bbolt.Stats
+		Images   map[string]DebugImage      `json:",omitempty"`
+		Slabs    []*DebugSlabInfo           `json:",omitempty"`
+		Chunks   map[string]*DebugChunkInfo `json:",omitempty"`
 
 		ChunkSharingDist map[int]int `json:",omitempty"`
 	}
