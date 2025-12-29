@@ -6,17 +6,29 @@
 It's a Nix pinning tool, like npins or flakes or many others.
 
 Basically, I added "tarball" support to Styx for downloading nixpkgs, and by the
-time I was done, I realized I had made half of a pinning tool. So I just made
-the other half.
+time I was done, I realized I had made the backend of a pinning tool. So I just
+made a tiny frontend for it. It's like 200 lines of Go plus 30 lines of Nix.
 
 ## What's different about it?
 
-Not much really, the main thing is that it integrates with Styx and uses Styx to
-fetch inputs, which comes with all the advantages of Styx for saving bandwidth
-and disk space.
+The only really new idea here is to break up the concept of "pinning" into a few
+pieces:
 
-Most inputs are small so it doesn't make much difference. Nixpkgs is pretty big
-and using Styx to download only deltas is nice.
+- Taking an "input" and resolving it and locking it. This is provided by the
+  tarball manifest feature in Styx.
+- Actually getting the bytes of the input to your disk. This is provided by the
+  rest of Styx.
+- A UI+library for adding/updating/removing inputs and using them from your Nix
+  code. This is Spin.
+
+The first two parts could be used as a backend for other pinning tools, even
+including flakes, and maybe some day I'll write that integration (or you will).
+In the meantime, Spin is a simple way to do pinning using Styx as the backend,
+which comes with all the advantages of Styx for saving bandwidth and disk space
+and avoiding downloads of unused data.
+
+Of course, most inputs are small so it doesn't make much difference. Nixpkgs is
+pretty big and using Styx to download only deltas is nice.
 
 ## Should I use it?
 
@@ -27,7 +39,7 @@ Probably not, I made it for myself and it's pretty bare-bones.
 First, set up Styx and set `services.styx.includeSpin = true`.
 (Eventually I'll add a fallback so Styx isn't required.)
 
-Then use commands:
+Then do stuff like this:
 
 ```sh
 spin add nixpkgs https://channels.nixos.org/nixos-25.11/nixexprs.tar.xz
@@ -86,13 +98,14 @@ system:
 Due to limited integration between Styx and Nix, the Styx daemon can't "just
 know" about all your pins to make them Styx-substitutable, there's some state
 stored in the local daemon that's updated when you add/update a pin. So the
-first time you use code with pins on a different machine, it might not work.
+first time you use code with pins on a different machine, it probably won't
+work.
 
 To refresh the daemon, run `spin refresh --all`, then try again (the error
 message should have suggested this).
 
-If that doesn't work, or if you're not using Styx at all, you can `export
-SPIN_FALLBACK=1` and try again.
+If that doesn't work, or if you're not using Styx at all, you can
+`export SPIN_FALLBACK=1` and try again.
 
 That makes it use `builtins.fetchTarball` so it should properly fall back to
 direct downloads. It doesn't do this all the time because
