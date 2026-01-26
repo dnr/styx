@@ -134,6 +134,8 @@ with lib;
           FileDescriptorStorePreserve = "yes";
           LimitNOFILE = "500000";
           Restart = "on-failure";
+          TimeoutStartSec = "180s";
+          TimeoutStopSec = "15s";
         };
       };
     })
