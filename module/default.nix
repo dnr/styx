@@ -96,12 +96,8 @@ with lib;
           "shutdown.target"
         ];
         conflicts = [ "shutdown.target" ];
-        wants = [
-          "modprobe@cachefiles.service"
-        ];
         after = [
           "local-fs.target"
-          "modprobe@cachefiles.service"
         ];
         # TODO: restartTriggers?
         unitConfig = {
@@ -112,6 +108,7 @@ with lib;
           ];
         };
         serviceConfig = {
+          ExecStartPre = [ "-${pkgs.kmod}/bin/modprobe cachefiles" ];
           # Use unshare directly instead of PrivateMounts so that our new mounts
           # are propagated normally, but we can remount /nix/store rw.
           ExecStart = utils.escapeSystemdExecArgs (
