@@ -5,8 +5,8 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"log"
-	"maps"
 	"math"
 	"net/http"
 	"slices"
@@ -93,7 +93,7 @@ func (s *Server) handleGcReq(ctx context.Context, r *GcReq) (*GcResp, error) {
 		if _, ok := g.keepImage[string(k)]; ok {
 			continue
 		}
-		delImages = append(delImages, k)
+		delImages = append(delImages, bytes.Clone(k))
 		var img pb.DbImage
 		var sph Sph
 		var err error
@@ -104,10 +104,10 @@ func (s *Server) handleGcReq(ctx context.Context, r *GcReq) (*GcResp, error) {
 			continue
 		}
 		fkey := bytes.Join([][]byte{[]byte(spName), []byte{0}, sph[:]}, nil)
-		rkey := sph[:]
+		rkey := bytes.Clone(sph[:])
 		manifestSph := makeManifestSph(sph)
 		mfkey := bytes.Join([][]byte{[]byte(isManifestPrefix), []byte(spName), []byte{0}, manifestSph[:]}, nil)
-		mrkey := manifestSph[:]
+		mrkey := bytes.Clone(manifestSph[:])
 		delCatalogF = append(delCatalogF, fkey, mfkey)
 		delCatalogR = append(delCatalogR, rkey, mrkey)
 	}
@@ -117,7 +117,7 @@ func (s *Server) handleGcReq(ctx context.Context, r *GcReq) (*GcResp, error) {
 	mbcur := g.mb.Cursor()
 	for k, _ := mbcur.First(); k != nil; k, _ = mbcur.Next() {
 		if _, ok := g.keepImage[string(k)]; !ok {
-			delManifests = append(delManifests, k)
+			delManifests = append(delManifests, bytes.Clone(k))
 		}
 	}
 
@@ -182,10 +182,11 @@ func (s *Server) handleGcReq(ctx context.Context, r *GcReq) (*GcResp, error) {
 			lsb = sb.Bucket(slabKey(l.SlabId))
 			lastBucket, lastKey = lsb, l.SlabId
 		}
-		if lsb != nil {
-			lsb.Delete(addrKey(l.Addr))
-			lsb.Delete(addrKey(l.Addr | presentMask))
+		if lsb == nil {
+			return nil, fmt.Errorf("inconsistency: slab bucket %d not found", l.SlabId)
 		}
+		lsb.Delete(addrKey(l.Addr))
+		lsb.Delete(addrKey(l.Addr | presentMask))
 	}
 
 	// after all locs have been deleted, find ranges to punch out
@@ -199,6 +200,9 @@ func (s *Server) handleGcReq(ctx context.Context, r *GcReq) (*GcResp, error) {
 		if l.SlabId != lastKey {
 			lsb = sb.Bucket(slabKey(l.SlabId))
 			lastBucket, lastKey, lastEnd = lsb, l.SlabId, 0
+		}
+		if lsb == nil {
+			return nil, fmt.Errorf("inconsistency: slab bucket %d not found", l.SlabId)
 		}
 		var end uint32
 		if k, _ := lsb.Cursor().Seek(addrKey(l.Addr)); k == nil {
@@ -278,10 +282,24 @@ func (s *Server) handleGcReq(ctx context.Context, r *GcReq) (*GcResp, error) {
 	if len(punchLocs) > 0 {
 		// actually punch holes
 		s.stateLock.Lock()
-		readFds := maps.Clone(s.readfdBySlab)
+		readFds := make(map[uint16]int)
+		for id, fds := range s.readfdBySlab {
+			if fds.cacheFd > 0 {
+				if dfd, err := unix.Dup(fds.cacheFd); err == nil {
+					readFds[id] = dfd
+				}
+			}
+		}
 		s.stateLock.Unlock()
+
+		defer func() {
+			for _, fd := range readFds {
+				unix.Close(fd)
+			}
+		}()
+
 		for i, le := range punchLocs {
-			if cfd := readFds[le.SlabId].cacheFd; cfd > 0 {
+			if cfd, ok := readFds[le.SlabId]; ok {
 				err := unix.Fallocate(
 					cfd,
 					unix.FALLOC_FL_PUNCH_HOLE|unix.FALLOC_FL_KEEP_SIZE,
@@ -318,6 +336,8 @@ func (s *Server) gcTraceImage(g *gcCtx, sphStr string, img *pb.DbImage) error {
 		return err
 	}
 	sphPrefix := SphPrefixFromBytes(sph[:])
+	manifestSph := makeManifestSph(sph)
+	manifestSphPrefix := SphPrefixFromBytes(manifestSph[:])
 
 	if g.GcByState[img.MountState] {
 		g.DeleteImagesByState[img.MountState]++
@@ -326,6 +346,7 @@ func (s *Server) gcTraceImage(g *gcCtx, sphStr string, img *pb.DbImage) error {
 
 	g.keepImage[sphStr] = struct{}{}
 	g.keepSphps[sphPrefix] = struct{}{}
+	g.keepSphps[manifestSphPrefix] = struct{}{}
 	g.RemainImagesByState[img.MountState]++
 
 	m, mdigs, err := s.getManifestLocal(g.tx, sphStr)
