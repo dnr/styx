@@ -726,7 +726,7 @@ func (s *Server) handleUmountReq(ctx context.Context, r *UmountReq) (*Status, er
 
 	var mp string
 	err = s.imageTx(sphStr, func(img *pb.DbImage) error {
-		if img.MountState != pb.MountState_Mounted {
+		if img.MountState != pb.MountState_Mounted && img.MountState != pb.MountState_UnmountRequested {
 			// TODO: check if erofs is actually mounted anyway and unmount
 			return mwErr(http.StatusNotFound, "not mounted")
 		} else if mp = img.MountPoint; mp == "" {
@@ -739,7 +739,7 @@ func (s *Server) handleUmountReq(ctx context.Context, r *UmountReq) (*Status, er
 		return nil, err
 	}
 
-	umountErr := unix.Unmount(mp, 0)
+	umountErr := unix.Unmount(mp, unix.MNT_DETACH)
 
 	if umountErr == nil {
 		_ = s.imageTx(sphStr, func(img *pb.DbImage) error {
