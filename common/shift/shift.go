@@ -27,8 +27,12 @@ func (b Shift) Blocks(i int64) int64 {
 }
 
 func (b Shift) FileChunkSize(totalSize int64, isLast bool) int64 {
-	if !isLast {
+	if totalSize == 0 {
+		return 0 // we shouldn't get here
+	} else if !isLast {
 		return b.Size()
+	} else if left := b.Leftover(totalSize); left > 0 {
+		return left
 	}
-	return b.Leftover(totalSize)
+	return b.Size() // exact multiple of chunk size
 }
