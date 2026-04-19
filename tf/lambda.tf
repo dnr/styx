@@ -112,25 +112,18 @@ resource "aws_ssm_parameter" "manifester_signkey" {
 
 variable "manifester_image_tag" {}
 
-variable "lambda_memory_sizes" {
-  type        = list(number)
-  default     = [500, 1500] # MB
-}
-
 resource "aws_lambda_function" "manifester" {
-  count = length(var.lambda_memory_sizes)
-
   package_type = "Image"
   image_uri    = "${aws_ecr_repository.repo.repository_url}:${var.manifester_image_tag}"
 
-  function_name = count.index == 0 ? "styx-manifester" : "styx-manifester-${count.index}"
+  function_name = "styx-manifester"
   role          = aws_iam_role.iam_for_lambda.arn
 
   architectures = ["x86_64"] # TODO: can we make it run on arm?
 
-  memory_size = var.lambda_memory_sizes[count.index]
+  memory_size = 500 # MB
   ephemeral_storage {
-    size = 512 # MB
+    size = 1024 # MB
   }
   timeout = 300 # seconds
   image_config {
@@ -154,14 +147,13 @@ resource "aws_lambda_function" "manifester" {
     variables = {
       AXIOM_TOKEN   = trimspace(file("../keys/axiom-styx-lambda.secret"))
       AXIOM_DATASET = "styx"
+      GOMEMLIMIT    = "450MiB"
     }
   }
 }
 
 resource "aws_lambda_function_url" "manifester" {
-  count = length(var.lambda_memory_sizes)
-
-  function_name      = aws_lambda_function.manifester[count.index].function_name
+  function_name      = aws_lambda_function.manifester.function_name
   authorization_type = "NONE"
   invoke_mode        = "RESPONSE_STREAM"
 }
