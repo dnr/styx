@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -30,7 +31,7 @@ import (
 
 type tarEntry struct {
 	nar.Header
-	contents []byte
+	offset int64
 }
 
 func (b *ManifestBuilder) BuildFromTarball(
@@ -50,6 +51,7 @@ func (b *ManifestBuilder) BuildFromTarball(
 
 	var narOut io.Reader
 	var dump *exec.Cmd
+	var tmpData *os.File
 	if useLocalStoreDump != "" {
 		// get the actual data from the local fs
 		dump = exec.CommandContext(ctx, common.NixBin+"-store", "--dump", useLocalStoreDump)
@@ -108,9 +110,16 @@ func (b *ManifestBuilder) BuildFromTarball(
 			}()
 		}
 
-		// extract tar into memory
-		// TODO: maybe allow passing in expected hash somehow?
-		tarEnts, err := b.extractTar(tarOut)
+		// extract tar into temporary file
+		tmpData, err = os.CreateTemp("", "styx-tarball-*")
+		if err != nil {
+			return nil, fmt.Errorf("%w: can't create temp file: %w", ErrInternal, err)
+		}
+		defer os.Remove(tmpData.Name())
+		defer tmpData.Close()
+
+		tmpBuf := make([]byte, 64<<10)
+		tarEnts, err := b.extractTar(tarOut, tmpData, tmpBuf)
 		if err != nil {
 			return nil, fmt.Errorf("%w: tar read error: %w", ErrInternal, err)
 		}
@@ -125,7 +134,7 @@ func (b *ManifestBuilder) BuildFromTarball(
 
 		// construct nar from contents, write to hasher and builder
 		pr, pw := io.Pipe()
-		go b.writeNar(tarEnts, pw)
+		go b.writeNar(tarEnts, tmpData, tmpBuf, pw)
 		narOut = pr
 	}
 
@@ -275,37 +284,56 @@ func (b *ManifestBuilder) BuildFromTarball(
 	}, nil
 }
 
-func (b *ManifestBuilder) extractTar(r io.Reader) ([]*tarEntry, error) {
+func (b *ManifestBuilder) extractTar(r io.Reader, tmpData *os.File, tmpBuf []byte) ([]*tarEntry, error) {
 	tr := tar.NewReader(r)
 
-	var ents []*tarEntry
+	// ensure root exists
+	ents := []*tarEntry{{
+		Header: nar.Header{
+			Path: "/",
+			Type: nar.TypeDirectory,
+		},
+	}}
+	seen := map[string]int{"/": 0} // path -> index in ents
+
 	for {
-		ent1, ent2, err := b.tarEntry(tr, len(ents))
+		ent, err := b.tarEntry(tr, tmpData, tmpBuf)
 		if err == io.EOF {
 			break
 		} else if err != nil {
 			return nil, err
 		}
-		if ent1 != nil {
-			ents = append(ents, ent1)
+		if ent == nil {
+			continue
 		}
-		if ent2 != nil {
-			ents = append(ents, ent2)
+
+		// add missing parents
+		var parents []string
+		for pdir := path.Dir(ent.Path); pdir != "/" && pdir != "." && seen[pdir] == 0; pdir = path.Dir(pdir) {
+			parents = append(parents, pdir)
+		}
+		slices.Reverse(parents)
+		for _, p := range parents {
+			seen[p] = len(ents)
+			ents = append(ents, &tarEntry{
+				Header: nar.Header{
+					Path: p,
+					Type: nar.TypeDirectory,
+				},
+			})
+		}
+
+		if idx, ok := seen[ent.Path]; ok {
+			ents[idx] = ent // already seen or created as missing parent
+		} else {
+			seen[ent.Path] = len(ents)
+			ents = append(ents, ent)
 		}
 	}
 
 	// sort in nar order
 	sort.Slice(ents, func(i, j int) bool {
-		ap := strings.Split(ents[i].Path, "/")
-		bp := strings.Split(ents[j].Path, "/")
-		for i := range min(len(ap), len(bp)) {
-			if ap[i] < bp[i] {
-				return true
-			} else if ap[i] > bp[i] {
-				return false
-			}
-		}
-		return len(ap) < len(bp)
+		return narPathLess(ents[i].Path, ents[j].Path)
 	})
 
 	// do what fetchzip stripRoot does
@@ -314,12 +342,46 @@ func (b *ManifestBuilder) extractTar(r io.Reader) ([]*tarEntry, error) {
 	return ents, nil
 }
 
-func (b *ManifestBuilder) tarEntry(tr *tar.Reader, lenSoFar int) (*tarEntry, *tarEntry, error) {
+func narPathLess(a, b string) bool {
+	// nar order is element-wise lexicographical. note that all paths start with "/".
+	for {
+		i := strings.IndexByte(a[1:], '/')
+		j := strings.IndexByte(b[1:], '/')
+		if i == -1 && j == -1 {
+			return a < b
+		}
+		if i == -1 { // a has no more components, b has more
+			ac := a
+			bc := b[:j+1]
+			if ac != bc {
+				return ac < bc
+			}
+			return true // a is shorter (it's the parent of b)
+		}
+		if j == -1 { // b has no more components, a has more
+			ac := a[:i+1]
+			bc := b
+			if ac != bc {
+				return ac < bc
+			}
+			return false // b is shorter
+		}
+		ac := a[:i+1]
+		bc := b[:j+1]
+		if ac != bc {
+			return ac < bc
+		}
+		a = a[i+1:]
+		b = b[j+1:]
+	}
+}
+
+func (b *ManifestBuilder) tarEntry(tr *tar.Reader, tmpData *os.File, tmpBuf []byte) (*tarEntry, error) {
 	h, err := tr.Next()
 	if err != nil { // including io.EOF
-		return nil, nil, err
+		return nil, err
 	} else if h.Typeflag == tar.TypeXGlobalHeader {
-		return nil, nil, nil // skip PAX global headers
+		return nil, nil // skip PAX global headers
 	}
 
 	name := path.Clean(h.Name)
@@ -327,18 +389,6 @@ func (b *ManifestBuilder) tarEntry(tr *tar.Reader, lenSoFar int) (*tarEntry, *ta
 		name = "/"
 	} else {
 		name = "/" + strings.Trim(name, "/")
-	}
-
-	var fakeEnt *tarEntry
-
-	if name != "/" && lenSoFar == 0 {
-		// add fake root entry
-		fakeEnt = &tarEntry{
-			Header: nar.Header{
-				Path: "/",
-				Type: nar.TypeDirectory,
-			},
-		}
 	}
 
 	e := &tarEntry{
@@ -355,13 +405,18 @@ func (b *ManifestBuilder) tarEntry(tr *tar.Reader, lenSoFar int) (*tarEntry, *ta
 
 	case tar.TypeReg:
 		e.Type = nar.TypeRegular
-		e.contents, err = io.ReadAll(tr)
+		offset, err := tmpData.Seek(0, io.SeekEnd)
 		if err != nil {
-			return nil, nil, err
+			return nil, err
 		}
-		if e.Size != int64(len(e.contents)) {
-			return nil, nil, fmt.Errorf("tar regular file size mismatch %q %d != %d",
-				h.Name, e.Size, len(e.contents))
+		e.offset = offset
+		n, err := io.CopyBuffer(tmpData, tr, tmpBuf)
+		if err != nil {
+			return nil, err
+		}
+		if e.Size != n {
+			return nil, fmt.Errorf("tar regular file size mismatch %q %d != %d",
+				h.Name, e.Size, n)
 		}
 
 	case tar.TypeSymlink:
@@ -372,13 +427,13 @@ func (b *ManifestBuilder) tarEntry(tr *tar.Reader, lenSoFar int) (*tarEntry, *ta
 	// TODO: hard link?
 
 	default:
-		return nil, nil, fmt.Errorf("unknown type %v", h.Typeflag)
+		return nil, fmt.Errorf("unknown type %v", h.Typeflag)
 	}
 
-	return fakeEnt, e, nil
+	return e, nil
 }
 
-func (b *ManifestBuilder) writeNar(ents []*tarEntry, w *io.PipeWriter) (retErr error) {
+func (b *ManifestBuilder) writeNar(ents []*tarEntry, tmpData *os.File, tmpBuf []byte, w *io.PipeWriter) (retErr error) {
 	defer func() { w.CloseWithError(retErr) }()
 
 	nw, err := nar.NewWriter(w)
@@ -392,7 +447,7 @@ func (b *ManifestBuilder) writeNar(ents []*tarEntry, w *io.PipeWriter) (retErr e
 			return err
 		}
 		if e.Type == nar.TypeRegular {
-			_, err = nw.Write(e.contents)
+			_, err = io.CopyBuffer(nw, io.NewSectionReader(tmpData, e.offset, e.Size), tmpBuf)
 			if err != nil {
 				return err
 			}
