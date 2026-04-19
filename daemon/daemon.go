@@ -307,19 +307,6 @@ func (s *Server) setupMounts() error {
 	// we want to make mounts under /var/cache/styx not propagate.
 	// to do that, we need to put a mount there (can bind mount it to itself)
 	// and set the mount as private.
-	// to put a bind mount there and have the bind mount itself not propagate,
-	// we need to change the propagation of /, and then change it back.
-	// TODO: we can remove this stuff if we're not doing long-term mounts under
-	// /var/cache/styx anymore.
-	err = unix.MountSetattr(unix.AT_FDCWD, "/", 0, &unix.MountAttr{Propagation: unix.MS_PRIVATE})
-	if err != nil {
-		log.Println("failed to change propatation on root, skipping cache bind mount:", err)
-		return nil
-	}
-
-	// restore propagation on /
-	defer unix.MountSetattr(unix.AT_FDCWD, "/", 0, &unix.MountAttr{Propagation: unix.MS_SHARED})
-
 	err = unix.Mount(s.cfg.CachePath, s.cfg.CachePath, "none", unix.MS_BIND, "")
 	if err != nil {
 		log.Println("failed to bind mount cache dir:", err)
