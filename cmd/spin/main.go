@@ -162,17 +162,18 @@ func main() {
 			loadOrCreatePinJson,
 			func(ctx context.Context, args []string, j *pinJson) error {
 				name, url := args[0], args[1]
-				for _, d := range j.Pins {
-					if d.Name == name {
-						return fmt.Errorf("Pin %q already exists", name)
-					}
-				}
-				d := &pinData{
+				newData := &pinData{
 					Name:        name,
 					OriginalUrl: url,
 				}
-				j.Pins = append(j.Pins, d)
-				return d.update(ctx)
+				i := slices.IndexFunc(j.Pins, func(d *pinData) bool { return d.Name == name })
+				if i >= 0 {
+					log.Printf("pin %q already exists, replacing\n", name)
+					j.Pins[i] = newData
+				} else {
+					j.Pins = append(j.Pins, newData)
+				}
+				return newData.update(ctx)
 			},
 			savePinJson,
 			updatePinsNix,
