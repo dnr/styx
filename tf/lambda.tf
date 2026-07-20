@@ -76,7 +76,6 @@ resource "aws_s3_bucket_lifecycle_configuration" "styx" {
       prefix = "nixcache/"
     }
     abort_incomplete_multipart_upload { days_after_initiation = 1 }
-    expiration { days = 365 }
   }
 }
 
@@ -91,7 +90,10 @@ resource "aws_s3_bucket_public_access_block" "styx" {
 resource "aws_s3_object" "styx-cache-info" {
   bucket  = aws_s3_bucket.styx.id
   key     = "nixcache/nix-cache-info"
-  content = "StoreDir: /nix/store\nPriority: 90\n"
+  content = <<EOF
+StoreDir: /nix/store
+Priority: 90
+EOF
 }
 
 resource "aws_s3_object" "styx-params-test-1" {
