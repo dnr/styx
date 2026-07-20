@@ -18,6 +18,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/DataDog/zstd"
 	"github.com/nix-community/go-nix/pkg/hash"
 	"github.com/nix-community/go-nix/pkg/nar"
 	"github.com/nix-community/go-nix/pkg/narinfo"
@@ -243,9 +244,10 @@ func (b *ManifestBuilder) BuildFromNar(
 			decompress = nil
 		case "xz":
 			decompress = exec.Command(common.XzBin, "-d")
-		// case "zst":
-		// TODO: use in-memory pipe?
-		// 	decompress = exec.Command(common.ZstdBin, "-d")
+		case "zstd":
+			zr := zstd.NewReader(narOut)
+			narOut = zr
+			defer zr.Close()
 		default:
 			return nil, fmt.Errorf("%w: unknown compression for %s: %s", ErrReq, narUrl, ni.Compression)
 		}
