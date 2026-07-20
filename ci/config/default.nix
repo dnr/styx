@@ -21,6 +21,7 @@
 
   # just enough to make nix-build not complain:
   fileSystems."/".device = "/dev/dummy";
+  fileSystems."/".fsType = "none";
   boot.loader.grub.device = "nodev";
 
   hardware.enableRedistributableFirmware = true;
@@ -158,5 +159,5 @@
 
   documentation.nixos.enable = false;
 
-  system.stateVersion = "25.11";
+  system.stateVersion = "26.05";
 }

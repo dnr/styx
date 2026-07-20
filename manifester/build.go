@@ -197,6 +197,9 @@ func (b *ManifestBuilder) BuildFromNar(
 
 	// verify signature
 
+	// TODO: I think if ni.CA is present, then we can verify the CA field here instead of
+	// requiring a signature
+
 	if !signature.VerifyFirst(ni.Fingerprint(), ni.Signatures, b.pubKeys) {
 		return nil, fmt.Errorf("%w: signature validation failed for %s; narinfo %#v", ErrReq, narinfoUrl, ni)
 	}
