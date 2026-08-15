@@ -10,8 +10,9 @@
   # builds custom kernel, patched nix, styx binary
   services.styx.enable = true;
 
-  # build with latest kernel to get >= 6.8
-  boot.kernelPackages = pkgs.linuxPackages_latest;
+  # erofs fscache ondemand is removed in 7.2, use default kernel until we
+  # remove support
+  #boot.kernelPackages = pkgs.linuxPackages;
 
   # some kernel modules that I use that depend on the custom kernel:
   boot.extraModulePackages = with config.boot.kernelPackages; [
