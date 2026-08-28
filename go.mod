@@ -81,8 +81,10 @@ require (
 	github.com/multiformats/go-varint v0.0.6 // indirect
 	github.com/nexus-rpc/sdk-go v0.1.1 // indirect
 	github.com/pborman/uuid v1.2.1 // indirect
+	github.com/pilebones/go-udev v0.9.0 // indirect
 	github.com/pjbgf/sha1cd v0.5.0 // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect
+	github.com/pojntfx/go-nbd v0.3.2 // indirect
 	github.com/robfig/cron v1.2.0 // indirect
 	github.com/sergi/go-diff v1.4.0 // indirect
 	github.com/skeema/knownhosts v1.3.1 // indirect
@@ -102,4 +104,5 @@ require (
 	gopkg.in/warnings.v0 v0.1.2 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 	lukechampine.com/blake3 v1.1.6 // indirect
+	pault.ag/go/loopback v0.1.4 // indirect
 )
