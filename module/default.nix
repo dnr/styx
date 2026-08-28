@@ -17,7 +17,6 @@ with lib;
       enablePatchedNix = mkEnableOption "Patched Nix for Styx";
       enableNixSettings = mkEnableOption "nix.conf settings for Styx";
       enableStyxNixCache = mkEnableOption "binary cache for Styx and related packages";
-      enableKernelOptions = mkEnableOption "required kernel config for Styx (erofs+cachefiles)";
       publicCommands = mkOption {
         default = true;
         description = "Allow non-root users to run certain styx commands";
@@ -57,22 +56,12 @@ with lib;
       };
     })
 
-    (mkIf (cfg.enable || cfg.enableKernelOptions) {
-      # Need to turn on these kernel config options:
+    (mkIf cfg.enable {
       assertions = [
         {
-          assertion = lib.versionAtLeast config.boot.kernelPackages.kernel.version "6.8";
-          message = "Styx requires at least a 6.8 kernel";
-        }
-      ];
-      boot.kernelPatches = [
-        {
-          name = "styx";
-          patch = null;
-          structuredExtraConfig = {
-            CACHEFILES_ONDEMAND = lib.kernel.yes;
-            EROFS_FS_ONDEMAND = lib.kernel.yes;
-          };
+          # FIXME: figure out what version is actually required
+          assertion = lib.versionAtLeast config.boot.kernelPackages.kernel.version "6.14";
+          message = "Styx requires at least a 6.14 kernel";
         }
       ];
     })
@@ -108,7 +97,13 @@ with lib;
           ];
         };
         serviceConfig = {
-          ExecStartPre = [ "-${pkgs.kmod}/bin/modprobe cachefiles" ];
+          ExecStartPre = [
+            # FIXME: these probably all get loaded on-demand, do we need to do any explicitly?
+            # "-${pkgs.kmod}/bin/modprobe dm-clone"
+            # "-${pkgs.kmod}/bin/modprobe erofs"
+            # "-${pkgs.kmod}/bin/modprobe loop"
+            # "-${pkgs.kmod}/bin/modprobe nbd"
+          ];
           # Use unshare directly instead of PrivateMounts so that our new mounts
           # are propagated normally, but we can remount /nix/store rw.
           ExecStart = utils.escapeSystemdExecArgs (

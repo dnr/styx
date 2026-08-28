@@ -284,7 +284,7 @@ func (s *Server) vaporizeFile(
 		// to a digest. we can't take the risk of TOCTOU, so we have to read and write.
 		if !wasAllocated[i] && size == rounded && *tryClone {
 			s.stateLock.Lock()
-			cfd := s.readfdBySlab[loc.SlabId].cacheFd
+			cfd := s.readfdBySlab[loc.SlabId]
 			s.stateLock.Unlock()
 			if cfd == 0 {
 				return nil, errCachefdNotFound

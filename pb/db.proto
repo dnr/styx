@@ -42,14 +42,10 @@ message DbImage {
   string mount_point = 6;
   string last_mount_error = 7;
 
-  // size of erofs image
-  int64 image_size = 1;
-  bool is_bare = 10;
-
   // nar size, if known
   int64 nar_size = 11;
 
-  reserved 8 to 9;
+  reserved 1, 8 to 10;
 }
 
 // key: "manifest" / <store path hash (nix base32)>

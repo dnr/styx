@@ -69,15 +69,12 @@ func withDaemonConfig(c *cobra.Command) *daemon.Config {
 		FdStore: systemd.SystemdFdStore{},
 	}
 
-	c.Flags().StringVar(&cfg.DevPath, "devpath", "/dev/cachefiles", "path to cachefiles device node")
 	c.Flags().StringVar(&cfg.CachePath, "cache", "/var/cache/styx", "path to local cache (also socket and db)")
-	c.Flags().StringVar(&cfg.CacheTag, "cachetag", "styx0", "cachefiles tag")
-	c.Flags().StringVar(&cfg.CacheDomain, "cachedomain", "styx", "cachefiles domain")
 	c.Flags().StringVar(&cfg.PublicSock, "public_socket", "/var/run/styx.sock",
 		"socket for non-root users to run limited commands, set to empty string to disable")
 	c.Flags().IntVar(&cfg.ErofsBlockShift, "block_shift", 12, "block size bits for local fs images")
 	// c.Flags().IntVar(&cfg.SmallFileCutoff, "small_file_cutoff", 224, "cutoff for embedding small files in images")
-	c.Flags().IntVar(&cfg.Workers, "workers", 16, "worker goroutines for cachefilesd serving")
+	c.Flags().IntVar(&cfg.Workers, "workers", 16, "worker goroutines for on-demand server")
 
 	return &cfg
 }
