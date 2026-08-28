@@ -61,6 +61,7 @@ type (
 		err  error         // result. only written by start, read by wait
 		done chan struct{} // closed by start after writing err
 
+		destFd int
 		loc    erofs.SlabLoc
 		digest cdig.CDig
 	}
@@ -127,7 +128,7 @@ type (
 	triedRemanifest struct{}
 )
 
-func (s *Server) requestChunk(ctx context.Context, loc erofs.SlabLoc, digest cdig.CDig, sphps []SphPrefix) error {
+func (s *Server) requestChunk(ctx context.Context, destFd int, loc erofs.SlabLoc, digest cdig.CDig, sphps []SphPrefix) error {
 	if s.readKnownMap.Has(loc) {
 		// We think we have this chunk and are trying to use it as a base, but we got asked for
 		// it again. This shouldn't happen, but at least try to recover by doing a single read
@@ -188,13 +189,13 @@ func (s *Server) requestChunk(ctx context.Context, loc erofs.SlabLoc, digest cdi
 		// include them. It's too hard to wait on the whole set, so we'll just let the chunks
 		// get rerequested directly.
 		ctx = context.WithValue(ctx, triedRemanifest{}, true)
-		return s.requestChunk(ctx, loc, digest, sphps)
+		return s.requestChunk(ctx, destFd, loc, digest, sphps)
 	}
 
 	if err != nil {
 		if _, ok := op.(*singleOp); !ok {
 			log.Printf("diff failed (%v), doing plain read", err)
-			return s.requestChunk(ctx, loc, digest, nil)
+			return s.requestChunk(ctx, destFd, loc, digest, nil)
 		}
 	}
 
@@ -327,7 +328,9 @@ func (s *Server) readChunks(
 		}
 
 		// request first missing one. the differ will do some readahead.
-		err := s.requestChunk(ctx, locs[firstMissing], digests[firstMissing], sphps)
+		// FIXME: what's the best way to do this?
+		// maybe we should do a plain read? or just open the file?
+		err := s.requestChunk(ctx, destFd, locs[firstMissing], digests[firstMissing], sphps)
 		if err != nil {
 			return nil, err
 		}
@@ -347,7 +350,7 @@ func (s *Server) readChunks(
 	return out, nil
 }
 
-func (s *Server) readSingle(ctx context.Context, loc erofs.SlabLoc, digest cdig.CDig) error {
+func (s *Server) readSingle(ctx context.Context, destFd int, loc erofs.SlabLoc, digest cdig.CDig) error {
 	// we have no size info here
 	// TODO: can we figure out at least chunk shift and use a pool?
 	// we probably have to just store the size
@@ -362,7 +365,7 @@ func (s *Server) readSingle(ctx context.Context, loc erofs.SlabLoc, digest cdig.
 	}
 	s.stats.singleBytes.Add(int64(len(chunk)))
 
-	if err = s.gotNewChunk(loc, digest, chunk); err != nil {
+	if err = s.gotNewChunk(destFd, loc, digest, chunk); err != nil {
 		return fmt.Errorf("gotNewChunk error (single): %w", err)
 	}
 	return nil
@@ -406,7 +409,7 @@ func (s *Server) startSingleOp(ctx context.Context, op *singleOp) {
 	s.stats.singleReqs.Add(1)
 	if op.err = s.diffSem.Acquire(ctx, 1); op.err == nil {
 		defer s.diffSem.Release(1)
-		op.err = s.readSingle(ctx, op.loc, op.digest)
+		op.err = s.readSingle(ctx, op.destFd, op.loc, op.digest)
 	}
 }
 
@@ -565,33 +568,15 @@ func (s *Server) getWriteFdForSlab(slabId uint16) (int, error) {
 func (s *Server) getReadFdForSlab(slabId uint16) (int, error) {
 	s.stateLock.Lock()
 	defer s.stateLock.Unlock()
-	if readFd := s.readfdBySlab[slabId].readFd; readFd > 0 {
+	if readFd := s.readfdBySlab[slabId]; readFd > 0 {
 		return readFd, nil
 	}
 	return 0, errors.New("slab not loaded or missing read fd")
 }
 
 // gotNewChunk may reslice b up to block size and zero up to the new size!
-func (s *Server) gotNewChunk(loc erofs.SlabLoc, digest cdig.CDig, b []byte) error {
+func (s *Server) gotNewChunk(destFd int, loc erofs.SlabLoc, digest cdig.CDig, b []byte) error {
 	if err := digest.Check(b); err != nil {
-		return err
-	}
-
-	writeFd, err := s.getWriteFdForSlab(loc.SlabId)
-	if err != nil {
-		// try reading the loc to force cachefiles to load the slab. we haven't
-		// written it yet so this will block waiting for whatever diff op is
-		// calling us. do it in a new goroutine to avoid a deadlock.
-		if readFd, rerr := s.getReadFdForSlab(loc.SlabId); rerr == nil {
-			log.Println("forcing reopen on slab", loc.SlabId)
-			go unix.Pread(readFd, make([]byte, 1), int64(loc.Addr)<<s.blockShift)
-			for i := 0; i < 10 && err != nil; i++ {
-				time.Sleep(50 * time.Duration(i+1) * time.Millisecond)
-				writeFd, err = s.getWriteFdForSlab(loc.SlabId)
-			}
-		}
-	}
-	if err != nil {
 		return err
 	}
 
@@ -615,7 +600,7 @@ func (s *Server) gotNewChunk(loc erofs.SlabLoc, digest cdig.CDig, b []byte) erro
 	}
 
 	off := int64(loc.Addr) << s.blockShift
-	if n, err := unix.Pwrite(writeFd, b, off); err != nil {
+	if n, err := unix.Pwrite(destFd, b, off); err != nil {
 		return fmt.Errorf("pwrite error: %w", err)
 	} else if n != len(b) {
 		return fmt.Errorf("short write %d != %d", n, len(b))
