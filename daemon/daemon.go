@@ -69,15 +69,7 @@ type (
 
 		stateLock sync.Mutex
 		slabState map[uint16]*slabState
-		// cacheState   map[uint32]*openFileState // object id -> state
-		// stateBySlab  map[uint16]*openFileState // slab id -> state
-		// readfdBySlab map[uint16]int            // slab id -> readfd
-		// readfds are kept in a separate map because after a restore, we may load the slab
-		// image and readfd before the slab is loaded by erofs. this doesn't make
-		// sense but it seems to work that way.
-		// FIXME: revisit this? we can consolidate...
-		// only need manifest slab in here, right?
-		slabFds map[uint16]int
+		// slabFds map[uint16]int // DELETEME
 
 		// keeps track of locs that we know are present before we persist them
 		presentMap common.SimpleSyncMap[erofs.SlabLoc, struct{}]
@@ -153,6 +145,11 @@ func NewServer(cfg Config) *Server {
 		remanifestCache: *common.NewSimpleSyncMap[string, *remanifestCacheEntry](),
 		shutdownChan:    make(chan struct{}),
 	}
+}
+
+// TODO(file): do we need to condition this anymore?
+func (s *Server) ondemand() book {
+	return true
 }
 
 func (s *Server) p() *postinit {
@@ -305,28 +302,28 @@ func (s *Server) setupMounts() error {
 	return nil
 }
 
-// FIXME: consolidate with createSlabFile?
-func (s *Server) setupManifestSlab() error {
-	var id uint16 = manifestSlabOffset
-	path := filepath.Join(s.cfg.CachePath, "slab", strconv.Itoa(int(id)))
-	fd, err := unix.Open(path, unix.O_RDWR|unix.O_CREAT, 0o600)
-	if err != nil {
-		log.Println("open manifest slab", path, err)
-		return err
-	}
+// // DELETEME: consolidate with createSlabFile?
+// func (s *Server) setupManifestSlab() error {
+// 	var id uint16 = manifestSlabOffset
+// 	path := filepath.Join(s.cfg.CachePath, "slab", strconv.Itoa(int(id)))
+// 	fd, err := unix.Open(path, unix.O_RDWR|unix.O_CREAT, 0o600)
+// 	if err != nil {
+// 		log.Println("open manifest slab", path, err)
+// 		return err
+// 	}
 
-	s.stateLock.Lock()
-	defer s.stateLock.Unlock()
-	s.slabFds[id] = fd
-	// state := &openFileState{
-	// 	writeFd: common.TruncU32(fd), // write and read to same fd
-	// 	tp:      typeManifestSlab,
-	// 	slabId:  id,
-	// }
-	// s.stateBySlab[id] = state
-	// s.readfdBySlab[id] = fd
-	return nil
-}
+// 	s.stateLock.Lock()
+// 	defer s.stateLock.Unlock()
+// 	s.slabFds[id] = fd
+// 	// state := &openFileState{
+// 	// 	writeFd: common.TruncU32(fd), // write and read to same fd
+// 	// 	tp:      typeManifestSlab,
+// 	// 	slabId:  id,
+// 	// }
+// 	// s.stateBySlab[id] = state
+// 	// s.readfdBySlab[id] = fd
+// 	return nil
+// }
 
 // socket server + mount management
 
@@ -522,8 +519,8 @@ func (s *Server) handleInitReq(ctx context.Context, r *InitReq) (*Status, error)
 func (s *Server) handleMountReq(ctx context.Context, r *MountReq) (*Status, error) {
 	if s.p() == nil {
 		return nil, mwErr(http.StatusPreconditionFailed, "styx is not initialized, call 'styx init --params=...'")
-		// } else if !s.ondemand() { // FIXME
-		// 	return nil, mwErr(http.StatusPreconditionFailed, "styx on-demand features disabled")
+	} else if !s.ondemand() {
+		return nil, mwErr(http.StatusPreconditionFailed, "styx on-demand features disabled")
 	}
 	_, sphStr, _, err := ParseSphAndName(r.StorePath)
 	if err != nil {
@@ -642,8 +639,8 @@ func (s *Server) tryMount(ctx context.Context, req *MountReq) error {
 func (s *Server) handleUmountReq(ctx context.Context, r *UmountReq) (*Status, error) {
 	if s.p() == nil {
 		return nil, mwErr(http.StatusPreconditionFailed, "styx is not initialized, call 'styx init --params=...'")
-		// } else if !s.ondemand() { // FIXME
-		// 	return nil, mwErr(http.StatusPreconditionFailed, "styx on-demand features disabled")
+	} else if !s.ondemand() {
+		return nil, mwErr(http.StatusPreconditionFailed, "styx on-demand features disabled")
 	}
 
 	// allowed to leave out the name part here
@@ -896,42 +893,15 @@ func (s *Server) handleReadSlab(destFd int, slabId uint16, ln, off uint64) (retE
 	return s.requestChunk(ctx, destFd, erofs.SlabLoc{slabId, addr}, digest, sphps)
 }
 
-// FIXME: consolidate with setupManifestSlab
-func (s *Server) createSlabFile(slabId uint16) error {
-	path := filepath.Join(s.cfg.CachePath, "slab", strconv.Itoa(int(slabId)))
-	slabFd, err := unix.Open(path, unix.O_RDWR|unix.O_CREAT, 0o600)
-	if err != nil {
-		return fmt.Errorf("error opening slab file %s: %w", path, err)
-	}
-	_ = unix.Close(slabFd)
-
-	log.Println("created slab file", slabId)
-	return nil
-}
-
-// FIXME
-// func (s *Server) setupFakeSlabImage(slabId uint16) error {
-// 	// If we're not in on-demand mode, set up a plain file in the same place where cachefiles
-// 	// would have put it, so that we can get fds to use. Also if this system does switch to
-// 	// cachefiles later, it should just work from there.
-// 	tag, totalBlocks := s.SlabInfo(slabId)
-// 	backingPath := filepath.Join(s.cfg.CachePath, fscachePath(s.cfg.CacheDomain, tag))
-// 	_ = os.MkdirAll(filepath.Dir(backingPath), 0o755)
-// 	fd, err := unix.Open(backingPath, unix.O_RDWR|unix.O_CREAT, 0o600)
+// // DELETEME: consolidate with setupManifestSlab
+// func (s *Server) createSlabFile(slabId uint16) error {
+// 	path := filepath.Join(s.cfg.CachePath, "slab", strconv.Itoa(int(slabId)))
+// 	slabFd, err := unix.Open(path, unix.O_RDWR|unix.O_CREAT, 0o600)
 // 	if err != nil {
-// 		return err
+// 		return fmt.Errorf("error opening slab file %s: %w", path, err)
 // 	}
-// 	// this doesn't really matter, it might only matter for a transition to cachefiles
-// 	_ = unix.Ftruncate(fd, int64(totalBlocks)<<s.blockShift)
+// 	_ = unix.Close(slabFd)
 
-// 	s.stateLock.Lock()
-// 	defer s.stateLock.Unlock()
-// 	s.stateBySlab[slabId] = &openFileState{
-// 		writeFd: common.TruncU32(fd), // write and read to same fd
-// 		tp:      typeSlab,
-// 		slabId:  slabId,
-// 	}
-// 	s.readfdBySlab[slabId] = slabFds{fd, fd}
-
+// 	log.Println("created slab file", slabId)
 // 	return nil
 // }

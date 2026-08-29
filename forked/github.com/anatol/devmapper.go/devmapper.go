@@ -26,20 +26,23 @@ var errNotImplemented = fmt.Errorf("not implemented")
 
 // Create creates a new device. No table will be loaded. The device will be in
 // suspended state. Any IO to this device will fail.
-func Create(name string, uuid string) error {
+// Returns dev number and error.
+func Create(name string, uuid string) (uint64, error) {
 	return ioctlTable(unix.DM_DEV_CREATE, name, uuid, 0, false, nil)
 }
 
 // CreateAndLoad creates, loads the provided tables and resumes the device.
-func CreateAndLoad(name string, uuid string, flags uint32, tables ...Table) error {
-	if err := Create(name, uuid); err != nil {
-		return err
-	}
-	if err := Load(name, flags, tables...); err != nil {
+func CreateAndLoad(name string, uuid string, flags uint32, tables ...Table) (uint64, error) {
+	if dev, err := Create(name, uuid); err != nil {
+		return 0, err
+	} else if err := Load(name, flags, tables...); err != nil {
 		_ = Remove(name)
-		return err
+		return 0, err
+	} else if err := Resume(name); err != nil {
+		return 0, err
+	} else {
+		return dev, nil
 	}
-	return Resume(name)
 }
 
 // Message passes a message string to the target at specific offset of a device.
@@ -49,18 +52,21 @@ func Message(name string, sector int, message string) error {
 
 // Suspend suspends the given device.
 func Suspend(name string) error {
-	return ioctlTable(unix.DM_DEV_SUSPEND, name, "", unix.DM_SUSPEND_FLAG, false, nil)
+	_, err := ioctlTable(unix.DM_DEV_SUSPEND, name, "", unix.DM_SUSPEND_FLAG, false, nil)
+	return err
 }
 
 // Resume resumes the given device.
 func Resume(name string) error {
-	return ioctlTable(unix.DM_DEV_SUSPEND, name, "", 0, true, nil)
+	_, err := ioctlTable(unix.DM_DEV_SUSPEND, name, "", 0, true, nil)
+	return err
 }
 
 // Load loads given table into the device
 func Load(name string, flags uint32, tables ...Table) error {
 	flags &= unix.DM_READONLY_FLAG
-	return ioctlTable(unix.DM_TABLE_LOAD, name, "", flags, false, tables)
+	_, err := ioctlTable(unix.DM_TABLE_LOAD, name, "", flags, false, tables)
+	return err
 }
 
 // Rename renames the device
@@ -76,7 +82,8 @@ func SetUUID(name, uuid string) error {
 
 // Remove removes the device and destroys its tables.
 func Remove(name string) error {
-	return ioctlTable(unix.DM_DEV_REMOVE, name, "", 0, true, nil)
+	_, err := ioctlTable(unix.DM_DEV_REMOVE, name, "", 0, true, nil)
+	return err
 }
 
 /*
