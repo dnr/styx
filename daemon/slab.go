@@ -309,3 +309,15 @@ func (s *Server) teardownSlabLocked(slabId uint16) error {
 	delete(s.slabState, slabId)
 	return nil
 }
+
+func (s *Server) teardownSlabs() {
+	s.stateLock.Lock()
+	defer s.stateLock.Unlock()
+
+	for slabId := range s.slabState {
+		err := s.teardownSlabLocked(slabId)
+		if err != nil {
+			log.Printf("error tearing down slab %d: %v", slabId, err)
+		}
+	}
+}
