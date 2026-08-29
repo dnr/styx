@@ -556,24 +556,6 @@ func (s *Server) doDiffOp(ctx context.Context, op *diffOp) error {
 	return nil
 }
 
-func (s *Server) getWriteFdForSlab(slabId uint16) (int, error) {
-	s.stateLock.Lock()
-	defer s.stateLock.Unlock()
-	if state := s.stateBySlab[slabId]; state != nil {
-		return int(state.writeFd), nil
-	}
-	return 0, errors.New("slab not loaded or missing write fd")
-}
-
-func (s *Server) getReadFdForSlab(slabId uint16) (int, error) {
-	s.stateLock.Lock()
-	defer s.stateLock.Unlock()
-	if readFd := s.readfdBySlab[slabId]; readFd > 0 {
-		return readFd, nil
-	}
-	return 0, errors.New("slab not loaded or missing read fd")
-}
-
 // gotNewChunk may reslice b up to block size and zero up to the new size!
 func (s *Server) gotNewChunk(destFd int, loc erofs.SlabLoc, digest cdig.CDig, b []byte) error {
 	if err := digest.Check(b); err != nil {
@@ -767,16 +749,16 @@ func (s *Server) getManifestLocal(tx *bbolt.Tx, sphStr string) (*pb.Manifest, []
 }
 
 func (s *Server) getKnownChunk(loc erofs.SlabLoc, buf []byte) error {
-	readFd, err := s.getReadFdForSlab(loc.SlabId)
-	if err != nil {
-		return err
+	readFd := s.getReadFd(loc.SlabId)
+	if readFd < 0 {
+		return errors.New("slab not loaded or missing read fd")
 	}
 
 	// record that we're reading this out of the slab
 	s.readKnownMap.Modify(loc, func(i int, _ bool) (int, bool) { return i + 1, true })
 	defer s.readKnownMap.Modify(loc, func(i int, _ bool) (int, bool) { return i - 1, i > 1 })
 
-	_, err = unix.Pread(readFd, buf, int64(loc.Addr)<<s.blockShift)
+	_, err := unix.Pread(int(readFd), buf, int64(loc.Addr)<<s.blockShift)
 	return err
 }
 
@@ -819,9 +801,7 @@ func (s *Server) findRecentRead(reqHash Sph, path string) *recentRead {
 }
 
 func (s *Server) pruneRecentCaches() {
-	t := time.NewTicker(min(recentReadExpiry, remanifestCacheExpiry) / 2)
-	defer t.Stop()
-	for range t.C {
+	for range time.NewTicker(min(recentReadExpiry, remanifestCacheExpiry) / 2).C {
 		s.diffLock.Lock()
 		now := time.Now()
 		maps.DeleteFunc(s.recentReads, func(key string, rr *recentRead) bool {

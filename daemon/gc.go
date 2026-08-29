@@ -282,24 +282,24 @@ func (s *Server) handleGcReq(ctx context.Context, r *GcReq) (*GcResp, error) {
 	if len(punchLocs) > 0 {
 		// actually punch holes
 		s.stateLock.Lock()
-		readFds := make(map[uint16]int)
-		for id, fds := range s.readfdBySlab {
-			if fds.cacheFd > 0 {
-				if dfd, err := unix.Dup(fds.cacheFd); err == nil {
-					readFds[id] = dfd
+		punchFds := make(map[uint16]int)
+		for id, st := range s.slabState {
+			if st.writeFd > 0 {
+				if dfd, err := unix.Dup(st.writeFd); err == nil {
+					punchFds[id] = dfd
 				}
 			}
 		}
 		s.stateLock.Unlock()
 
 		defer func() {
-			for _, fd := range readFds {
+			for _, fd := range punchFds {
 				unix.Close(fd)
 			}
 		}()
 
 		for i, le := range punchLocs {
-			if cfd, ok := readFds[le.SlabId]; ok {
+			if cfd, ok := punchFds[le.SlabId]; ok {
 				err := unix.Fallocate(
 					cfd,
 					unix.FALLOC_FL_PUNCH_HOLE|unix.FALLOC_FL_KEEP_SIZE,
