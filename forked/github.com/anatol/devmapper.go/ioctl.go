@@ -31,6 +31,11 @@ func ioctlTable(cmd uintptr, name string, uuid string, flags uint32, primaryUdev
 		// generated as a result of "udevadm trigger" command or as a result
 		// of the "watch" udev rule).
 		DM_UDEV_PRIMARY_SOURCE_FLAG = 0x0040
+
+		DM_UDEV_DISABLE_DM_RULES_FLAG        = 0x0001
+		DM_UDEV_DISABLE_SUBSYSTEM_RULES_FLAG = 0x0002
+		DM_UDEV_DISABLE_DISK_RULES_FLAG      = 0x0004
+		DM_UDEV_DISABLE_OTHER_RULES_FLAG     = 0x0008
 	)
 
 	var udevFlags uint32
@@ -40,7 +45,11 @@ func ioctlTable(cmd uintptr, name string, uuid string, flags uint32, primaryUdev
 		// To make udev rules handle the device at 3rd step (rather than at ADD event), device mapper distinguishes
 		// the "primary" events with a udev flag set below.
 		// Only RESUME, REMOVE, RENAME operations are considered primary events.
-		udevFlags = DM_UDEV_PRIMARY_SOURCE_FLAG << DM_UDEV_FLAGS_SHIFT
+		udevFlags = (DM_UDEV_PRIMARY_SOURCE_FLAG |
+			DM_UDEV_DISABLE_DM_RULES_FLAG |
+			DM_UDEV_DISABLE_SUBSYSTEM_RULES_FLAG |
+			DM_UDEV_DISABLE_DISK_RULES_FLAG |
+			DM_UDEV_DISABLE_OTHER_RULES_FLAG) << DM_UDEV_FLAGS_SHIFT
 	}
 
 	specs := make([]string, 0, len(tables)) // cached specs
