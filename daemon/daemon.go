@@ -22,8 +22,6 @@ import (
 	"time"
 
 	"github.com/nix-community/go-nix/pkg/narinfo/signature"
-	nbdclient "github.com/pojntfx/go-nbd/pkg/client"
-	nbdserver "github.com/pojntfx/go-nbd/pkg/server"
 	"go.etcd.io/bbolt"
 	"golang.org/x/sync/semaphore"
 	"golang.org/x/sys/unix"
@@ -35,7 +33,6 @@ import (
 	"github.com/dnr/styx/common/systemd"
 	"github.com/dnr/styx/erofs"
 	"github.com/dnr/styx/manifester"
-	"github.com/dnr/styx/patched/loopback"
 	"github.com/dnr/styx/pb"
 )
 
@@ -119,19 +116,12 @@ type (
 		slabId uint16
 	}
 
-	nbdSlabBackend struct {
-		s      *Server
-		slabId uint16
-	}
-
 	Config struct {
 		CachePath  string
 		PublicSock string
 
 		ErofsBlockShift int
 		// SmallFileCutoff int
-
-		Workers int
 
 		IsTesting bool
 		FdStore   systemd.FdStore
@@ -333,33 +323,6 @@ func (s *Server) setupManifestSlab() error {
 	// }
 	// s.stateBySlab[id] = state
 	// s.readfdBySlab[id] = fd
-	return nil
-}
-
-func (s *Server) setupNbdSock() error {
-	// // FIXME: does this even work?
-	// if fd, err:= s.cfg.FdStore.GetFd(savedFdName); err==nil{
-	// 	log.Println("restored nbd socket")
-	// 	s.nbdsock.Store(int32(fd))
-	// 	return nil
-	// }
-
-	path := filepath.Join(s.cfg.CachePath, "nbdsock")
-	if err := os.RemoveAll(path); err != nil {
-		return err
-	}
-	l, err := net.Listen("unix", path)
-	if err != nil {
-		return err
-	}
-	s.nbdsock.Store(l)
-	log.Println("set up nbd server")
-	return nil
-
-	// FIXME
-	_ = loopback.Loop
-	_ = nbdclient.Connect
-
 	return nil
 }
 
@@ -840,89 +803,6 @@ func (s *Server) closeAllFds() {
 	}
 }
 
-func (s *Server) nbdServer() {
-	s.shutdownWait.Add(1)
-	defer s.shutdownWait.Done()
-
-	var exports []*nbdserver.Export
-	for slabId := range uint16(1) {
-		exports = append(exports, &nbdserver.Export{
-			Name:        fmt.Sprintf("slab%d", slabId),
-			Description: fmt.Sprintf("styx slab %d", slabId),
-			Backend:     &nbdSlabBackend{s: s, slabId: slabId},
-		})
-	}
-
-	l := s.nbdsock.Load().(net.Listener)
-	for {
-		conn, err := l.Accept()
-		if err != nil {
-			break
-		}
-		log.Println("new nbd client", conn.RemoteAddr())
-		go s.nbdConn(conn, exports)
-	}
-	log.Print("nbd server shutting down")
-	return
-
-	// for range s.cfg.Workers {
-	// 	s.shutdownWait.Add(1)
-	// 	go func() {
-	// 		defer s.shutdownWait.Done()
-	// 		for buf := range ch {
-	// 			_ = s.handleMessage(buf)
-	// 		}
-	// 	}()
-	// }
-
-	// <-s.shutdownChan
-
-	// log.Print("stopping workers")
-	// f.Close()                          // cause all future reads to error
-	// time.Sleep(100 * time.Millisecond) // FIXME: wait until all "readers" exit
-	// close(ch)
-}
-
-func (s *Server) nbdConn(conn net.Conn, exports []*nbdserver.Export) {
-	err := nbdserver.Handle(
-		conn,
-		exports,
-		&nbdserver.Options{
-			ReadOnly:           true,
-			MinimumBlockSize:   4096,
-			PreferredBlockSize: 4096,
-			SupportsMultiConn:  true,
-		})
-	if err != nil {
-		log.Println("nbd server err:", err)
-	}
-}
-
-func (b *nbdSlabBackend) ReadAt(p []byte, off int64) (int, error) {
-	err := b.s.handleReadSlab(
-		destFd, // FIXME
-		b.slabId,
-		uint64(len(p)),
-		uint64(off),
-	)
-	if err != nil {
-		return 0, err
-	}
-	return len(p), nil
-}
-
-func (b *nbdSlabBackend) WriteAt(p []byte, off int64) (int, error) {
-	return 0, errors.New("read only")
-}
-
-func (b *nbdSlabBackend) Size() (int64, error) {
-	return slabBytes, nil
-}
-
-func (b *nbdSlabBackend) Sync() error {
-	return nil
-}
-
 func (s *Server) closeState(state *openFileState, readFd int) {
 	fds := []int{int(state.writeFd), readFd}
 	slices.Sort(fds)
@@ -1052,135 +932,3 @@ func (s *Server) createSlabFile(slabId uint16) error {
 
 // 	return nil
 // }
-
-// slab manager
-
-const (
-	slabBytes = 1 << 40
-)
-
-func slabKey(id uint16) []byte {
-	b := make([]byte, 2)
-	binary.BigEndian.PutUint16(b, id)
-	return b
-}
-
-func addrKey(addr uint32) []byte {
-	b := make([]byte, 4)
-	binary.BigEndian.PutUint32(b, addr)
-	return b
-}
-
-func addrFromKey(b []byte) uint32 {
-	return binary.BigEndian.Uint32(b)
-}
-
-func locValue(id uint16, addr uint32, sph Sph) []byte {
-	loc := make([]byte, 6+sphPrefixBytes)
-	binary.LittleEndian.PutUint16(loc, id)
-	binary.LittleEndian.PutUint32(loc[2:], addr)
-	copy(loc[6:], sph[:sphPrefixBytes])
-	return loc
-}
-
-func loadLoc(b []byte) erofs.SlabLoc {
-	return erofs.SlabLoc{binary.LittleEndian.Uint16(b), binary.LittleEndian.Uint32(b[2:])}
-}
-
-func appendSph(loc []byte, sph Sph) []byte {
-	sphPrefix := sph[:sphPrefixBytes]
-	sphs := loc[6:]
-	for len(sphs) >= sphPrefixBytes {
-		if bytes.Equal(sphs[:sphPrefixBytes], sphPrefix) {
-			return nil
-		}
-		sphs = sphs[sphPrefixBytes:]
-	}
-	newLoc := make([]byte, len(loc)+sphPrefixBytes)
-	copy(newLoc, loc)
-	copy(newLoc[len(loc):], sphPrefix)
-	return newLoc
-}
-
-func (s *Server) VerifyParams(blockShift shift.Shift) error {
-	if blockShift != s.blockShift {
-		return errors.New("mismatched params")
-	}
-	return nil
-}
-
-func (s *Server) AllocateBatch(ctx context.Context, blocks []uint16, digests []cdig.CDig) ([]erofs.SlabLoc, error) {
-	sph, forManifest, ok := fromAllocateCtx(ctx)
-	if !ok {
-		return nil, errors.New("missing allocate context")
-	}
-
-	n := len(blocks)
-	if n != len(digests) {
-		return nil, errors.New("mismatched lengths")
-	}
-	out := make([]erofs.SlabLoc, n)
-	err := s.db.Update(func(tx *bbolt.Tx) error {
-		cb, slabroot := tx.Bucket(chunkBucket), tx.Bucket(slabBucket)
-		var slabId uint16 = 0
-		if forManifest {
-			slabId = manifestSlabOffset
-		}
-		sb, err := slabroot.CreateBucketIfNotExists(slabKey(slabId))
-		if err != nil {
-			return err
-		}
-		// reserve some blocks for future purposes
-		seq := max(sb.Sequence(), reservedBlocks)
-
-		for i := range out {
-			digest := digests[i][:]
-			if loc := cb.Get(digest); loc == nil {
-				// allocate
-				if seq >= slabBytes>>s.blockShift {
-					slabId++
-					if sb, err = slabroot.CreateBucketIfNotExists(slabKey(slabId)); err != nil {
-						return err
-					}
-					seq = max(sb.Sequence(), reservedBlocks)
-				}
-				addr := common.TruncU32(seq)
-				seq += uint64(blocks[i])
-				if err := cb.Put(digest, locValue(slabId, addr, sph)); err != nil {
-					return err
-				} else if err = sb.Put(addrKey(addr), digest); err != nil {
-					return err
-				}
-				out[i] = erofs.SlabLoc{slabId, addr}
-			} else {
-				if newLoc := appendSph(loc, sph); newLoc != nil {
-					if err := cb.Put(digest, newLoc); err != nil {
-						return err
-					}
-				}
-				out[i] = loadLoc(loc)
-			}
-		}
-
-		return sb.SetSequence(seq)
-	})
-	return common.ValOrErr(out, err)
-}
-
-func (s *Server) SlabInfo(slabId uint16) (tag string, totalBlocks uint32) {
-	return slabPrefix + strconv.Itoa(int(slabId)), common.TruncU32(uint64(slabBytes) >> s.blockShift)
-}
-
-// like AllocateBatch but only lookup
-func (s *Server) lookupLocs(tx *bbolt.Tx, digests []cdig.CDig) ([]erofs.SlabLoc, error) {
-	out := make([]erofs.SlabLoc, len(digests))
-	cb := tx.Bucket(chunkBucket)
-	for i := range out {
-		loc := cb.Get(digests[i][:])
-		if loc == nil {
-			return nil, fmt.Errorf("missing chunk %s in lookupLocs", digests[i])
-		}
-		out[i] = loadLoc(loc)
-	}
-	return out, nil
-}
