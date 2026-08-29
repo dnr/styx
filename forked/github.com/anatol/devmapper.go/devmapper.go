@@ -2,8 +2,6 @@ package devmapper
 
 import (
 	"fmt"
-	"io/fs"
-	"unsafe"
 
 	"golang.org/x/sys/unix"
 )
@@ -22,7 +20,6 @@ type Table interface {
 	length() uint64
 	targetType() string
 	buildSpec() string // see https://wiki.gentoo.org/wiki/Device-mapper for examples of specs
-	openVolume(flag int, perm fs.FileMode) (Volume, error)
 }
 
 var errNotImplemented = fmt.Errorf("not implemented")
@@ -82,6 +79,7 @@ func Remove(name string) error {
 	return ioctlTable(unix.DM_DEV_REMOVE, name, "", 0, true, nil)
 }
 
+/*
 // ListItem represents information about a dmsetup device
 type ListItem struct {
 	DevNo uint64
@@ -198,3 +196,4 @@ func GetVersion() (major, minor, patch uint32, err error) {
 
 	return ioctlData.Version[0], ioctlData.Version[1], ioctlData.Version[2], nil
 }
+*/
