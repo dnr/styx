@@ -1,3 +1,9 @@
+# styx modifications
+
+- inline constants
+- remove unused code
+
+
 go-loopback
 ===========
 
