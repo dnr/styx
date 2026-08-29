@@ -123,6 +123,9 @@ type (
 		ErofsBlockShift int
 		// SmallFileCutoff int
 
+		// TODO: rename to concurrent diffs
+		Workers int
+
 		IsTesting bool
 		FdStore   systemd.FdStore
 	}

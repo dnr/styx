@@ -8,13 +8,15 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/anatol/devmapper.go"
 	"github.com/dnr/styx/common"
 	"github.com/dnr/styx/common/cdig"
 	"github.com/dnr/styx/common/shift"
 	"github.com/dnr/styx/erofs"
-	"github.com/dnr/styx/patched/loopback"
 	nbdclient "github.com/pojntfx/go-nbd/pkg/client"
 	"go.etcd.io/bbolt"
+
+	"github.com/freddierice/go-losetup/v2"
 )
 
 const slabBytes = 1 << 40
@@ -23,18 +25,16 @@ func (s *Server) slabPath(tp string, slabId uint16) string {
 	return filepath.Join(s.CachePath, "slabs", fmt.Sprintf("slab%d%s", slabId, tp))
 }
 
-func (s *Server) setupSlab(slabId uint16) err {
+func (s *Server) setupSlab(slabId uint16) error {
 	// setup loopback for metadata
 	metaName := s.slabPath("meta", slabId)
 	metaFile := os.OpenFile(metaName, os.O_RDWR, 0o600)
-	metaDev, err := loopback.NextLoopDevice()
-	err := loopback.Loop(metaDev, metaFile)
+	metaDev, err := losetup.Attach(metaName, 0, false)
 
 	// setup loopback for data file
 	dataName := s.slabPath("data", slabId)
 	dataFile := os.OpenFile(metaName, os.O_RDWR, 0o600)
-	dataDev, err := loopback.NextLoopDevice()
-	err := loopback.Loop(dataDev, dataFile)
+	dataDev, err := losetup.Attach(dataName, 0, false)
 
 	// setup nbd
 	addr := s.nbdsock.Load().(net.Listener).Addr()
@@ -47,6 +47,7 @@ func (s *Server) setupSlab(slabId uint16) err {
 	})
 
 	// setup dm-clone
+	devmapper.Create
 	// FIXME
 }
 

@@ -12,7 +12,6 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/dnr/styx/patched/loopback"
 	nbdclient "github.com/pojntfx/go-nbd/pkg/client"
 	nbdserver "github.com/pojntfx/go-nbd/pkg/server"
 )
@@ -45,7 +44,6 @@ func (s *Server) setupNbdSock() error {
 	return nil
 
 	// FIXME
-	_ = loopback.Loop
 	_ = nbdclient.Connect
 
 	return nil

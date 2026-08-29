@@ -4,8 +4,11 @@ go 1.25.0
 
 replace github.com/DataDog/zstd => github.com/dnr/datadog-zstd-go v0.0.0-20250916100506-79345d875ce7
 
+replace github.com/anatol/devmapper.go => ./forked/github.com/anatol/devmapper.go
+
 require (
 	github.com/DataDog/zstd v1.5.7
+	github.com/anatol/devmapper.go v0.0.0
 	github.com/avast/retry-go/v4 v4.6.0
 	github.com/aws/aws-lambda-go v1.46.0
 	github.com/aws/aws-sdk-go-v2 v1.27.2
@@ -14,11 +17,13 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.51.0
 	github.com/aws/aws-sdk-go-v2/service/ssm v1.49.5
 	github.com/axiomhq/axiom-go v0.21.1
+	github.com/freddierice/go-losetup/v2 v2.0.1
 	github.com/go-git/go-git/v5 v5.16.4
 	github.com/lunixbochs/struc v0.0.0-20200707160740-784aaebc1d40
 	github.com/multiformats/go-multihash v0.2.1
 	github.com/nix-community/go-nix v0.0.0-20231219074122-93cb24a86856
 	github.com/phayes/freeport v0.0.0-20220201140144-74d24b5ae9f5
+	github.com/pojntfx/go-nbd v0.3.2
 	github.com/spf13/cobra v1.8.1
 	github.com/stretchr/testify v1.11.1
 	github.com/wneessen/go-mail v0.4.2
@@ -84,7 +89,6 @@ require (
 	github.com/pilebones/go-udev v0.9.0 // indirect
 	github.com/pjbgf/sha1cd v0.5.0 // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect
-	github.com/pojntfx/go-nbd v0.3.2 // indirect
 	github.com/robfig/cron v1.2.0 // indirect
 	github.com/sergi/go-diff v1.4.0 // indirect
 	github.com/skeema/knownhosts v1.3.1 // indirect
@@ -104,5 +108,4 @@ require (
 	gopkg.in/warnings.v0 v0.1.2 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 	lukechampine.com/blake3 v1.1.6 // indirect
-	pault.ag/go/loopback v0.1.4 // indirect
 )
