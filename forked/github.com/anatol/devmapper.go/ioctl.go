@@ -14,7 +14,8 @@ import (
 // This flag is later processed by rules at /usr/lib/udev/rules.d/10-dm.rules
 // Per devicecrypt sourcecode only RESUME, REMOVE, RENAME operations need to have DM_UDEV_PRIMARY_SOURCE_FLAG
 // flag set.
-func ioctlTable(cmd uintptr, name string, uuid string, flags uint32, primaryUdevEvent bool, tables []Table) error {
+// Returns device number (only useful on create) and error.
+func ioctlTable(cmd uintptr, name string, uuid string, flags uint32, primaryUdevEvent bool, tables []Table) (uint64, error) {
 	const (
 		// allocate buffer large enough for dmioctl + specs
 		alignment = 8
@@ -80,7 +81,11 @@ func ioctlTable(cmd uintptr, name string, uuid string, flags uint32, primaryUdev
 		idx += specSize
 	}
 
-	return ioctl(cmd, data)
+	err := ioctl(cmd, data)
+	if err != nil {
+		return 0, err
+	}
+	return ioctlData.Dev, nil
 }
 
 func ioctl(cmd uintptr, data []byte) error {
