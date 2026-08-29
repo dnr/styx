@@ -91,7 +91,6 @@ func (s *Server) nbdServer() {
 
 func (b *nbdSlabBackend) ReadAt(p []byte, off int64) (int, error) {
 	err := b.s.handleReadSlab(
-		destFd, // FIXME
 		b.slabId,
 		uint64(len(p)),
 		uint64(off),
