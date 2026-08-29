@@ -98,11 +98,10 @@ with lib;
         };
         serviceConfig = {
           ExecStartPre = [
-            # FIXME: these probably all get loaded on-demand, do we need to do any explicitly?
-            # "-${pkgs.kmod}/bin/modprobe dm-clone"
-            # "-${pkgs.kmod}/bin/modprobe erofs"
-            # "-${pkgs.kmod}/bin/modprobe loop"
-            # "-${pkgs.kmod}/bin/modprobe nbd"
+            # this doesn't get loaded on-demand
+            "-${pkgs.kmod}/bin/modprobe nbd"
+            # other modules we need: dm-clone, erofs, loop
+            # all seem to get properly loaded on-demand
           ];
           # Use unshare directly instead of PrivateMounts so that our new mounts
           # are propagated normally, but we can remount /nix/store rw.
