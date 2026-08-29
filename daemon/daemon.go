@@ -67,7 +67,6 @@ type (
 
 		stateLock sync.Mutex
 		slabState map[uint16]*slabState
-		// slabFds map[uint16]int // DELETEME
 
 		// keeps track of locs that we know are present before we persist them
 		presentMap common.SimpleSyncMap[erofs.SlabLoc, struct{}]
@@ -299,29 +298,6 @@ func (s *Server) setupMounts() error {
 
 	return nil
 }
-
-// // DELETEME: consolidate with createSlabFile?
-// func (s *Server) setupManifestSlab() error {
-// 	var id uint16 = manifestSlabOffset
-// 	path := filepath.Join(s.cfg.CachePath, "slab", strconv.Itoa(int(id)))
-// 	fd, err := unix.Open(path, unix.O_RDWR|unix.O_CREAT, 0o600)
-// 	if err != nil {
-// 		log.Println("open manifest slab", path, err)
-// 		return err
-// 	}
-
-// 	s.stateLock.Lock()
-// 	defer s.stateLock.Unlock()
-// 	s.slabFds[id] = fd
-// 	// state := &openFileState{
-// 	// 	writeFd: common.TruncU32(fd), // write and read to same fd
-// 	// 	tp:      typeManifestSlab,
-// 	// 	slabId:  id,
-// 	// }
-// 	// s.stateBySlab[id] = state
-// 	// s.readfdBySlab[id] = fd
-// 	return nil
-// }
 
 // socket server + mount management
 
@@ -800,23 +776,7 @@ func (s *Server) teardownSlabs() {
 	}
 }
 
-// func (s *Server) closeState(state *openFileState, readFd int) {
-// 	fds := []int{int(state.writeFd), readFd}
-// 	slices.Sort(fds)
-// 	fds = slices.Compact(fds)
-// 	if fds[0] == 0 {
-// 		fds = fds[1:]
-// 	}
-// 	for _, fd := range fds {
-// 		_ = unix.Close(fd)
-// 	}
-// 	if state.tp == typeSlab {
-// 		mp := filepath.Join(s.cfg.CachePath, slabImagePrefix+strconv.Itoa(int(state.slabId)))
-// 		_ = unix.Unmount(mp, 0)
-// 	}
-// }
-
-func (s *Server) handleReadSlab(destFd int, slabId uint16, ln, off uint64) (retErr error) {
+func (s *Server) handleReadSlab(slabId uint16, ln, off uint64) (retErr error) {
 	s.stats.slabReads.Add(1)
 	defer func() {
 		if retErr != nil {
@@ -887,18 +847,5 @@ func (s *Server) handleReadSlab(destFd int, slabId uint16, ln, off uint64) (retE
 	}
 
 	ctx := context.Background()
-	return s.requestChunk(ctx, destFd, erofs.SlabLoc{slabId, addr}, digest, sphps)
+	return s.requestChunk(ctx, erofs.SlabLoc{slabId, addr}, digest, sphps)
 }
-
-// // DELETEME: consolidate with setupManifestSlab
-// func (s *Server) createSlabFile(slabId uint16) error {
-// 	path := filepath.Join(s.cfg.CachePath, "slab", strconv.Itoa(int(slabId)))
-// 	slabFd, err := unix.Open(path, unix.O_RDWR|unix.O_CREAT, 0o600)
-// 	if err != nil {
-// 		return fmt.Errorf("error opening slab file %s: %w", path, err)
-// 	}
-// 	_ = unix.Close(slabFd)
-
-// 	log.Println("created slab file", slabId)
-// 	return nil
-// }
