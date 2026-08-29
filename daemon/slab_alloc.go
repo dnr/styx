@@ -49,7 +49,7 @@ func (s *Server) AllocateBatch(ctx context.Context, blocks []uint16, digests []c
 			digest := digests[i][:]
 			if loc := cb.Get(digest); loc == nil {
 				// allocate
-				if seq >= slabBytes>>s.blockShift {
+				if seq >= (slabBytes>>s.blockShift)-reservedBlocks {
 					slabId++
 					if sb, err = slabroot.CreateBucketIfNotExists(slabKey(slabId)); err != nil {
 						return err

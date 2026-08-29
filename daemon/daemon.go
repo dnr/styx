@@ -8,6 +8,7 @@ import (
 	"log"
 	"net"
 	"os"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 
@@ -41,7 +42,7 @@ const (
 const (
 	savedFdName        = "nbdsock"
 	presentMask        = 1 << 31
-	reservedBlocks     = 4 // reserved at beginning of slab
+	reservedBlocks     = 16 // reserved at beginning and end of slab
 	manifestSlabOffset = 10000
 )
 
@@ -59,6 +60,8 @@ type (
 
 		stateLock sync.Mutex
 		slabState map[uint16]*slabState
+
+		serializeSlabOps sync.Mutex
 
 		// keeps track of locs that we know are present before we persist them
 		presentMap common.SimpleSyncMap[erofs.SlabLoc, struct{}]
@@ -119,13 +122,11 @@ var errAlreadyMountedElsewhere = errors.New("already mounted on another mountpoi
 
 func NewServer(cfg Config) *Server {
 	return &Server{
-		cfg:        &cfg,
-		blockShift: shift.Shift(cfg.ErofsBlockShift),
-		chunkPool:  common.NewChunkPool(),
-		builder:    erofs.NewBuilder(erofs.BuilderConfig{BlockShift: cfg.ErofsBlockShift}),
-		// cacheState:      make(map[uint32]*openFileState),
-		// stateBySlab:     make(map[uint16]*openFileState),
-		// readfdBySlab:    make(map[uint16]int),
+		cfg:             &cfg,
+		blockShift:      shift.Shift(cfg.ErofsBlockShift),
+		chunkPool:       common.NewChunkPool(),
+		builder:         erofs.NewBuilder(erofs.BuilderConfig{BlockShift: cfg.ErofsBlockShift}),
+		slabState:       make(map[uint16]*slabState),
 		presentMap:      *common.NewSimpleSyncMap[erofs.SlabLoc, struct{}](),
 		readKnownMap:    *common.NewSimpleSyncMap[erofs.SlabLoc, int](),
 		diffMap:         make(map[erofs.SlabLoc]reqOp),
@@ -160,7 +161,8 @@ func (s *Server) postInit(params *pb.DaemonParams, keys []signature.PublicKey) e
 
 func (s *Server) setupMountNamespace() error {
 	// always ensure cache dir exists
-	if err := os.MkdirAll(s.cfg.CachePath, 0700); err != nil {
+	slabsDir := filepath.Join(s.cfg.CachePath, slabSubdir)
+	if err := os.MkdirAll(slabsDir, 0700); err != nil {
 		return err
 	}
 

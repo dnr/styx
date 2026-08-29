@@ -64,13 +64,10 @@ func (s *Server) getWriteFd(slabId uint16) int {
 }
 
 func (s *Server) slabPath(tp string, slabId uint16) string {
-	return filepath.Join(s.cfg.CachePath, "slabs", fmt.Sprintf("slab%d%s", slabId, tp))
+	return filepath.Join(s.cfg.CachePath, slabSubdir, fmt.Sprintf("slab%d%s", slabId, tp))
 }
 
 func (s *Server) setupFileSlab(slabId uint16) error {
-	s.stateLock.Lock()
-	defer s.stateLock.Unlock()
-
 	dataName := s.slabPath("data", slabId)
 	fd, err := unix.Open(dataName, unix.O_RDWR|unix.O_CREAT, 0o600)
 	if err != nil {
@@ -82,6 +79,10 @@ func (s *Server) setupFileSlab(slabId uint16) error {
 		writeFd: fd,
 		readFd:  fd,
 	}
+
+	s.stateLock.Lock()
+	defer s.stateLock.Unlock()
+
 	s.slabState[slabId] = st
 	log.Println("set up file slab", slabId)
 	return nil
@@ -92,8 +93,9 @@ func (s *Server) teardownFileSlabLocked(st *slabState) error {
 }
 
 func (s *Server) setupCloneSlab(slabId uint16, slabBytes, regionBytes int64) (retErr error) {
-	s.stateLock.Lock()
-	defer s.stateLock.Unlock()
+	// serialize to avoid races with nbd device setup
+	s.serializeSlabOps.Lock()
+	defer s.serializeSlabOps.Unlock()
 
 	st := &slabState{
 		tp:      typeCloneSlab,
@@ -107,7 +109,7 @@ func (s *Server) setupCloneSlab(slabId uint16, slabBytes, regionBytes int64) (re
 		}
 		log.Printf("error setting up clone slab %d: %v", slabId, retErr)
 		log.Print("trying to tear down...")
-		if tdErr := s.teardownCloneSlabLocked(slabId, st); tdErr != nil {
+		if tdErr := s.teardownCloneSlab(slabId, st); tdErr != nil {
 			log.Println("tear down:", tdErr)
 		} else {
 			log.Print("tear down ok")
@@ -119,21 +121,21 @@ func (s *Server) setupCloneSlab(slabId uint16, slabBytes, regionBytes int64) (re
 
 	metaFd, err := unix.Open(st.metaName, unix.O_RDWR|unix.O_CREAT, 0o600)
 	if err != nil {
-		return err
+		return fmt.Errorf("open meta %q: %w", st.metaName, err)
 	}
 	err = unix.Ftruncate(metaFd, metaBytes)
 	if err != nil {
-		return err
+		return fmt.Errorf("truncate meta %q: %w", st.metaName, err)
 	}
 	err = unix.Close(metaFd)
 	if err != nil {
-		return err
+		return fmt.Errorf("close meta %q: %w", st.metaName, err)
 	}
 
 	// TODO: maybe look for already-attached?
 	st.metaLo, err = losetup.Attach(st.metaName, 0, false)
 	if err != nil {
-		return err
+		return fmt.Errorf("losetup meta %q: %w", st.metaName, err)
 	}
 
 	// setup loopback for data file
@@ -142,34 +144,38 @@ func (s *Server) setupCloneSlab(slabId uint16, slabBytes, regionBytes int64) (re
 	// clone slab reads go to backing file
 	st.readFd, err = unix.Open(st.dataName, unix.O_RDWR|unix.O_CREAT, 0o600)
 	if err != nil {
-		return err
+		return fmt.Errorf("open data %q: %w", st.dataName, err)
 	}
 	err = unix.Ftruncate(st.readFd, slabBytes)
 	if err != nil {
-		return err
+		return fmt.Errorf("truncate data %q: %w", st.dataName, err)
 	}
 
 	// TODO: maybe look for already-attached?
 	st.dataLo, err = losetup.Attach(st.dataName, 0, false)
+	if err != nil {
+		return fmt.Errorf("losetup data %q: %w", st.dataName, err)
+	}
 
 	// setup nbd
 	addr := s.nbdsock.Load().(net.Listener).Addr()
 	nbdConn, err := net.Dial(addr.Network(), addr.String())
 	if err != nil {
-		return err
+		return fmt.Errorf("nbd dial %v: %w", addr, err)
 	}
 	// TODO: fix race between find and connect (need to use netlink)
 	st.nbdName, err = findFreeNbdDev()
 	if err != nil {
-		return err
+		return fmt.Errorf("find free nbd: %w", err)
 	}
 	st.nbdDev, err = os.OpenFile(st.nbdName, os.O_RDWR, 0o600)
 	if err != nil {
-		return err
+		return fmt.Errorf("open nbd %q: %w", st.nbdName, err)
 	}
 
 	nbdConnected := make(chan struct{})
 	nbdErr := make(chan error, 1)
+	log.Printf("nbd connecting to slab%d on %s", slabId, st.nbdName)
 	go func() {
 		runtime.LockOSThread() // TODO: figure out if this is really needed
 		defer runtime.UnlockOSThread()
@@ -182,8 +188,9 @@ func (s *Server) setupCloneSlab(slabId uint16, slabBytes, regionBytes int64) (re
 	}()
 	select {
 	case <-nbdConnected:
+		log.Print("nbd connected")
 	case err = <-nbdErr:
-		return err
+		return fmt.Errorf("nbd connect: %w", err)
 	}
 
 	// setup dm-clone
@@ -192,38 +199,41 @@ func (s *Server) setupCloneSlab(slabId uint16, slabBytes, regionBytes int64) (re
 	tab := &devmapper.CloneTable{
 		Start:       0,
 		Length:      uint64(slabBytes),
-		MetaDev:     st.metaName,
-		DestDev:     st.dataName,
+		MetaDev:     st.metaLo.Path(),
+		DestDev:     st.dataLo.Path(),
 		SourceDev:   st.nbdName,
 		RegionSize:  uint64(regionBytes),
 		NoHydration: true,
 	}
 	devNum, err := devmapper.CreateAndLoad(cloneName, uuid.NewString(), 0, tab)
 	if err != nil {
-		return err
+		return fmt.Errorf("dm create/load %q: %w", cloneName, err)
 	}
 	st.cloneLoaded = true
 
 	// create our dev node
 	_ = os.Remove(clonePath)
-	err = unix.Mknod(clonePath, 0o600, int(devNum))
+	err = unix.Mknod(clonePath, unix.S_IFBLK|0o600, int(devNum))
 	if err != nil {
-		return err
+		return fmt.Errorf("mknod %q: %w", clonePath, err)
 	}
 	st.cloneDev = true
 
 	// write fd: clone slab writes go through clone device to mark hydration
 	st.writeFd, err = unix.Open(clonePath, unix.O_RDWR, 0o600)
 	if err != nil {
-		return err
+		return fmt.Errorf("clone open %q: %w", clonePath, err)
 	}
+
+	s.stateLock.Lock()
+	defer s.stateLock.Unlock()
 
 	s.slabState[slabId] = st
 	log.Println("set up on-demand slab", slabId)
 	return nil
 }
 
-func (s *Server) teardownCloneSlabLocked(slabId uint16, st *slabState) error {
+func (s *Server) teardownCloneSlab(slabId uint16, st *slabState) error {
 	clonePath, _ := s.SlabInfo(slabId)
 
 	// write fd
@@ -301,7 +311,7 @@ func (s *Server) teardownSlabLocked(slabId uint16) error {
 	case typeFileSlab:
 		err = s.teardownFileSlabLocked(st)
 	case typeCloneSlab:
-		err = s.teardownCloneSlabLocked(slabId, st)
+		err = s.teardownCloneSlab(slabId, st)
 	}
 	if err != nil {
 		return err

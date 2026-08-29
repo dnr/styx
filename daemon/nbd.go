@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	nbdserver "github.com/pojntfx/go-nbd/pkg/server"
+	"golang.org/x/sys/unix"
 )
 
 type (
@@ -62,7 +63,7 @@ func (s *Server) nbdServer() {
 		if err != nil {
 			break
 		}
-		log.Println("new nbd client", conn.RemoteAddr())
+		log.Print("new nbd connection")
 		go func() {
 			err := nbdserver.Handle(
 				conn,
@@ -90,6 +91,14 @@ func (s *Server) nbdServer() {
 }
 
 func (b *nbdSlabBackend) ReadAt(p []byte, off int64) (int, error) {
+	// handle reserved blocks directly.
+	// the kernel will probably probe the first block for a partition table.
+	if off+int64(len(p)) <= (reservedBlocks<<b.s.blockShift) ||
+		off >= slabBytes-(reservedBlocks<<b.s.blockShift) {
+		clear(p)
+		return len(p), nil
+	}
+
 	err := b.s.handleReadSlab(
 		b.slabId,
 		uint64(len(p)),
@@ -98,7 +107,12 @@ func (b *nbdSlabBackend) ReadAt(p []byte, off int64) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	return len(p), nil
+	// we have now written to backing file through clone dev, but dm-clone requires that we
+	// still perform the read ourselves.
+	// FIXME: pass this directly in memory?
+	readFd := b.s.getReadFd(b.slabId)
+	n, err := unix.Pread(readFd, p, off)
+	return n, err
 }
 
 func (b *nbdSlabBackend) WriteAt(p []byte, off int64) (int, error) {
@@ -150,7 +164,7 @@ func nbdIndex(path string) int {
 	name := filepath.Base(path)
 	n, err := strconv.Atoi(strings.TrimPrefix(name, "nbd"))
 	if err != nil {
-		return int(^uint(0) >> 1)
+		return -1
 	}
 	return n
 }
