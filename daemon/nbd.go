@@ -12,7 +12,6 @@ import (
 	"strconv"
 	"strings"
 
-	nbdclient "github.com/pojntfx/go-nbd/pkg/client"
 	nbdserver "github.com/pojntfx/go-nbd/pkg/server"
 )
 
@@ -40,12 +39,7 @@ func (s *Server) setupNbdSock() error {
 		return err
 	}
 	s.nbdsock.Store(l)
-	log.Println("set up nbd server")
-	return nil
-
-	// FIXME
-	_ = nbdclient.Connect
-
+	log.Println("set up nbd listener")
 	return nil
 }
 
