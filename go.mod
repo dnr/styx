@@ -6,6 +6,8 @@ replace github.com/DataDog/zstd => github.com/dnr/datadog-zstd-go v0.0.0-2025091
 
 replace github.com/anatol/devmapper.go => ./forked/github.com/anatol/devmapper.go
 
+replace github.com/pojntfx/go-nbd => ./forked/github.com/pojntfx/go-nbd
+
 require (
 	github.com/DataDog/zstd v1.5.7
 	github.com/anatol/devmapper.go v0.0.0
@@ -19,6 +21,7 @@ require (
 	github.com/axiomhq/axiom-go v0.21.1
 	github.com/freddierice/go-losetup/v2 v2.0.1
 	github.com/go-git/go-git/v5 v5.16.4
+	github.com/google/uuid v1.6.0
 	github.com/lunixbochs/struc v0.0.0-20200707160740-784aaebc1d40
 	github.com/multiformats/go-multihash v0.2.1
 	github.com/nix-community/go-nix v0.0.0-20231219074122-93cb24a86856
@@ -72,7 +75,6 @@ require (
 	github.com/golang/groupcache v0.0.0-20241129210726-2c02b8208cf8 // indirect
 	github.com/golang/mock v1.6.0 // indirect
 	github.com/google/go-querystring v1.1.0 // indirect
-	github.com/google/uuid v1.6.0 // indirect
 	github.com/grpc-ecosystem/go-grpc-middleware v1.4.0 // indirect
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.22.0 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
@@ -86,7 +88,6 @@ require (
 	github.com/multiformats/go-varint v0.0.6 // indirect
 	github.com/nexus-rpc/sdk-go v0.1.1 // indirect
 	github.com/pborman/uuid v1.2.1 // indirect
-	github.com/pilebones/go-udev v0.9.0 // indirect
 	github.com/pjbgf/sha1cd v0.5.0 // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect
 	github.com/robfig/cron v1.2.0 // indirect
