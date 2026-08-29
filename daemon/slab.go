@@ -1,8 +1,6 @@
 package daemon
 
 import (
-	"context"
-	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -11,13 +9,8 @@ import (
 	"runtime"
 
 	"github.com/anatol/devmapper.go"
-	"github.com/dnr/styx/common"
-	"github.com/dnr/styx/common/cdig"
-	"github.com/dnr/styx/common/shift"
-	"github.com/dnr/styx/erofs"
 	"github.com/google/uuid"
 	nbdclient "github.com/pojntfx/go-nbd/pkg/client"
-	"go.etcd.io/bbolt"
 	"golang.org/x/sys/unix"
 
 	"github.com/freddierice/go-losetup/v2"
@@ -41,6 +34,7 @@ type (
 		// clone slabs only:
 		regionBytes int32
 		cloneLoaded bool
+		cloneDev    bool
 		metaName    string
 		metaLo      losetup.Device
 		dataName    string
@@ -50,18 +44,53 @@ type (
 	}
 )
 
+func (s *Server) getReadFd(slabId uint16) int32 {
+	// TODO: remove locking overhead
+	s.stateLock.Lock()
+	defer s.stateLock.Unlock()
+	if st, ok := s.slabState[slabId]; ok {
+		return st.readFd
+	}
+	return -1
+}
+
+func (s *Server) getWriteFd(slabId uint16) int32 {
+	// TODO: remove locking overhead
+	s.stateLock.Lock()
+	defer s.stateLock.Unlock()
+	if st, ok := s.slabState[slabId]; ok {
+		return st.writeFd
+	}
+	return -1
+}
+
 func (s *Server) slabPath(tp string, slabId uint16) string {
 	return filepath.Join(s.cfg.CachePath, "slabs", fmt.Sprintf("slab%d%s", slabId, tp))
 }
 
 func (s *Server) setupFileSlab(slabId uint16, slabBytes int64) error {
-	st := &slabState{
-		slabId: slabId,
-		tp:     typeFileSlab,
+	s.stateLock.Lock()
+	defer s.stateLock.Unlock()
+
+	dataName := s.slabPath("data", slabId)
+	fd, err := unix.Open(dataName, unix.O_RDWR|unix.O_CREAT, 0o600)
+	if err != nil {
+		return err
 	}
-	// FIXME
+
+	st := &slabState{
+		slabId:  slabId,
+		tp:      typeFileSlab,
+		writeFd: int32(fd),
+		readFd:  int32(fd),
+	}
 	s.slabState[slabId] = st
-	return errors.New("notimpl")
+	log.Println("set up file slab", slabId)
+	return nil
+}
+
+func (s *Server) teardownFileSlabLocked(st *slabState) error {
+	return unix.Close(st.writeFd)
 }
 
 func (s *Server) setupCloneSlab(slabId uint16, slabBytes, regionBytes int64) (retErr error) {
@@ -69,9 +98,11 @@ func (s *Server) setupCloneSlab(slabId uint16, slabBytes, regionBytes int64) (re
 	defer s.stateLock.Unlock()
 
 	st := &slabState{
-		slabId: slabId,
-		tp:     typeCloneSlab,
-		size:   slabBytes,
+		slabId:  slabId,
+		tp:      typeCloneSlab,
+		size:    slabBytes,
+		readFd:  -1,
+		writeFd: -1,
 	}
 	defer func() {
 		if retErr == nil {
@@ -79,7 +110,7 @@ func (s *Server) setupCloneSlab(slabId uint16, slabBytes, regionBytes int64) (re
 		}
 		log.Printf("error setting up clone slab %d: %v", slabId, retErr)
 		log.Print("trying to tear down...")
-		if tdErr := s.teardownCloneSlabSt(st); tdErr != nil {
+		if tdErr := s.teardownCloneSlabLocked(st); tdErr != nil {
 			log.Println("tear down:", tdErr)
 		} else {
 			log.Print("tear down ok")
@@ -89,7 +120,7 @@ func (s *Server) setupCloneSlab(slabId uint16, slabBytes, regionBytes int64) (re
 	// setup loopback for metadata
 	st.metaName = s.slabPath("meta", slabId)
 
-	metaFd, err := unix.Open(dataName, unix.O_RDWR|unix.O_CREAT, 0o600)
+	metaFd, err := unix.Open(st.metaName, unix.O_RDWR|unix.O_CREAT, 0o600)
 	if err != nil {
 		return err
 	}
@@ -102,6 +133,7 @@ func (s *Server) setupCloneSlab(slabId uint16, slabBytes, regionBytes int64) (re
 		return err
 	}
 
+	// TODO: maybe look for already-attached?
 	st.metaLo, err := losetup.Attach(st.metaName, 0, false)
 	if err != nil {
 		return err
@@ -110,7 +142,7 @@ func (s *Server) setupCloneSlab(slabId uint16, slabBytes, regionBytes int64) (re
 	// setup loopback for data file
 	st.dataName := s.slabPath("data", slabId)
 
-	// clone slab reads from backing file
+	// clone slab reads go to backing file
 	st.readFd, err := unix.Open(dataName, unix.O_RDWR|unix.O_CREAT, 0o600)
 	if err != nil {
 		return err
@@ -120,14 +152,24 @@ func (s *Server) setupCloneSlab(slabId uint16, slabBytes, regionBytes int64) (re
 		return err
 	}
 
+	// TODO: maybe look for already-attached?
 	st.dataLo, err := losetup.Attach(dataName, 0, false)
 
 	// setup nbd
 	addr := s.nbdsock.Load().(net.Listener).Addr()
 	nbdConn, err := net.Dial(addr.Network(), addr.String())
-	// TODO: fix race between find and connect (use netlink)
+	if err != nil {
+		return err
+	}
+	// TODO: fix race between find and connect (need to use netlink)
 	st.nbdName, err := findFreeNbdDev()
+	if err != nil {
+		return err
+	}
 	st.nbdDev, err := os.OpenFile(nbdName, os.O_RDWR, 0o600)
+	if err != nil {
+		return err
+	}
 
 	nbdConnected := make(chan struct{})
 	nbdErr := make(chan error, 1)
@@ -137,14 +179,14 @@ func (s *Server) setupCloneSlab(slabId uint16, slabBytes, regionBytes int64) (re
 
 		nbdErr <- nbdclient.Connect(nbdConn, st.nbdDev, &nbdclient.Options{
 			ExportName:  fmt.Sprintf("slab%d", slabId),
-			Timeout:     10,
+			Timeout:     10, // seconds
 			OnConnected: func() { close(nbdConnected) },
 		})
 	}()
 	select {
 	case <-nbdConnected:
-	case <-nbdErr:
-		// return
+	case err = <-nbdErr:
+		return err
 	}
 
 	// setup dm-clone
@@ -159,33 +201,51 @@ func (s *Server) setupCloneSlab(slabId uint16, slabBytes, regionBytes int64) (re
 		RegionSize:  regionBytes,
 		NoHydration: true,
 	}
-	err = devmapper.CreateAndLoad(cloneName, uuid.NewString(), 0, tab)
-	st.cloneLoaded = true
-
-	// clone slab writes through clone device to mark hydration
-	st.writeFd := unix.Open(clonePath, unix.O_RDWR|unix.O_CREAT, 0o600)
-
-	s.slabState[slabId] = st
-	return nil
-}
-
-func (s *Server) teardownCloneSlab(slabId uint16) error {
-	st, ok := s.slabState[slabId]
-	if !ok {
-		return
-	}
-	err := s.teardownCloneSlabSt(st)
+	devNum, err := devmapper.CreateAndLoad(cloneName, uuid.NewString(), 0, tab)
 	if err != nil {
 		return err
 	}
-	delete(s.slabState[slabId])
+	st.cloneLoaded = true
+
+	// create our dev node
+	_ = os.Remove(clonePath)
+	err = unix.Mknod(clonePath, 0o600, int(devNum))
+	if err != nil {
+		return err
+	}
+	os.cloneDev = true
+
+	// write fd: clone slab writes go through clone device to mark hydration
+	st.writeFd, err := unix.Open(clonePath, unix.O_RDWR|unix.O_CREAT, 0o600)
+	if err != nil {
+		return err
+	}
+
+	s.slabState[slabId] = st
+	log.Println("set up on-demand slab", slabId)
 	return nil
 }
 
-func (s *Server) teardownCloneSlabSt(st *slabState) error {
+func (s *Server) teardownCloneSlabLocked(st *slabState) error {
+	clonePath, _ := s.SlabInfo(slabId)
+
+	// write fd
+	if st.writeFd >= 0 {
+		unix.Close(st.writeFd)
+		st.writeFd = -1
+	}
+
+	// dev node
+	if st.cloneDev {
+		err := os.Remove(clonePath)
+		if err != nil {
+			return err
+		}
+		st.cloneDev = false
+	}
+
 	// dm-clone
 	if st.cloneLoaded {
-		clonePath, _ := s.SlabInfo(slabId)
 		cloneName := filepath.Base(clonePath)
 		err := devmapper.Remove(cloneName)
 		if err != nil {
@@ -207,12 +267,13 @@ func (s *Server) teardownCloneSlabSt(st *slabState) error {
 		st.nbdDev = nil
 	}
 
-	// data
+	// read fd
 	if st.readFd >= 0 {
 		unix.Close(st.readFd)
 		st.readFd = -1
 	}
 
+	// data loopback
 	if st.dataLo != invalidLo {
 		err := st.dataLo.Detach()
 		if err != nil {
@@ -221,7 +282,7 @@ func (s *Server) teardownCloneSlabSt(st *slabState) error {
 		st.dataLo = invalidLo
 	}
 
-	// meta
+	// meta loopback
 	if st.metaLo != invalidLo {
 		err := st.metaLo.Detach()
 		if err != nil {
@@ -233,89 +294,24 @@ func (s *Server) teardownCloneSlabSt(st *slabState) error {
 	return nil
 }
 
-// erofs.SlabManager interface
-func (s *Server) VerifyParams(blockShift shift.Shift) error {
-	if blockShift != s.blockShift {
-		return errors.New("mismatched params")
-	}
-	return nil
-}
+func (s *Server) teardownSlab(slabId uint16) error {
+	s.stateLock.Lock()
+	defer s.stateLock.Unlock()
 
-// erofs.SlabManager interface
-func (s *Server) AllocateBatch(ctx context.Context, blocks []uint16, digests []cdig.CDig) ([]erofs.SlabLoc, error) {
-	sph, forManifest, ok := fromAllocateCtx(ctx)
+	var err error
+	st, ok := s.slabState[slabId]
 	if !ok {
-		return nil, errors.New("missing allocate context")
+		return nil
 	}
-
-	n := len(blocks)
-	if n != len(digests) {
-		return nil, errors.New("mismatched lengths")
+	switch st.tp {
+	case typeFileSlab:
+		err = s.teardownFileSlabLocked(st)
+	case typeCloneSlab:
+		err = s.teardownCloneSlabLocked(st)
 	}
-	out := make([]erofs.SlabLoc, n)
-	err := s.db.Update(func(tx *bbolt.Tx) error {
-		cb, slabroot := tx.Bucket(chunkBucket), tx.Bucket(slabBucket)
-		var slabId uint16 = 0
-		if forManifest {
-			slabId = manifestSlabOffset
-		}
-		sb, err := slabroot.CreateBucketIfNotExists(slabKey(slabId))
-		if err != nil {
-			return err
-		}
-		// reserve some blocks for future purposes
-		seq := max(sb.Sequence(), reservedBlocks)
-
-		for i := range out {
-			digest := digests[i][:]
-			if loc := cb.Get(digest); loc == nil {
-				// allocate
-				if seq >= slabBytes>>s.blockShift {
-					slabId++
-					if sb, err = slabroot.CreateBucketIfNotExists(slabKey(slabId)); err != nil {
-						return err
-					}
-					seq = max(sb.Sequence(), reservedBlocks)
-				}
-				addr := common.TruncU32(seq)
-				seq += uint64(blocks[i])
-				if err := cb.Put(digest, locValue(slabId, addr, sph)); err != nil {
-					return err
-				} else if err = sb.Put(addrKey(addr), digest); err != nil {
-					return err
-				}
-				out[i] = erofs.SlabLoc{slabId, addr}
-			} else {
-				if newLoc := appendSph(loc, sph); newLoc != nil {
-					if err := cb.Put(digest, newLoc); err != nil {
-						return err
-					}
-				}
-				out[i] = loadLoc(loc)
-			}
-		}
-
-		return sb.SetSequence(seq)
-	})
-	return common.ValOrErr(out, err)
-}
-
-// erofs.SlabManager interface
-func (s *Server) SlabInfo(slabId uint16) (tag string, totalBlocks uint32) {
-	// len(tag) < 64
-	return s.slabPath("clone", slabId), common.TruncU32(uint64(slabBytes) >> s.blockShift)
-}
-
-// like AllocateBatch but only lookup
-func (s *Server) lookupLocs(tx *bbolt.Tx, digests []cdig.CDig) ([]erofs.SlabLoc, error) {
-	out := make([]erofs.SlabLoc, len(digests))
-	cb := tx.Bucket(chunkBucket)
-	for i := range out {
-		loc := cb.Get(digests[i][:])
-		if loc == nil {
-			return nil, fmt.Errorf("missing chunk %s in lookupLocs", digests[i])
-		}
-		out[i] = loadLoc(loc)
+	if err != nil {
+		return err
 	}
-	return out, nil
+	delete(s.slabState, slabId)
+	return nil
 }
