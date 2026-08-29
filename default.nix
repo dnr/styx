@@ -14,7 +14,7 @@ in
   pkgs ? defPkgs,
 }:
 rec {
-  version = "0.0.13";
+  version = "0.1.14";
 
   baseArgs = {
     pname = "styx";
