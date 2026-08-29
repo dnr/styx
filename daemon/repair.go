@@ -4,9 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"os"
 	"os/exec"
-	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -19,16 +17,17 @@ import (
 func (s *Server) handleRepairReq(ctx context.Context, r *RepairReq) (*Status, error) {
 	// allow this even before "initialized"
 
-	if r.Presence {
-		for slab := uint16(0); slab < manifestSlabOffset; slab++ {
-			tag, _ := s.SlabInfo(slab)
-			backingPath := filepath.Join(s.cfg.CachePath, fscachePath(s.cfg.CacheDomain, tag))
-			if _, err := os.Stat(backingPath); os.IsNotExist(err) {
-				break
-			}
-			s.repairPresence(slab, backingPath)
-		}
-	}
+	// FIXME
+	// if r.Presence {
+	// 	for slab := uint16(0); slab < manifestSlabOffset; slab++ {
+	// 		tag, _ := s.SlabInfo(slab)
+	// 		backingPath := filepath.Join(s.cfg.CachePath, fscachePath(s.cfg.CacheDomain, tag))
+	// 		if _, err := os.Stat(backingPath); os.IsNotExist(err) {
+	// 			break
+	// 		}
+	// 		s.repairPresence(slab, backingPath)
+	// 	}
+	// }
 
 	return nil, nil
 }

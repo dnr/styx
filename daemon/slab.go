@@ -13,6 +13,7 @@ import (
 	"github.com/dnr/styx/common/cdig"
 	"github.com/dnr/styx/common/shift"
 	"github.com/dnr/styx/erofs"
+	"github.com/google/uuid"
 	nbdclient "github.com/pojntfx/go-nbd/pkg/client"
 	"go.etcd.io/bbolt"
 
@@ -22,32 +23,42 @@ import (
 const slabBytes = 1 << 40
 
 func (s *Server) slabPath(tp string, slabId uint16) string {
-	return filepath.Join(s.CachePath, "slabs", fmt.Sprintf("slab%d%s", slabId, tp))
+	return filepath.Join(s.cfg.CachePath, "slabs", fmt.Sprintf("slab%d%s", slabId, tp))
 }
 
 func (s *Server) setupSlab(slabId uint16) error {
 	// setup loopback for metadata
 	metaName := s.slabPath("meta", slabId)
-	metaFile := os.OpenFile(metaName, os.O_RDWR, 0o600)
+	metaFile, err := os.OpenFile(metaName, os.O_RDWR, 0o600)
 	metaDev, err := losetup.Attach(metaName, 0, false)
 
 	// setup loopback for data file
 	dataName := s.slabPath("data", slabId)
-	dataFile := os.OpenFile(metaName, os.O_RDWR, 0o600)
+	dataFile, err := os.OpenFile(metaName, os.O_RDWR, 0o600)
 	dataDev, err := losetup.Attach(dataName, 0, false)
 
 	// setup nbd
 	addr := s.nbdsock.Load().(net.Listener).Addr()
-	nbdConn := net.Dial(addr.Network(), addr.String())
+	nbdConn, err := net.Dial(addr.Network(), addr.String())
 	// TODO: fix race between find and connect (use netlink)
 	nbdName, err := findFreeNbdDev()
 	nbdDev, err := os.OpenFile(nbdName, os.O_RDWR, 0o600)
-	nbdclient.Connect(nbdConn, nbdDev, &nbdclient.Options{
+	err = nbdclient.Connect(nbdConn, nbdDev, &nbdclient.Options{
 		ExportName: fmt.Sprintf("slab%d", slabId),
 	})
 
 	// setup dm-clone
-	devmapper.Create
+	tag, _ := s.SlabInfo(slabId)
+	tab := &devmapper.CloneTable{
+		Start:       0,
+		Length:      slabBytes,
+		MetaDev:     metaName,
+		DestDev:     dataName,
+		SourceDev:   nbdName,
+		RegionSize:  4096, // FIXME
+		NoHydration: true,
+	}
+	err = devmapper.CreateAndLoad(tag, uuid.NewString(), 0, tab)
 	// FIXME
 }
 

@@ -752,10 +752,10 @@ func (s *Server) Start() error {
 	// if ondemand {
 	go s.nbdServer()
 	// TODO: get number of slabs from db and mount them all
-	if err := s.mountSlabImage(0); err != nil {
-		log.Print(err)
-		// don't exit here, we can operate, just without diffing
-	}
+	// if err := s.mountSlabImage(0); err != nil { // FIXME
+	// 	log.Print(err)
+	// 	// don't exit here, we can operate, just without diffing
+	// }
 	log.Println("nbd server ready")
 	s.restoreMounts()
 	// } else {
@@ -796,14 +796,15 @@ func (s *Server) Stop(closeSock bool) {
 func (s *Server) closeAllFds() {
 	s.stateLock.Lock()
 	defer s.stateLock.Unlock()
-	for _, state := range s.cacheState {
-		var readFd int
-		switch state.tp {
-		case typeSlab, typeManifestSlab:
-			readFd = s.readfdBySlab[state.slabId]
-		}
-		s.closeState(state, readFd)
-	}
+	// FIXME
+	// for _, state := range s.cacheState {
+	// 	var readFd int
+	// 	switch state.tp {
+	// 	case typeSlab, typeManifestSlab:
+	// 		readFd = s.readfdBySlab[state.slabId]
+	// 	}
+	// 	s.closeState(state, readFd)
+	// }
 }
 
 func (s *Server) closeState(state *openFileState, readFd int) {

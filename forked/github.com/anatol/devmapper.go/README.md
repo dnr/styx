@@ -1,3 +1,10 @@
+# styx modifications:
+
+- add clone table
+- remove everything else
+
+---
+
 # Pure Go library for device mapper targets management
 
 `devmapper.go` is a pure-Go library that helps to deal with device mapper targets.
