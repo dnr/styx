@@ -14,8 +14,6 @@ import (
 	"net/http/pprof"
 	"os"
 	"path/filepath"
-	"slices"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -148,7 +146,7 @@ func NewServer(cfg Config) *Server {
 }
 
 // TODO(file): do we need to condition this anymore?
-func (s *Server) ondemand() book {
+func (s *Server) ondemand() bool {
 	return true
 }
 
@@ -728,41 +726,48 @@ func (s *Server) Start() error {
 	if err := s.openDb(); err != nil {
 		return fmt.Errorf("error setting up database in %s: %w", s.cfg.CachePath, err)
 	}
-	if err := s.setupManifestSlab(); err != nil {
+
+	// TODO: get number of slabs from db and mount them all
+	numSlabs := uint16(1)
+
+	if s.ondemand() {
+		if err := s.setupNbdSock(); err != nil {
+			return fmt.Errorf("error setting up nbd listener: %w", err)
+		}
+		go s.nbdServer()
+		for slabId := range numSlabs {
+			// FIXME: region bytes config
+			if err := s.setupCloneSlab(slabId, slabBytes, 4096); err != nil {
+				return fmt.Errorf("error setting up clone slab %d: %w", slabId, err)
+			}
+		}
+	} else {
+		for slabId := range numSlabs {
+			if err := s.setupFileSlab(slabId); err != nil {
+				return fmt.Errorf("error setting up file slab %d: %w", slabId, err)
+			}
+		}
+	}
+
+	// manifest slab is always file
+	if err := s.setupFileSlab(manifestSlabOffset); err != nil {
 		return fmt.Errorf("error setting up manifest slab: %w", err)
 	}
-	// FIXME: maybe we need to create more?
-	if err := s.createSlabFile(0); err != nil {
-		return fmt.Errorf("error creating slab file %d: %w", 0, err)
-	}
-	if err := s.setupNbdSock(); err != nil {
-		return fmt.Errorf("listen nbd: %w", 0, err)
-	}
+
 	if err := s.startSocketServer(); err != nil {
 		return err
 	}
+
 	if err := s.startFakeCacheServer(); err != nil {
 		return err
 	}
+
 	go s.pruneRecentCaches()
-	// if ondemand {
-	go s.nbdServer()
-	// TODO: get number of slabs from db and mount them all
-	// if err := s.mountSlabImage(0); err != nil { // FIXME
-	// 	log.Print(err)
-	// 	// don't exit here, we can operate, just without diffing
-	// }
-	log.Println("nbd server ready")
+
 	s.restoreMounts()
-	// } else {
-	// 	if err := s.setupFakeSlabImage(0); err != nil {
-	// 		log.Print(err)
-	// 		// don't exit here, we can operate, just without diffing
-	// 	}
-	// 	log.Printf("set up slab %d for non-on-demand mode", 0)
-	// }
-	s.restoreMounts()
+
 	s.cfg.FdStore.Ready()
+
 	return nil
 }
 
@@ -772,52 +777,44 @@ func (s *Server) Stop(closeSock bool) {
 	log.Print("stopping daemon...")
 	close(s.shutdownChan) // stops the socket server
 
-	// signal to notify server and workers to stop
-	// fd := s.devnode.Swap(0) // FIXME
-	// wait for workers to stop
-	s.shutdownWait.Wait()
-	// close fds of open objects
-	s.closeAllFds()
-	// maybe close devnode too
-	if closeSock {
-		// unix.Close(int(fd)) // FIXME: notify fd?
-		s.cfg.FdStore.RemoveFd(savedFdName) // FIXME
+	// signal to notify server to stop
+	if l, ok := s.nbdsock.Load().(net.Listener); ok {
+		l.Close()
 	}
-
+	s.shutdownWait.Wait() // waits for nbd handlers to stop
+	s.teardownSlabs()
 	s.db.Close()
 
 	log.Print("daemon shutdown done")
 }
 
-func (s *Server) closeAllFds() {
+func (s *Server) teardownSlabs() {
 	s.stateLock.Lock()
 	defer s.stateLock.Unlock()
-	// FIXME
-	// for _, state := range s.cacheState {
-	// 	var readFd int
-	// 	switch state.tp {
-	// 	case typeSlab, typeManifestSlab:
-	// 		readFd = s.readfdBySlab[state.slabId]
-	// 	}
-	// 	s.closeState(state, readFd)
-	// }
+
+	for slabId := range s.slabState {
+		err := s.teardownSlabLocked(slabId)
+		if err != nil {
+			log.Printf("error tearing down slab %d: %v", slabId, err)
+		}
+	}
 }
 
-func (s *Server) closeState(state *openFileState, readFd int) {
-	fds := []int{int(state.writeFd), readFd}
-	slices.Sort(fds)
-	fds = slices.Compact(fds)
-	if fds[0] == 0 {
-		fds = fds[1:]
-	}
-	for _, fd := range fds {
-		_ = unix.Close(fd)
-	}
-	if state.tp == typeSlab {
-		mp := filepath.Join(s.cfg.CachePath, slabImagePrefix+strconv.Itoa(int(state.slabId)))
-		_ = unix.Unmount(mp, 0)
-	}
-}
+// func (s *Server) closeState(state *openFileState, readFd int) {
+// 	fds := []int{int(state.writeFd), readFd}
+// 	slices.Sort(fds)
+// 	fds = slices.Compact(fds)
+// 	if fds[0] == 0 {
+// 		fds = fds[1:]
+// 	}
+// 	for _, fd := range fds {
+// 		_ = unix.Close(fd)
+// 	}
+// 	if state.tp == typeSlab {
+// 		mp := filepath.Join(s.cfg.CachePath, slabImagePrefix+strconv.Itoa(int(state.slabId)))
+// 		_ = unix.Unmount(mp, 0)
+// 	}
+// }
 
 func (s *Server) handleReadSlab(destFd int, slabId uint16, ln, off uint64) (retErr error) {
 	s.stats.slabReads.Add(1)

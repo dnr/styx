@@ -283,10 +283,8 @@ func (s *Server) vaporizeFile(
 		// also, if the loc was already allocated (but not present), then it's already linked
 		// to a digest. we can't take the risk of TOCTOU, so we have to read and write.
 		if !wasAllocated[i] && size == rounded && *tryClone {
-			s.stateLock.Lock()
-			cfd := s.readfdBySlab[loc.SlabId]
-			s.stateLock.Unlock()
-			if cfd == 0 {
+			cfd := s.getReadFd(loc.SlabId)
+			if cfd < 0 {
 				return nil, errCachefdNotFound
 			}
 			woff := int64(loc.Addr) << s.blockShift

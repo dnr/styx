@@ -23,15 +23,14 @@ var invalidLo = losetup.New(99999, -99999)
 
 type (
 	slabState struct {
-		slabId uint16
-		tp     uint16
-		size   int64
+		tp uint16
 
-		// clone and file slabs
-		readFd  int32
-		writeFd int32
+		// clone and file slabs:
+		readFd  int
+		writeFd int
 
 		// clone slabs only:
+		size        int64
 		regionBytes int32
 		cloneLoaded bool
 		cloneDev    bool
@@ -44,7 +43,7 @@ type (
 	}
 )
 
-func (s *Server) getReadFd(slabId uint16) int32 {
+func (s *Server) getReadFd(slabId uint16) int {
 	// TODO: remove locking overhead
 	s.stateLock.Lock()
 	defer s.stateLock.Unlock()
@@ -54,7 +53,7 @@ func (s *Server) getReadFd(slabId uint16) int32 {
 	return -1
 }
 
-func (s *Server) getWriteFd(slabId uint16) int32 {
+func (s *Server) getWriteFd(slabId uint16) int {
 	// TODO: remove locking overhead
 	s.stateLock.Lock()
 	defer s.stateLock.Unlock()
@@ -68,7 +67,7 @@ func (s *Server) slabPath(tp string, slabId uint16) string {
 	return filepath.Join(s.cfg.CachePath, "slabs", fmt.Sprintf("slab%d%s", slabId, tp))
 }
 
-func (s *Server) setupFileSlab(slabId uint16, slabBytes int64) error {
+func (s *Server) setupFileSlab(slabId uint16) error {
 	s.stateLock.Lock()
 	defer s.stateLock.Unlock()
 
@@ -79,10 +78,9 @@ func (s *Server) setupFileSlab(slabId uint16, slabBytes int64) error {
 	}
 
 	st := &slabState{
-		slabId:  slabId,
 		tp:      typeFileSlab,
-		writeFd: int32(fd),
-		readFd:  int32(fd),
+		writeFd: fd,
+		readFd:  fd,
 	}
 	s.slabState[slabId] = st
 	log.Println("set up file slab", slabId)
@@ -98,7 +96,6 @@ func (s *Server) setupCloneSlab(slabId uint16, slabBytes, regionBytes int64) (re
 	defer s.stateLock.Unlock()
 
 	st := &slabState{
-		slabId:  slabId,
 		tp:      typeCloneSlab,
 		size:    slabBytes,
 		readFd:  -1,
@@ -110,7 +107,7 @@ func (s *Server) setupCloneSlab(slabId uint16, slabBytes, regionBytes int64) (re
 		}
 		log.Printf("error setting up clone slab %d: %v", slabId, retErr)
 		log.Print("trying to tear down...")
-		if tdErr := s.teardownCloneSlabLocked(st); tdErr != nil {
+		if tdErr := s.teardownCloneSlabLocked(slabId, st); tdErr != nil {
 			log.Println("tear down:", tdErr)
 		} else {
 			log.Print("tear down ok")
@@ -134,26 +131,26 @@ func (s *Server) setupCloneSlab(slabId uint16, slabBytes, regionBytes int64) (re
 	}
 
 	// TODO: maybe look for already-attached?
-	st.metaLo, err := losetup.Attach(st.metaName, 0, false)
+	st.metaLo, err = losetup.Attach(st.metaName, 0, false)
 	if err != nil {
 		return err
 	}
 
 	// setup loopback for data file
-	st.dataName := s.slabPath("data", slabId)
+	st.dataName = s.slabPath("data", slabId)
 
 	// clone slab reads go to backing file
-	st.readFd, err := unix.Open(dataName, unix.O_RDWR|unix.O_CREAT, 0o600)
+	st.readFd, err = unix.Open(st.dataName, unix.O_RDWR|unix.O_CREAT, 0o600)
 	if err != nil {
 		return err
 	}
-	err := unix.Ftruncate(st.readFd, slabBytes)
+	err = unix.Ftruncate(st.readFd, slabBytes)
 	if err != nil {
 		return err
 	}
 
 	// TODO: maybe look for already-attached?
-	st.dataLo, err := losetup.Attach(dataName, 0, false)
+	st.dataLo, err = losetup.Attach(st.dataName, 0, false)
 
 	// setup nbd
 	addr := s.nbdsock.Load().(net.Listener).Addr()
@@ -162,11 +159,11 @@ func (s *Server) setupCloneSlab(slabId uint16, slabBytes, regionBytes int64) (re
 		return err
 	}
 	// TODO: fix race between find and connect (need to use netlink)
-	st.nbdName, err := findFreeNbdDev()
+	st.nbdName, err = findFreeNbdDev()
 	if err != nil {
 		return err
 	}
-	st.nbdDev, err := os.OpenFile(nbdName, os.O_RDWR, 0o600)
+	st.nbdDev, err = os.OpenFile(st.nbdName, os.O_RDWR, 0o600)
 	if err != nil {
 		return err
 	}
@@ -194,11 +191,11 @@ func (s *Server) setupCloneSlab(slabId uint16, slabBytes, regionBytes int64) (re
 	cloneName := filepath.Base(clonePath)
 	tab := &devmapper.CloneTable{
 		Start:       0,
-		Length:      slabBytes,
+		Length:      uint64(slabBytes),
 		MetaDev:     st.metaName,
-		DestDev:     dataName,
-		SourceDev:   nbdName,
-		RegionSize:  regionBytes,
+		DestDev:     st.dataName,
+		SourceDev:   st.nbdName,
+		RegionSize:  uint64(regionBytes),
 		NoHydration: true,
 	}
 	devNum, err := devmapper.CreateAndLoad(cloneName, uuid.NewString(), 0, tab)
@@ -213,10 +210,10 @@ func (s *Server) setupCloneSlab(slabId uint16, slabBytes, regionBytes int64) (re
 	if err != nil {
 		return err
 	}
-	os.cloneDev = true
+	st.cloneDev = true
 
 	// write fd: clone slab writes go through clone device to mark hydration
-	st.writeFd, err := unix.Open(clonePath, unix.O_RDWR|unix.O_CREAT, 0o600)
+	st.writeFd, err = unix.Open(clonePath, unix.O_RDWR, 0o600)
 	if err != nil {
 		return err
 	}
@@ -226,7 +223,7 @@ func (s *Server) setupCloneSlab(slabId uint16, slabBytes, regionBytes int64) (re
 	return nil
 }
 
-func (s *Server) teardownCloneSlabLocked(st *slabState) error {
+func (s *Server) teardownCloneSlabLocked(slabId uint16, st *slabState) error {
 	clonePath, _ := s.SlabInfo(slabId)
 
 	// write fd
@@ -294,10 +291,7 @@ func (s *Server) teardownCloneSlabLocked(st *slabState) error {
 	return nil
 }
 
-func (s *Server) teardownSlab(slabId uint16) error {
-	s.stateLock.Lock()
-	defer s.stateLock.Unlock()
-
+func (s *Server) teardownSlabLocked(slabId uint16) error {
 	var err error
 	st, ok := s.slabState[slabId]
 	if !ok {
@@ -307,7 +301,7 @@ func (s *Server) teardownSlab(slabId uint16) error {
 	case typeFileSlab:
 		err = s.teardownFileSlabLocked(st)
 	case typeCloneSlab:
-		err = s.teardownCloneSlabLocked(st)
+		err = s.teardownCloneSlabLocked(slabId, st)
 	}
 	if err != nil {
 		return err
