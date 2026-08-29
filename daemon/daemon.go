@@ -37,10 +37,8 @@ import (
 )
 
 const (
-	typeImage uint16 = iota
-	typeSlabImage
-	typeSlab
-	typeManifestSlab
+	typeFileSlab uint16 = iota
+	typeCloneSlab
 )
 
 const (
@@ -70,6 +68,7 @@ type (
 		stats      daemonStats
 
 		stateLock sync.Mutex
+		slabState map[uint16]*slabState
 		// cacheState   map[uint32]*openFileState // object id -> state
 		// stateBySlab  map[uint16]*openFileState // slab id -> state
 		// readfdBySlab map[uint16]int            // slab id -> readfd
@@ -108,13 +107,13 @@ type (
 		mcread manifester.ChunkStoreRead
 	}
 
-	openFileState struct {
-		writeFd uint32 // for slabs, slab images, and store images
-		tp      uint16
+	// openFileState struct {
+	// 	writeFd uint32 // for slabs, slab images, and store images
+	// 	tp      uint16
 
-		// for slabs, slab images, and manifest slabs
-		slabId uint16
-	}
+	// 	// for slabs, slab images, and manifest slabs
+	// 	slabId uint16
+	// }
 
 	Config struct {
 		CachePath  string
