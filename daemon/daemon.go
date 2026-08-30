@@ -161,9 +161,13 @@ func (s *Server) postInit(params *pb.DaemonParams, keys []signature.PublicKey) e
 
 func (s *Server) setupMountNamespace() error {
 	// always ensure cache dir exists
-	slabsDir := filepath.Join(s.cfg.CachePath, slabSubdir)
-	if err := os.MkdirAll(slabsDir, 0700); err != nil {
-		return err
+	for _, subdir := range []string{
+		slabSubdir,
+		imageSubdir,
+	} {
+		if err := os.MkdirAll(filepath.Join(s.cfg.CachePath, subdir), 0700); err != nil {
+			return err
+		}
 	}
 
 	// skip all this stuff if we aren't in a private mount ns, most things should still work
