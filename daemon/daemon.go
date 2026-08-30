@@ -12,6 +12,7 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"github.com/freddierice/go-losetup/v2"
 	"github.com/nix-community/go-nix/pkg/narinfo/signature"
 	"go.etcd.io/bbolt"
 	"golang.org/x/sync/semaphore"
@@ -62,6 +63,12 @@ type (
 		slabState map[uint16]*slabState
 
 		serializeSlabOps sync.Mutex
+
+		imageSlabLo losetup.Device
+		imageSlabF  *os.File
+
+		// loopback device cache
+		locache *locache
 
 		// keeps track of locs that we know are present before we persist them
 		presentMap common.SimpleSyncMap[erofs.SlabLoc, struct{}]
@@ -127,6 +134,7 @@ func NewServer(cfg Config) *Server {
 		chunkPool:       common.NewChunkPool(),
 		builder:         erofs.NewBuilder(erofs.BuilderConfig{BlockShift: cfg.ErofsBlockShift}),
 		slabState:       make(map[uint16]*slabState),
+		locache:         newLoCache(),
 		presentMap:      *common.NewSimpleSyncMap[erofs.SlabLoc, struct{}](),
 		readKnownMap:    *common.NewSimpleSyncMap[erofs.SlabLoc, int](),
 		diffMap:         make(map[erofs.SlabLoc]reqOp),
@@ -163,7 +171,6 @@ func (s *Server) setupMountNamespace() error {
 	// always ensure cache dir exists
 	for _, subdir := range []string{
 		slabSubdir,
-		imageSubdir,
 	} {
 		if err := os.MkdirAll(filepath.Join(s.cfg.CachePath, subdir), 0700); err != nil {
 			return err
@@ -210,6 +217,8 @@ func (s *Server) Start() error {
 		return fmt.Errorf("error setting up database in %s: %w", s.cfg.CachePath, err)
 	}
 
+	s.locache.init()
+
 	// TODO: get number of slabs from db and set them all up
 	numSlabs := uint16(1)
 
@@ -235,6 +244,11 @@ func (s *Server) Start() error {
 	// manifest slab is always file
 	if err := s.setupFileSlab(manifestSlabOffset); err != nil {
 		return fmt.Errorf("error setting up manifest slab: %w", err)
+	}
+
+	// image slab
+	if err := s.setupImageSlab(); err != nil {
+		return fmt.Errorf("error setting up image slab: %w", err)
 	}
 
 	if err := s.startSocketServer(); err != nil {

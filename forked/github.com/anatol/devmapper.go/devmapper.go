@@ -2,6 +2,7 @@ package devmapper
 
 import (
 	"fmt"
+	"unsafe"
 
 	"golang.org/x/sys/unix"
 )
@@ -143,6 +144,7 @@ retry:
 
 	return result, nil
 }
+*/
 
 // DeviceInfo is a type that holds devmapper device information
 type DeviceInfo struct {
@@ -203,4 +205,3 @@ func GetVersion() (major, minor, patch uint32, err error) {
 
 	return ioctlData.Version[0], ioctlData.Version[1], ioctlData.Version[2], nil
 }
-*/

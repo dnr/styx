@@ -42,6 +42,10 @@ message DbImage {
   string mount_point = 6;
   string last_mount_error = 7;
 
+  // erofs image location
+  int64 image_block_start = 12;
+  int64 image_block_length = 13;
+
   // nar size, if known
   int64 nar_size = 11;
 

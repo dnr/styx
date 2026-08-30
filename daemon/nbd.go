@@ -109,6 +109,8 @@ func (b *nbdSlabBackend) ReadAt(p []byte, off int64) (int, error) {
 	}
 	// we have now written to backing file through clone dev, but dm-clone requires that we
 	// still perform the read ourselves. read through the clone device for now.
+	// FIXME: oh, maybe if we read through the lo then it works, the writeback is lo->backing,
+	// not clone->lo?
 	// FIXME: pass this directly in memory?
 	fd := b.s.getWriteFd(b.slabId)
 	n, err := unix.Pread(fd, p, off)

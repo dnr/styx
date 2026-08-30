@@ -22,11 +22,11 @@ import (
 
 // Does a transaction on a record in imageBucket. f should mutate its argument and return nil.
 // If f returns an error, the record will not be written.
-func (s *Server) imageTx(sph string, f func(*pb.DbImage) error) error {
+func (s *Server) imageTx(sphStr string, f func(*pb.DbImage) error) error {
 	return s.db.Update(func(tx *bbolt.Tx) error {
 		var img pb.DbImage
 		b := tx.Bucket(imageBucket)
-		if buf := b.Get([]byte(sph)); buf != nil {
+		if buf := b.Get([]byte(sphStr)); buf != nil {
 			if err := proto.Unmarshal(buf, &img); err != nil {
 				return err
 			}
@@ -36,7 +36,7 @@ func (s *Server) imageTx(sph string, f func(*pb.DbImage) error) error {
 		} else if buf, err := proto.Marshal(&img); err != nil {
 			return err
 		} else {
-			return b.Put([]byte(sph), buf)
+			return b.Put([]byte(sphStr), buf)
 		}
 	})
 }
