@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/dnr/styx/erofs"
 	"github.com/dnr/styx/pb"
@@ -47,6 +48,19 @@ func (s *Server) tryMount(ctx context.Context, req *MountReq) error {
 		imagePrefix = image[:4096]
 	}
 
+	// collect device paths
+	slabsUsed := erofs.SlabsUsed(imagePrefix)
+	devs := make([]string, len(slabsUsed))
+	for i, slabId := range slabsUsed {
+		if slabId >= 0 {
+			devs[i] = "device=" + s.slabPath("clone", uint16(slabId))
+		} else {
+			log.Printf("couldn't parse slab tag at index %i in image %s", i, sphStr)
+			devs[i] = "device=/dev/null"
+		}
+	}
+	opts := strings.Join(devs, ",")
+
 	// do real mount
 	var mountErr error
 	isBare := erofs.IsBare(imagePrefix)
@@ -62,7 +76,7 @@ func (s *Server) tryMount(ctx context.Context, req *MountReq) error {
 		// mount to private dir
 		privateMp := filepath.Join(s.cfg.CachePath, "bare", sphStr)
 		_ = os.MkdirAll(privateMp, 0o755)
-		mountErr = unix.Mount(path, privateMp, "erofs", 0, "")
+		mountErr = unix.Mount(path, privateMp, "erofs", 0, opts)
 		if mountErr == nil {
 			// now bind the bare file where it should go
 			mountErr = unix.Mount(privateMp+erofs.BarePath, req.MountPoint, "none", unix.MS_BIND, "")
@@ -72,7 +86,7 @@ func (s *Server) tryMount(ctx context.Context, req *MountReq) error {
 		_ = os.Remove(privateMp)
 	} else {
 		_ = os.MkdirAll(req.MountPoint, 0o755)
-		mountErr = unix.Mount(path, req.MountPoint, "erofs", 0, "")
+		mountErr = unix.Mount(path, req.MountPoint, "erofs", 0, opts)
 	}
 
 	_ = s.imageTx(sphStr, func(img *pb.DbImage) error {
