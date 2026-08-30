@@ -20,7 +20,7 @@ import (
 func (s *Server) tryMount(ctx context.Context, req *MountReq) error {
 	_, sphStr, _ := ParseSph(req.StorePath)
 
-	path := filepath.Join(s.cfg.CachePath, "image", sphStr)
+	path := filepath.Join(s.cfg.CachePath, imageSubdir, sphStr)
 
 	var imagePrefix []byte
 	if f, err := os.Open(path); err == nil {

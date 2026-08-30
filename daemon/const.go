@@ -5,7 +5,8 @@ const (
 
 	compactFile = "COMPACT"
 
-	slabSubdir = "slabs"
+	slabSubdir  = "slabs"
+	imageSubdir = "image"
 
 	isManifestPrefix = "M/"
 
