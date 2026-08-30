@@ -100,8 +100,8 @@ with lib;
           ExecStartPre = [
             # this doesn't get loaded on-demand
             "-${pkgs.kmod}/bin/modprobe nbd"
-            # other modules we need: dm-clone, erofs, loop
-            # all seem to get properly loaded on-demand
+            # all other modules we need: dm-clone, erofs, loop
+            # seem to get properly loaded on-demand
           ];
           # Use unshare directly instead of PrivateMounts so that our new mounts
           # are propagated normally, but we can remount /nix/store rw.
@@ -129,6 +129,36 @@ with lib;
           TimeoutStopSec = "15s";
         };
       };
+
+      # stop udev probing the nbd/dm devices that we create
+      services.udev.packages = [
+        (pkgs.writeTextFile {
+          name = "styx-dm-udev-rules";
+          destination = "/etc/udev/rules.d/09-styx-dm.rules";
+          text = ''
+            ACTION=="add|change", SUBSYSTEM=="block", KERNEL=="dm-[0-9]*", TEST=="/run/styx/markers/%k", \
+              ENV{DM_UDEV_DISABLE_DM_RULES_FLAG}="1", \
+              ENV{DM_UDEV_DISABLE_SUBSYSTEM_RULES_FLAG}="1", \
+              ENV{DM_UDEV_DISABLE_DISK_RULES_FLAG}="1", \
+              ENV{DM_UDEV_DISABLE_OTHER_RULES_FLAG}="1", \
+              ENV{SYSTEMD_READY}="0", \
+              ENV{UDISKS_IGNORE}="1", \
+              OPTIONS:="nowatch"
+          '';
+        })
+        (pkgs.writeTextFile {
+          name = "styx-nbd-udev-rules";
+          destination = "/etc/udev/rules.d/55-styx-nbd.rules";
+          text = ''
+            ACTION=="add|change", SUBSYSTEM=="block", KERNEL=="nbd[0-9]*", TEST=="/run/styx/markers/%k", \
+              ENV{UDEV_DISABLE_PERSISTENT_STORAGE_RULES_FLAG}="1", \
+              ENV{UDEV_DISABLE_PERSISTENT_STORAGE_BLKID_FLAG}="1", \
+              ENV{SYSTEMD_READY}="0", \
+              ENV{UDISKS_IGNORE}="1", \
+              OPTIONS:="nowatch"
+          '';
+        })
+      ];
     })
 
     (mkIf cfg.includeSpin {
