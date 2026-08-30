@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"time"
 
 	"github.com/anatol/devmapper.go"
 	"github.com/google/uuid"
@@ -173,6 +174,9 @@ func (s *Server) setupCloneSlab(slabId uint16, slabBytes, regionBytes int64) (re
 		return fmt.Errorf("open nbd %q: %w", st.nbdName, err)
 	}
 
+	// create marker for udev rules
+	defer s.markForUdev(st.nbdName)()
+
 	nbdConnected := make(chan struct{})
 	nbdErr := make(chan error, 1)
 	log.Printf("nbd connecting to slab%d on %s", slabId, st.nbdName)
@@ -182,7 +186,7 @@ func (s *Server) setupCloneSlab(slabId uint16, slabBytes, regionBytes int64) (re
 
 		nbdErr <- nbdclient.Connect(nbdConn, st.nbdDev, &nbdclient.Options{
 			ExportName:  fmt.Sprintf("slab%d", slabId),
-			Timeout:     10, // seconds
+			Timeout:     0, // seconds, 0 means infinite
 			OnConnected: func() { close(nbdConnected) },
 		})
 	}()
@@ -205,9 +209,18 @@ func (s *Server) setupCloneSlab(slabId uint16, slabBytes, regionBytes int64) (re
 		RegionSize:  uint64(regionBytes),
 		NoHydration: true,
 	}
-	devNum, err := devmapper.CreateAndLoad(cloneName, uuid.NewString(), 0, tab)
+	devNum, err := devmapper.Create(cloneName, uuid.NewString())
 	if err != nil {
-		return fmt.Errorf("dm create/load %q: %w", cloneName, err)
+		return fmt.Errorf("dm create %q: %w", cloneName, err)
+	}
+	defer s.markForUdev(fmt.Sprintf("dm-%d", unix.Minor(devNum)))()
+	err = devmapper.Load(cloneName, 0, tab)
+	if err != nil {
+		return fmt.Errorf("dm load %q: %w", cloneName, err)
+	}
+	err = devmapper.Resume(cloneName)
+	if err != nil {
+		return fmt.Errorf("dm resume %q: %w", cloneName, err)
 	}
 	st.cloneLoaded = true
 
@@ -329,5 +342,20 @@ func (s *Server) teardownSlabs() {
 		if err != nil {
 			log.Printf("error tearing down slab %d: %v", slabId, err)
 		}
+	}
+}
+
+// see services.udev.packages in module/default.nix
+func (s *Server) markForUdev(dev string) func() {
+	marker := filepath.Join(udevMarkerDir, filepath.Base(dev))
+	_ = os.MkdirAll(filepath.Dir(marker), 0o700)
+	if marker, err := os.Create(marker); err == nil {
+		marker.Close()
+	}
+	return func() {
+		go func() {
+			time.Sleep(2 * time.Second)
+			os.Remove(marker)
+		}()
 	}
 }

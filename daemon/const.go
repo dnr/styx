@@ -10,6 +10,9 @@ const (
 	isManifestPrefix = "M/"
 
 	fakeCacheBind = "localhost:7444"
+
+	// matches udev rules in module
+	udevMarkerDir = "/run/styx/markers"
 )
 
 var (

@@ -46,6 +46,7 @@ func ioctlTable(cmd uintptr, name string, uuid string, flags uint32, primaryUdev
 		// the "primary" events with a udev flag set below.
 		// Only RESUME, REMOVE, RENAME operations are considered primary events.
 		udevFlags = (DM_UDEV_PRIMARY_SOURCE_FLAG |
+			// TODO: these DISABLE flags don't seem to work?
 			DM_UDEV_DISABLE_DM_RULES_FLAG |
 			DM_UDEV_DISABLE_SUBSYSTEM_RULES_FLAG |
 			DM_UDEV_DISABLE_DISK_RULES_FLAG |
