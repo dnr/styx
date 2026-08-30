@@ -600,6 +600,10 @@ func (s *Server) gotNewChunk(loc erofs.SlabLoc, digest cdig.CDig, b []byte) erro
 }
 
 func (s *Server) cleanPresentMap(loc erofs.SlabLoc) {
+	// FIXME: we shouldn't do this until we know that the clone device has flushed data and
+	// metadata to disk, otherwise it may be lost. for now use a hacky sleep.
+	time.Sleep(2 * time.Second)
+
 	err := s.db.Batch(func(tx *bbolt.Tx) error {
 		sb := tx.Bucket(slabBucket).Bucket(slabKey(loc.SlabId))
 		if sb == nil {

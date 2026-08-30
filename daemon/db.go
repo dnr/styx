@@ -94,7 +94,9 @@ func (s *Server) openDb() (err error) {
 	if err != nil {
 		return err
 	}
-	s.db.MaxBatchDelay = 100 * time.Millisecond
+	// we only use batching for updating the presence map, which is a background thing,
+	// so this can take longer.
+	s.db.MaxBatchDelay = 1000 * time.Millisecond
 
 	checkSchemaVer := func(mb *bbolt.Bucket) error {
 		b := mb.Get(metaSchema)
