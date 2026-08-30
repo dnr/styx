@@ -11,6 +11,7 @@ import (
 
 	"github.com/dnr/styx/erofs"
 	"github.com/dnr/styx/pb"
+	"github.com/freddierice/go-losetup/v2"
 	"go.etcd.io/bbolt"
 	"golang.org/x/sys/unix"
 	"google.golang.org/protobuf/proto"
@@ -76,7 +77,7 @@ func (s *Server) tryMount(ctx context.Context, req *MountReq) error {
 		// mount to private dir
 		privateMp := filepath.Join(s.cfg.CachePath, "bare", sphStr)
 		_ = os.MkdirAll(privateMp, 0o755)
-		mountErr = unix.Mount(path, privateMp, "erofs", 0, opts)
+		mountErr = unix.Mount(path, privateMp, "erofs", unix.MS_RDONLY, opts)
 		if mountErr == nil {
 			// now bind the bare file where it should go
 			mountErr = unix.Mount(privateMp+erofs.BarePath, req.MountPoint, "none", unix.MS_BIND, "")
@@ -86,7 +87,12 @@ func (s *Server) tryMount(ctx context.Context, req *MountReq) error {
 		_ = os.Remove(privateMp)
 	} else {
 		_ = os.MkdirAll(req.MountPoint, 0o755)
-		mountErr = unix.Mount(path, req.MountPoint, "erofs", 0, opts)
+		// FIXME: don't loop every one, use aggregate file+loop with dm-linear devices
+		imageLo, err := losetup.Attach(path, 0, true)
+		if err != nil {
+			return err
+		}
+		mountErr = unix.Mount(imageLo.Path(), req.MountPoint, "erofs", unix.MS_RDONLY, opts)
 	}
 
 	_ = s.imageTx(sphStr, func(img *pb.DbImage) error {
