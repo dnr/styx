@@ -88,3 +88,17 @@ func havePrivateMountNs() (bool, error) {
 	}
 	return myMountNs != parentMountNs, nil
 }
+
+func ensureRegularFileSize(path string, size int64) error {
+	var st unix.Stat_t
+	err := unix.Stat(path, &st)
+	if err == nil && st.Size == size {
+		return nil
+	}
+	fd, err := unix.Open(path, unix.O_RDWR|unix.O_CREAT, 0o600)
+	if err != nil {
+		return err
+	}
+	defer unix.Close(fd)
+	return unix.Ftruncate(fd, size)
+}
