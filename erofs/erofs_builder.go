@@ -88,10 +88,7 @@ func SlabsUsed(fs []byte) []int {
 	devtSlotOff := int(binary.LittleEndian.Uint16(fs[extraDevicesOffset+2:])) * EROFS_DEVT_SLOT_SIZE
 	devt := fs[devtSlotOff:]
 	for i := range out {
-		tag := string(devt[:64])
-		if idx := strings.IndexByte(tag, 0); idx >= 0 {
-			tag = tag[:idx]
-		}
+		tag := common.StringFromFixedBytes(devt[:64])
 		out[i] = -1
 		if idstr, ok := strings.CutPrefix(tag, "styx-slab"); ok {
 			if slabId, err := strconv.Atoi(idstr); err == nil {

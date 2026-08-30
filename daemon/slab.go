@@ -20,8 +20,6 @@ import (
 const slabBytes = 1 << 40
 const metaBytes = 15 << 30 // kernel limit is 16 GiB
 
-var invalidLo = losetup.New(99999, -99999)
-
 type (
 	slabState struct {
 		tp uint16
@@ -35,11 +33,11 @@ type (
 		regionBytes int32
 		cloneLoaded bool
 		cloneDev    bool
-		metaName    string
+		metaPath    string
 		metaLo      losetup.Device
-		dataName    string
+		dataPath    string
 		dataLo      losetup.Device
-		nbdName     string
+		nbdPath     string
 		nbdDev      *os.File
 	}
 )
@@ -118,44 +116,34 @@ func (s *Server) setupCloneSlab(slabId uint16, slabBytes, regionBytes int64) (re
 	}()
 
 	// setup loopback for metadata
-	st.metaName = s.slabPath("meta", slabId)
+	st.metaPath = s.slabPath("meta", slabId)
 
-	metaFd, err := unix.Open(st.metaName, unix.O_RDWR|unix.O_CREAT, 0o600)
+	err := ensureRegularFileSize(st.metaPath, metaBytes)
 	if err != nil {
-		return fmt.Errorf("open meta %q: %w", st.metaName, err)
+		return fmt.Errorf("create/truncate meta %q: %w", st.metaPath, err)
 	}
-	err = unix.Ftruncate(metaFd, metaBytes)
+	st.metaLo, err = s.locache.findOrAttach(st.metaPath)
 	if err != nil {
-		return fmt.Errorf("truncate meta %q: %w", st.metaName, err)
-	}
-	err = unix.Close(metaFd)
-	if err != nil {
-		return fmt.Errorf("close meta %q: %w", st.metaName, err)
-	}
-
-	// TODO: maybe look for already-attached?
-	st.metaLo, err = losetup.Attach(st.metaName, 0, false)
-	if err != nil {
-		return fmt.Errorf("losetup meta %q: %w", st.metaName, err)
+		return fmt.Errorf("losetup meta %q: %w", st.metaPath, err)
 	}
 
 	// setup loopback for data file
-	st.dataName = s.slabPath("data", slabId)
+	st.dataPath = s.slabPath("data", slabId)
 
 	// clone slab reads go to backing file
-	st.readFd, err = unix.Open(st.dataName, unix.O_RDWR|unix.O_CREAT, 0o600)
+	err = ensureRegularFileSize(st.dataPath, slabBytes)
 	if err != nil {
-		return fmt.Errorf("open data %q: %w", st.dataName, err)
-	}
-	err = unix.Ftruncate(st.readFd, slabBytes)
-	if err != nil {
-		return fmt.Errorf("truncate data %q: %w", st.dataName, err)
+		return fmt.Errorf("create/truncate data %q: %w", st.dataPath, err)
 	}
 
-	// TODO: maybe look for already-attached?
-	st.dataLo, err = losetup.Attach(st.dataName, 0, false)
+	st.dataLo, err = s.locache.findOrAttach(st.dataPath)
 	if err != nil {
-		return fmt.Errorf("losetup data %q: %w", st.dataName, err)
+		return fmt.Errorf("losetup data %q: %w", st.dataPath, err)
+	}
+
+	st.readFd, err = unix.Open(st.dataLo.Path(), unix.O_RDWR, 0)
+	if err != nil {
+		return fmt.Errorf("open data %q: %w", st.dataLo.Path(), err)
 	}
 
 	// setup nbd
@@ -165,21 +153,21 @@ func (s *Server) setupCloneSlab(slabId uint16, slabBytes, regionBytes int64) (re
 		return fmt.Errorf("nbd dial %v: %w", addr, err)
 	}
 	// TODO: fix race between find and connect (need to use netlink)
-	st.nbdName, err = findFreeNbdDev()
+	st.nbdPath, err = findFreeNbdDev()
 	if err != nil {
 		return fmt.Errorf("find free nbd: %w", err)
 	}
-	st.nbdDev, err = os.OpenFile(st.nbdName, os.O_RDWR, 0o600)
+	st.nbdDev, err = os.OpenFile(st.nbdPath, os.O_RDWR, 0o600)
 	if err != nil {
-		return fmt.Errorf("open nbd %q: %w", st.nbdName, err)
+		return fmt.Errorf("open nbd %q: %w", st.nbdPath, err)
 	}
 
 	// create marker for udev rules
-	defer s.markForUdev(st.nbdName)()
+	defer s.markForUdev(st.nbdPath)()
 
 	nbdConnected := make(chan struct{})
 	nbdErr := make(chan error, 1)
-	log.Printf("nbd connecting to slab%d on %s", slabId, st.nbdName)
+	log.Printf("nbd connecting to slab%d on %s", slabId, st.nbdPath)
 	go func() {
 		runtime.LockOSThread() // TODO: figure out if this is really needed
 		defer runtime.UnlockOSThread()
@@ -205,7 +193,7 @@ func (s *Server) setupCloneSlab(slabId uint16, slabBytes, regionBytes int64) (re
 		Length:      uint64(slabBytes),
 		MetaDev:     st.metaLo.Path(),
 		DestDev:     st.dataLo.Path(),
-		SourceDev:   st.nbdName,
+		SourceDev:   st.nbdPath,
 		RegionSize:  uint64(regionBytes),
 		NoHydration: true,
 	}

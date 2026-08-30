@@ -36,3 +36,10 @@ func ContiguousBytes(in [][]byte) []byte {
 		return bytes.Join(in, nil)
 	}
 }
+
+func StringFromFixedBytes(b []byte) string {
+	if idx := bytes.IndexByte(b, 0); idx >= 0 {
+		b = b[:idx]
+	}
+	return string(b)
+}
