@@ -198,7 +198,7 @@ func (s *Server) setupCloneSlab(slabId uint16, slabBytes, regionBytes int64) (re
 	}
 
 	// setup dm-clone
-	clonePath, _ := s.SlabInfo(slabId)
+	clonePath := s.slabPath("clone", slabId)
 	cloneName := filepath.Base(clonePath)
 	tab := &devmapper.CloneTable{
 		Start:       0,
@@ -247,7 +247,7 @@ func (s *Server) setupCloneSlab(slabId uint16, slabBytes, regionBytes int64) (re
 }
 
 func (s *Server) teardownCloneSlab(slabId uint16, st *slabState) error {
-	clonePath, _ := s.SlabInfo(slabId)
+	clonePath := s.slabPath("clone", slabId)
 
 	// write fd
 	if st.writeFd >= 0 {

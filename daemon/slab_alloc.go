@@ -81,8 +81,7 @@ func (s *Server) AllocateBatch(ctx context.Context, blocks []uint16, digests []c
 
 // implement erofs.SlabManager interface
 func (s *Server) SlabInfo(slabId uint16) (tag string, totalBlocks uint32) {
-	// len(tag) < 64
-	return s.slabPath("clone", slabId), common.TruncU32(uint64(slabBytes) >> s.blockShift)
+	return fmt.Sprintf("styx-slab%d", slabId), common.TruncU32(uint64(slabBytes) >> s.blockShift)
 }
 
 // like AllocateBatch but only lookup

@@ -13,6 +13,8 @@ import (
 	"math"
 	"path"
 	"sort"
+	"strconv"
+	"strings"
 
 	"github.com/lunixbochs/struc"
 	"github.com/nix-community/go-nix/pkg/hash"
@@ -75,8 +77,30 @@ type (
 
 func IsBare(fs []byte) bool {
 	// See comment in BuildFromManifestWithSlab.
-	const volIdOffset = 64
-	return fs[EROFS_SUPER_OFFSET+volIdOffset+3]&32 == 0
+	const volIdOffset = EROFS_SUPER_OFFSET + 64
+	return fs[volIdOffset+3]&32 == 0
+}
+
+func SlabsUsed(fs []byte) []int {
+	const extraDevicesOffset = EROFS_SUPER_OFFSET + 86
+	extras := int(binary.LittleEndian.Uint16(fs[extraDevicesOffset:]))
+	out := make([]int, extras)
+	devtSlotOff := int(binary.LittleEndian.Uint16(fs[extraDevicesOffset+2:])) * EROFS_DEVT_SLOT_SIZE
+	devt := fs[devtSlotOff:]
+	for i := range out {
+		tag := string(devt[:64])
+		if idx := strings.IndexByte(tag, 0); idx >= 0 {
+			tag = tag[:idx]
+		}
+		out[i] = -1
+		if idstr, ok := strings.CutPrefix(tag, "styx-slab"); ok {
+			if slabId, err := strconv.Atoi(idstr); err == nil {
+				out[i] = slabId
+			}
+		}
+		devt = devt[EROFS_DEVT_SLOT_SIZE:]
+	}
+	return out
 }
 
 func NewBuilder(cfg BuilderConfig) *Builder {
