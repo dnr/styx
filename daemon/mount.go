@@ -69,6 +69,12 @@ func (s *Server) tryMount(ctx context.Context, req *MountReq) error {
 		if err != nil {
 			return err
 		}
+		// need to sync before this shows up in the dm-linear device (also good to do before we
+		// record the image has been written in the db).
+		err = unix.Fdatasync(int(s.imageSlabF.Fd()))
+		if err != nil {
+			return err
+		}
 		err = s.imageTx(sphStr, func(img *pb.DbImage) error {
 			img.ImageBlockStart = int64(imgOff)
 			img.ImageBlockLength = int64(imgLen)
@@ -88,8 +94,7 @@ func (s *Server) tryMount(ctx context.Context, req *MountReq) error {
 		if slabId >= 0 {
 			devs[i] = "device=" + s.slabPath("clone", uint16(slabId))
 		} else {
-			log.Printf("couldn't parse slab tag at index %i in image %s", i, sphStr)
-			devs[i] = "device=/dev/null"
+			return fmt.Errorf("couldn't parse slab tag at index %i in image %s", i, sphStr)
 		}
 	}
 	opts := strings.Join(devs, ",")
