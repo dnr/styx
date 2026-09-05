@@ -13,8 +13,6 @@ import (
 	"math"
 	"path"
 	"sort"
-	"strconv"
-	"strings"
 
 	"github.com/lunixbochs/struc"
 	"github.com/nix-community/go-nix/pkg/hash"
@@ -81,20 +79,14 @@ func IsBare(fs []byte) bool {
 	return fs[volIdOffset+3]&32 == 0
 }
 
-func SlabsUsed(fs []byte) []int {
+func SlabsUsed(fs []byte) []string {
 	const extraDevicesOffset = EROFS_SUPER_OFFSET + 86
 	extras := int(binary.LittleEndian.Uint16(fs[extraDevicesOffset:]))
-	out := make([]int, extras)
+	out := make([]string, extras)
 	devtSlotOff := int(binary.LittleEndian.Uint16(fs[extraDevicesOffset+2:])) * EROFS_DEVT_SLOT_SIZE
 	devt := fs[devtSlotOff:]
 	for i := range out {
-		tag := common.StringFromFixedBytes(devt[:64])
-		out[i] = -1
-		if idstr, ok := strings.CutPrefix(tag, "styx-slab"); ok {
-			if slabId, err := strconv.Atoi(idstr); err == nil {
-				out[i] = slabId
-			}
-		}
+		out[i] = common.StringFromFixedBytes(devt[:64])
 		devt = devt[EROFS_DEVT_SLOT_SIZE:]
 	}
 	return out
