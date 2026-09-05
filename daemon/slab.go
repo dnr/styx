@@ -32,7 +32,6 @@ type (
 		size        int64
 		regionBytes int32
 		cloneLoaded bool
-		cloneDev    bool
 		metaPath    string
 		metaLo      losetup.Device
 		dataPath    string
@@ -64,6 +63,10 @@ func (s *Server) getWriteFd(slabId uint16) int {
 
 func (s *Server) slabPath(tp string, slabId uint16) string {
 	return filepath.Join(s.cfg.CachePath, slabSubdir, fmt.Sprintf("slab%d%s", slabId, tp))
+}
+
+func (s *Server) slabDmName(slabId uint16) string {
+	return fmt.Sprintf("styx-slab-%d", slabId)
 }
 
 func (s *Server) setupFileSlab(slabId uint16) error {
@@ -186,8 +189,7 @@ func (s *Server) setupCloneSlab(slabId uint16, slabBytes, regionBytes int64) (re
 	}
 
 	// setup dm-clone
-	clonePath := s.slabPath("clone", slabId)
-	cloneName := filepath.Base(clonePath)
+	cloneName := s.slabDmName(slabId)
 	tab := &devmapper.CloneTable{
 		Start:       0,
 		Length:      uint64(slabBytes),
@@ -197,11 +199,11 @@ func (s *Server) setupCloneSlab(slabId uint16, slabBytes, regionBytes int64) (re
 		RegionSize:  uint64(regionBytes),
 		NoHydration: true,
 	}
-	devNum, err := devmapper.Create(cloneName, uuid.NewString())
+	devNo, err := devmapper.Create(cloneName, uuid.NewString())
 	if err != nil {
 		return fmt.Errorf("dm create %q: %w", cloneName, err)
 	}
-	defer s.markForUdev(fmt.Sprintf("dm-%d", unix.Minor(devNum)))()
+	defer s.markForUdev(devmapper.Path(devNo))()
 	err = devmapper.Load(cloneName, 0, tab)
 	if err != nil {
 		return fmt.Errorf("dm load %q: %w", cloneName, err)
@@ -212,16 +214,11 @@ func (s *Server) setupCloneSlab(slabId uint16, slabBytes, regionBytes int64) (re
 	}
 	st.cloneLoaded = true
 
-	// create our dev node
-	_ = os.Remove(clonePath)
-	err = unix.Mknod(clonePath, unix.S_IFBLK|0o600, int(devNum))
-	if err != nil {
-		return fmt.Errorf("mknod %q: %w", clonePath, err)
-	}
-	st.cloneDev = true
-
 	// write fd: clone slab writes go through clone device to mark hydration
-	st.writeFd, err = unix.Open(clonePath, unix.O_RDWR, 0o600)
+	clonePath := devmapper.Path(devNo)
+	// use O_DIRECT because we don't need an extra layer of block device caching here,
+	// we want writes/reads to go to the underlying loopback directly.
+	st.writeFd, err = unix.Open(clonePath, unix.O_RDWR|unix.O_DIRECT, 0o600)
 	if err != nil {
 		return fmt.Errorf("clone open %q: %w", clonePath, err)
 	}
@@ -241,15 +238,6 @@ func (s *Server) teardownCloneSlab(slabId uint16, st *slabState) error {
 	if st.writeFd >= 0 {
 		unix.Close(st.writeFd)
 		st.writeFd = -1
-	}
-
-	// dev node
-	if st.cloneDev {
-		err := os.Remove(clonePath)
-		if err != nil {
-			return err
-		}
-		st.cloneDev = false
 	}
 
 	// dm-clone

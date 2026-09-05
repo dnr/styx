@@ -7,6 +7,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
+	"github.com/anatol/devmapper.go"
 	"github.com/dnr/styx/common/cdig"
 	"github.com/dnr/styx/erofs"
 	"github.com/dnr/styx/pb"
@@ -101,4 +102,12 @@ func ensureRegularFileSize(path string, size int64) error {
 	}
 	defer unix.Close(fd)
 	return unix.Ftruncate(fd, size)
+}
+
+func findDmByName(dmName string) (string, error) {
+	if di, err := devmapper.InfoByName(dmName); err == nil {
+		return devmapper.Path(di.DevNo), nil
+	} else {
+		return "", err
+	}
 }

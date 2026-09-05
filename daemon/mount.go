@@ -90,28 +90,27 @@ func (s *Server) tryMount(ctx context.Context, req *MountReq) error {
 	// collect device paths
 	slabsUsed := erofs.SlabsUsed(imagePrefix)
 	devs := make([]string, len(slabsUsed))
-	for i, slabId := range slabsUsed {
-		if slabId >= 0 {
-			devs[i] = "device=" + s.slabPath("clone", uint16(slabId))
-		} else {
-			return fmt.Errorf("couldn't parse slab tag at index %i in image %s", i, sphStr)
+	for i, dmName := range slabsUsed {
+		if !strings.HasPrefix(dmName, "styx-slab-") {
+			return fmt.Errorf("invalid device name in image %s[%d]", sphStr, i)
 		}
+		dmPath, err := findDmByName(dmName)
+		if err != nil {
+			return fmt.Errorf("%q not found in image %s[%d]", sphStr, i)
+		}
+		devs[i] = "device=" + dmPath
 	}
 	opts := strings.Join(devs, ",")
 
-	// set up dm linear for image
+	// set up/reuse dm linear for image
 	dmName := "styx-image-" + sphStr
-	var devNum uint64
 	var dmPath string
-	if di, err := devmapper.InfoByName(dmName); err == nil {
-		devNum = di.DevNo
-		dmPath = fmt.Sprintf("/dev/dm-%d", unix.Minor(devNum))
-	} else {
-		devNum, err = devmapper.Create(dmName, uuid.NewString())
+	if dmPath, err = findDmByName(dmName); err != nil {
+		devNo, err := devmapper.Create(dmName, uuid.NewString())
 		if err != nil {
 			return fmt.Errorf("dm create %q: %w", dmName, err)
 		}
-		dmPath = fmt.Sprintf("/dev/dm-%d", unix.Minor(devNum))
+		dmPath = devmapper.Path(devNo)
 		defer s.markForUdev(dmPath)()
 		tab := &devmapper.LinearTable{
 			Start:         0,
