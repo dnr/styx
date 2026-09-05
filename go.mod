@@ -8,6 +8,8 @@ replace github.com/anatol/devmapper.go => ./forked/github.com/anatol/devmapper.g
 
 replace github.com/pojntfx/go-nbd => ./forked/github.com/pojntfx/go-nbd
 
+replace github.com/freddierice/go-losetup/v2 => ./forked/github.com/freddierice/go-losetup
+
 require (
 	github.com/DataDog/zstd v1.5.7
 	github.com/anatol/devmapper.go v0.0.0
