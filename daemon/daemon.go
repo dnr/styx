@@ -21,6 +21,7 @@ import (
 
 	"github.com/dnr/styx/common"
 	"github.com/dnr/styx/common/cdig"
+	"github.com/dnr/styx/common/errgroup"
 	"github.com/dnr/styx/common/shift"
 	"github.com/dnr/styx/common/systemd"
 	"github.com/dnr/styx/erofs"
@@ -294,13 +295,16 @@ func (s *Server) handleReadSlab(slabId uint16, ln, off uint64) (retErr error) {
 		}
 	}()
 
-	if ln > uint64(shift.MaxChunkShift.Size()) {
-		return fmt.Errorf("got too big slab read @ %d (%d > %d)", off, ln, shift.MaxChunkShift.Size())
-	}
+	// note that one read may not start at a chunk boundary, and may cross boundaries too.
+	// so we may resolve it into multiple chunk reads.
 
-	var addr uint32
-	var digest cdig.CDig
-	var sphps []SphPrefix
+	type chunkReq struct {
+		addr   uint32
+		digest cdig.CDig
+		sphps  []SphPrefix
+	}
+	reqs := make([]chunkReq, 1)
+	req := &reqs[0]
 
 	err := s.db.View(func(tx *bbolt.Tx) error {
 		sb := tx.Bucket(slabBucket).Bucket(slabKey(slabId))
@@ -308,54 +312,70 @@ func (s *Server) handleReadSlab(slabId uint16, ln, off uint64) (retErr error) {
 			return errors.New("missing slab bucket")
 		}
 		cur := sb.Cursor()
-		target := addrKey(common.TruncU32(off >> s.blockShift))
-		k, v := cur.Seek(target)
-		if k == nil {
-			k, v = cur.Last()
-		} else if !bytes.Equal(target, k) {
-			k, v = cur.Prev()
-		}
-		if k == nil {
-			return errors.New("ran off start of bucket")
-		} else if len(v) < cdig.Bytes {
-			return errors.New("bad value in loc entry")
-		}
-		// take addr from key so we write at the right place even if read was in the middle of a chunk
-		addr = addrFromKey(k)
-		digest = cdig.FromBytes(v)
+		for {
+			target := addrKey(common.TruncU32(off >> s.blockShift))
+			k, v := cur.Seek(target)
+			if k == nil {
+				k, v = cur.Last()
+			} else if !bytes.Equal(target, k) {
+				// if we landed in the middle of a chunk, move back to the start
+				k, v = cur.Prev()
+			}
+			if k == nil {
+				return errors.New("ran off start of bucket")
+			} else if len(v) < cdig.Bytes {
+				return errors.New("bad value in loc entry")
+			}
+			// take addr from key to get start of chunk
+			req.addr = addrFromKey(k)
+			req.digest = cdig.FromBytes(v)
 
-		// find next to check size. this will be too lenient if we gc'd the chunk right after this,
-		// but it's just a sanity check.
-		var nextAddr uint32
-		nextAddrSrc := "next"
-		if nextK, _ := cur.Next(); nextK == nil {
-			nextAddr = common.TruncU32(sb.Sequence())
-			nextAddrSrc = "end-of-slab-n"
-		} else if nextAddr = addrFromKey(nextK); nextAddr&presentMask != 0 {
-			nextAddr = common.TruncU32(sb.Sequence())
-			nextAddrSrc = "end-of-slab-p"
-		}
-		chunkEnd := uint64(nextAddr) << s.blockShift
-		if off+ln > chunkEnd {
-			return fmt.Errorf("got too big slab read @ %d (len %d) past chunk end %d (%s)", off, ln, chunkEnd, nextAddrSrc)
-		}
+			// look up digest to get store paths
+			if loc := tx.Bucket(chunkBucket).Get(v); loc == nil {
+				return errors.New("missing digest->loc reference")
+			} else {
+				req.sphps = sphpsFromLoc(loc)
+				if len(req.sphps) == 0 {
+					log.Println("missing sph references for", slabId, req.addr, req.digest.String())
+				}
+			}
 
-		// look up digest to get store paths
-		loc := tx.Bucket(chunkBucket).Get(v)
-		if loc == nil {
-			return errors.New("missing digest->loc reference")
+			// find next chunk and see if we need to read more.
+			// note that may be a gap between this chunk and the next.
+			nextAddr := uint32(0)
+			if nextK, _ := cur.Next(); nextK == nil {
+				nextAddr = common.TruncU32(sb.Sequence())
+			} else if nextAddr = addrFromKey(nextK); nextAddr&presentMask != 0 {
+				// this is the last actual chunk record
+				nextAddr = common.TruncU32(sb.Sequence())
+			}
+			nextOff := uint64(nextAddr) << s.blockShift
+			if off+ln <= nextOff {
+				return nil
+			}
+			ln -= nextOff - off
+			off = nextOff
+
+			// read continues into the next chunk
+			reqs = append(reqs, chunkReq{})
+			req = &reqs[len(reqs)-1]
 		}
-		sphps = sphpsFromLoc(loc)
-		return nil
 	})
 	if err != nil {
 		return err
 	}
 
-	if len(sphps) == 0 {
-		log.Println("missing sph references for", slabId, addr, digest.String())
+	ctx := context.Background()
+
+	if len(reqs) == 1 {
+		return s.requestChunk(ctx, erofs.SlabLoc{slabId, req.addr}, req.digest, req.sphps)
 	}
 
-	ctx := context.Background()
-	return s.requestChunk(ctx, erofs.SlabLoc{slabId, addr}, digest, sphps)
+	eg := errgroup.WithContext(ctx)
+	for _, req := range reqs {
+		eg.Go(func() error {
+			return s.requestChunk(eg, erofs.SlabLoc{slabId, req.addr}, req.digest, req.sphps)
+		})
+	}
+	return eg.Wait()
 }
