@@ -57,7 +57,11 @@ func (l *locache) findOrAttach(path string) (losetup.Device, error) {
 		return lo, nil
 	}
 
-	lo, err := losetup.Attach(path, 0, false)
+	// use O_DIRECT here so we don't get an extra layer of caching of the slab file itself.
+	// we can depend on caching at the erofs layer. note that we will fdatasync writes to the
+	// slab file anyway.
+	// TODO: consider allowing caching here but with fadvise(random)
+	lo, err := losetup.Attach(path, 0, false, true)
 	if err != nil {
 		return invalidLo, err
 	}
