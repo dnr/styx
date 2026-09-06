@@ -148,20 +148,21 @@ func (s *Server) requestChunk(ctx context.Context, loc erofs.SlabLoc, digest cdi
 		err := s.db.View(func(tx *bbolt.Tx) error {
 			return set.buildDiff(tx, digest, sphps, true)
 		})
+
+		// start any ops in the set
+		for _, startOp := range set.ops {
+			go s.startDiffOp(ctx, startOp)
+		}
+		if extra := len(set.ops) - 1; extra > 0 {
+			s.stats.extraReqs.Add(int64(extra))
+		}
+
 		if err != nil {
 			log.Printf("buildDiff failed: %v", err)
 		} else if op = s.diffMap[loc]; op == nil {
-			log.Print("buildDiff did not include requested chunk") // shouldn't happen
+			log.Println("buildDiff did not include requested chunk for", loc) // shouldn't happen
 		} else {
 			// TODO: if set is a single op, with a single req and no base, change to single
-
-			// note that op is left as diffMap[loc] to wait on
-			for _, startOp := range set.ops {
-				go s.startDiffOp(ctx, startOp)
-			}
-			if extra := len(set.ops) - 1; extra > 0 {
-				s.stats.extraReqs.Add(int64(extra))
-			}
 		}
 	}
 	if op == nil {
