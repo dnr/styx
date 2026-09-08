@@ -32,23 +32,16 @@ func (s *Server) setupImageSlab() error {
 	return nil
 }
 
-func (s *Server) allocateImageSpace(imgBlocks uint32) (uint32, error) {
-	var imgOff uint32
-
-	err := s.db.Update(func(tx *bbolt.Tx) error {
-		v := tx.Bucket(metaBucket).Get(metaImageOffset)
-		if v == nil {
+func (s *Server) allocateImageSpace(imgBlocks uint32) (imgOff uint32, retErr error) {
+	retErr = s.db.Update(func(tx *bbolt.Tx) error {
+		if v := tx.Bucket(metaBucket).Get(metaImageOffset); v == nil {
 			imgOff = reservedBlocks
 		} else {
 			imgOff = binary.LittleEndian.Uint32(v)
 		}
 		nextOff := imgOff + uint32(imgBlocks)
-		v = binary.LittleEndian.AppendUint32(nil, nextOff)
+		v := binary.LittleEndian.AppendUint32(nil, nextOff)
 		return tx.Bucket(metaBucket).Put(metaImageOffset, v)
 	})
-	if err != nil {
-		return 0, err
-	}
-
-	return imgOff, nil
+	return
 }
