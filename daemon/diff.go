@@ -616,7 +616,12 @@ func (s *Server) flusher(slabId uint16, st *slabState) {
 	for {
 		// collect some requests
 		locs := make([]erofs.SlabLoc, 0, 128)
-		locs = append(locs, <-st.flushCh)
+		select {
+		case first := <-st.flushCh:
+			locs = append(locs, first)
+		case <-st.flushStop:
+			return
+		}
 
 		// build rest of batch
 		tmr := time.NewTimer(slabFlushWait)
@@ -627,6 +632,8 @@ func (s *Server) flusher(slabId uint16, st *slabState) {
 				break loop
 			case loc := <-st.flushCh:
 				locs = append(locs, loc)
+			case <-st.flushStop:
+				return
 			}
 		}
 		tmr.Stop()
