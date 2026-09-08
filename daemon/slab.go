@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/anatol/devmapper.go"
+	"github.com/dnr/styx/erofs"
 	"github.com/google/uuid"
 	nbdclient "github.com/pojntfx/go-nbd/pkg/client"
 	"golang.org/x/sys/unix"
@@ -19,6 +20,10 @@ import (
 
 const slabBytes = 1 << 40
 const metaBytes = 15 << 30 // kernel limit is 16 GiB
+// TODO: reconsider this size
+const slabFlushChBufferSize = 10000
+const slabFlushWait = 1 * time.Second
+const slabFlushMax = 1000
 
 type (
 	slabState struct {
@@ -27,6 +32,7 @@ type (
 		// clone and file slabs:
 		readFd  int
 		writeFd int
+		flushCh chan erofs.SlabLoc
 
 		// clone slabs only:
 		size        int64
@@ -80,17 +86,20 @@ func (s *Server) setupFileSlab(slabId uint16) error {
 		tp:      typeFileSlab,
 		writeFd: fd,
 		readFd:  fd,
+		flushCh: make(chan erofs.SlabLoc, slabFlushChBufferSize),
 	}
 
 	s.stateLock.Lock()
 	defer s.stateLock.Unlock()
 
 	s.slabState[slabId] = st
+	go s.flusher(slabId, st)
 	log.Println("set up file slab", slabId)
 	return nil
 }
 
 func (s *Server) teardownFileSlabLocked(st *slabState) error {
+	// FIXME: stop flusher goroutine
 	return unix.Close(st.writeFd)
 }
 
@@ -104,6 +113,7 @@ func (s *Server) setupCloneSlab(slabId uint16, slabBytes, regionBytes int64) (re
 		size:    slabBytes,
 		readFd:  -1,
 		writeFd: -1,
+		flushCh: make(chan erofs.SlabLoc, slabFlushChBufferSize),
 	}
 	defer func() {
 		if retErr == nil {
@@ -227,11 +237,14 @@ func (s *Server) setupCloneSlab(slabId uint16, slabBytes, regionBytes int64) (re
 	defer s.stateLock.Unlock()
 
 	s.slabState[slabId] = st
+	go s.flusher(slabId, st)
 	log.Println("set up on-demand slab", slabId)
 	return nil
 }
 
 func (s *Server) teardownCloneSlab(slabId uint16, st *slabState) error {
+	// FIXME: stop flusher goroutine
+
 	clonePath := s.slabPath("clone", slabId)
 
 	// write fd
