@@ -29,7 +29,7 @@ type Info struct {
 func (device Device) GetInfo() (Info, error) {
 	f, err := device.open()
 	if err != nil {
-		return Info{}, fmt.Errorf("could not open %v: %v", device, err)
+		return Info{}, err
 	}
 	defer f.Close()
 

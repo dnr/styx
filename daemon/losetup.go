@@ -1,12 +1,11 @@
 package daemon
 
 import (
-	"errors"
+	"os"
 	"sync"
 
 	"github.com/dnr/styx/common"
 	"github.com/freddierice/go-losetup/v2"
-	"golang.org/x/sys/unix"
 )
 
 type locache struct {
@@ -29,18 +28,11 @@ func (l *locache) init() {
 	defer l.lock.Unlock()
 
 	for i := 0; ; i++ {
-		lo := losetup.New(uint64(i), 0)
-		// open manually since the library swallows the error
-		fd, err := unix.Open(lo.Path(), unix.O_RDONLY, 0)
-		if errors.Is(err, unix.ENOENT) && i >= 16 {
+		lo := losetup.New(uint64(i), os.O_RDONLY)
+		info, err := lo.GetInfo()
+		if err != nil && i >= 16 {
 			break
 		} else if err != nil {
-			continue
-		}
-		_ = unix.Close(fd)
-
-		info, err := lo.GetInfo()
-		if err != nil {
 			continue
 		}
 		path := common.StringFromFixedBytes(info.FileName[:])

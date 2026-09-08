@@ -3,6 +3,7 @@ package daemon
 import (
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"log"
 	"net"
@@ -55,7 +56,7 @@ func (s *Server) nbdServer(slabId uint16, conn net.Conn) {
 			MinimumBlockSize:   4096,
 			PreferredBlockSize: 4096,
 		})
-	if err != nil {
+	if err != nil && !errors.Is(err, io.EOF) {
 		log.Println("nbd server err:", err)
 	}
 	log.Println("nbd server closed for slab", slabId)
@@ -90,7 +91,9 @@ func (s *Server) nbdConnect(slabId uint16) (*os.File, error) {
 			OnConnected: func() { close(connectedC) },
 		})
 		errC <- err
-		log.Println("nbdclient.Connect returned", err)
+		if err != nil {
+			log.Println("nbdclient.Connect returned", err)
+		}
 	}()
 	select {
 	case <-connectedC:

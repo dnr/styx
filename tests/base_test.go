@@ -101,7 +101,7 @@ func (tb *testBase) cleanup() {
 	}
 	if tb.daemon != nil {
 		tb.t.Log("stopping daemon")
-		tb.daemon.Stop(true)
+		tb.daemon.Stop()
 	}
 }
 
