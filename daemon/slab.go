@@ -3,10 +3,8 @@ package daemon
 import (
 	"fmt"
 	"log"
-	"net"
 	"os"
 	"path/filepath"
-	"runtime"
 	"time"
 
 	"github.com/anatol/devmapper.go"
@@ -42,7 +40,6 @@ type (
 		metaLo      losetup.Device
 		dataPath    string
 		dataLo      losetup.Device
-		nbdPath     string
 		nbdDev      *os.File
 	}
 )
@@ -160,42 +157,9 @@ func (s *Server) setupCloneSlab(slabId uint16, slabBytes, regionBytes int64) (re
 	}
 
 	// setup nbd
-	addr := s.nbdsock.Load().(net.Listener).Addr()
-	nbdConn, err := net.Dial(addr.Network(), addr.String())
+	st.nbdDev, err = s.nbdConnect(slabId)
 	if err != nil {
-		return fmt.Errorf("nbd dial %v: %w", addr, err)
-	}
-	// TODO: fix race between find and connect (need to use netlink)
-	st.nbdPath, err = findFreeNbdDev()
-	if err != nil {
-		return fmt.Errorf("find free nbd: %w", err)
-	}
-	st.nbdDev, err = os.OpenFile(st.nbdPath, os.O_RDWR, 0o600)
-	if err != nil {
-		return fmt.Errorf("open nbd %q: %w", st.nbdPath, err)
-	}
-
-	// create marker for udev rules
-	defer s.markForUdev(st.nbdPath)()
-
-	nbdConnected := make(chan struct{})
-	nbdErr := make(chan error, 1)
-	log.Printf("nbd connecting to slab%d on %s", slabId, st.nbdPath)
-	go func() {
-		runtime.LockOSThread() // TODO: figure out if this is really needed
-		defer runtime.UnlockOSThread()
-
-		nbdErr <- nbdclient.Connect(nbdConn, st.nbdDev, &nbdclient.Options{
-			ExportName:  fmt.Sprintf("slab%d", slabId),
-			Timeout:     0, // seconds, 0 means infinite
-			OnConnected: func() { close(nbdConnected) },
-		})
-	}()
-	select {
-	case <-nbdConnected:
-		log.Print("nbd connected")
-	case err = <-nbdErr:
-		return fmt.Errorf("nbd connect: %w", err)
+		return err
 	}
 
 	// setup dm-clone
@@ -205,7 +169,7 @@ func (s *Server) setupCloneSlab(slabId uint16, slabBytes, regionBytes int64) (re
 		Length:      uint64(slabBytes),
 		MetaDev:     st.metaLo.Path(),
 		DestDev:     st.dataLo.Path(),
-		SourceDev:   st.nbdPath,
+		SourceDev:   st.nbdDev.Name(),
 		RegionSize:  uint64(regionBytes),
 		NoHydration: true,
 	}

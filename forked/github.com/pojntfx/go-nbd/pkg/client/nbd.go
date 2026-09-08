@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
@@ -279,12 +280,15 @@ n:
 			close(fatal)
 		}()
 
-		if _, _, err := syscall.Syscall(
+		runtime.LockOSThread() // TODO: figure out if this helps anything
+		_, _, err := syscall.Syscall(
 			syscall.SYS_IOCTL,
 			device.Fd(),
 			ioctl.NEGOTIATION_IOCTL_DO_IT,
 			0,
-		); err != 0 {
+		)
+		runtime.UnlockOSThread()
+		if err != 0 {
 			fatal <- err
 
 			return

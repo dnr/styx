@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 
+	nbdclient "github.com/pojntfx/go-nbd/pkg/client"
 	nbdserver "github.com/pojntfx/go-nbd/pkg/server"
 	"golang.org/x/sys/unix"
 )
@@ -23,72 +24,81 @@ type (
 	}
 )
 
-func (s *Server) setupNbdSock() error {
-	// // FIXME: does this even work?
-	// if fd, err:= s.cfg.FdStore.GetFd(savedFdName); err==nil{
-	// 	log.Println("restored nbd socket")
-	// 	s.nbdsock.Store(int32(fd))
-	// 	return nil
-	// }
-
-	path := filepath.Join(s.cfg.CachePath, "nbdsock")
-	if err := os.RemoveAll(path); err != nil {
-		return err
-	}
-	l, err := net.Listen("unix", path)
+func (s *Server) makeNbdServer(slabId uint16) (net.Conn, error) {
+	fds, err := unix.Socketpair(unix.AF_UNIX, unix.SOCK_STREAM, 0)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	s.nbdsock.Store(l)
-	log.Println("set up nbd listener")
-	return nil
+	c1, err := net.FileConn(os.NewFile(uintptr(fds[0]), "nbd1"))
+	if err != nil {
+		return nil, err
+	}
+	c2, err := net.FileConn(os.NewFile(uintptr(fds[1]), "nbd2"))
+	if err != nil {
+		return nil, err
+	}
+	go s.nbdServer(slabId, c2)
+	return c1, nil
 }
 
-func (s *Server) nbdServer() {
-	s.shutdownWait.Add(1)
-	defer s.shutdownWait.Done()
-
-	var exports []*nbdserver.Export
-	// FIXME: consider more slabs here
-	for slabId := range uint16(1) {
-		exports = append(exports, &nbdserver.Export{
+func (s *Server) nbdServer(slabId uint16, conn net.Conn) {
+	log.Println("starting nbd server for slab", slabId)
+	err := nbdserver.Handle(
+		conn,
+		[]*nbdserver.Export{&nbdserver.Export{
 			Name:        fmt.Sprintf("slab%d", slabId),
 			Description: fmt.Sprintf("styx slab %d", slabId),
 			Backend:     &nbdSlabBackend{s: s, slabId: slabId},
+		}},
+		&nbdserver.Options{
+			ReadOnly:           true,
+			MinimumBlockSize:   4096,
+			PreferredBlockSize: 4096,
 		})
+	if err != nil {
+		log.Println("nbd server err:", err)
+	}
+	log.Println("nbd server closed for slab", slabId)
+}
+
+func (s *Server) nbdConnect(slabId uint16) (*os.File, error) {
+	// TODO: fix race between find and connect (need to use netlink)
+	path, err := findFreeNbdDev()
+	if err != nil {
+		return nil, fmt.Errorf("find free nbd: %w", err)
+	}
+	dev, err := os.OpenFile(path, os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, fmt.Errorf("open nbd %q: %w", path, err)
 	}
 
-	l := s.nbdsock.Load().(net.Listener)
-	for {
-		conn, err := l.Accept()
-		if err != nil {
-			break
-		}
-		log.Print("new nbd connection")
-		go func() {
-			err := nbdserver.Handle(
-				conn,
-				exports,
-				&nbdserver.Options{
-					ReadOnly:           true,
-					MinimumBlockSize:   4096,
-					PreferredBlockSize: 4096,
-					SupportsMultiConn:  true,
-				})
-			if err != nil {
-				log.Println("nbd server err:", err)
-			}
-		}()
+	// create marker for udev rules
+	defer s.markForUdev(path)()
+
+	conn, err := s.makeNbdServer(slabId)
+	if err != nil {
+		return nil, err
 	}
-	log.Print("nbd server shutting down")
-	return
 
-	// <-s.shutdownChan
-
-	// log.Print("stopping workers")
-	// f.Close()                          // cause all future reads to error
-	// time.Sleep(100 * time.Millisecond) // FIXME: wait until all "readers" exit
-	// close(ch)
+	connectedC := make(chan struct{})
+	errC := make(chan error, 1)
+	log.Printf("nbd connecting to slab %d on %s", slabId, path)
+	go func() {
+		err := nbdclient.Connect(conn, dev, &nbdclient.Options{
+			ExportName:  fmt.Sprintf("slab%d", slabId),
+			Timeout:     0, // seconds, 0 means infinite
+			OnConnected: func() { close(connectedC) },
+		})
+		errC <- err
+		log.Println("nbdclient.Connect returned", err)
+	}()
+	select {
+	case <-connectedC:
+		log.Println("nbd connected to slab", slabId)
+		return dev, nil
+	case err = <-errC:
+		return nil, fmt.Errorf("nbd connect slab %d: %w", slabId, err)
+	}
 }
 
 func (b *nbdSlabBackend) ReadAt(p []byte, off int64) (int, error) {

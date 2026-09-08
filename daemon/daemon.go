@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"net"
 	"os"
 	"path/filepath"
 	"sync"
@@ -57,7 +56,6 @@ type (
 		msgPool    *sync.Pool
 		chunkPool  *common.ChunkPool
 		builder    *erofs.Builder
-		nbdsock    atomic.Value // instance of net.Listener
 		stats      daemonStats
 
 		stateLock sync.Mutex
@@ -224,10 +222,6 @@ func (s *Server) Start() error {
 	numSlabs := uint16(1)
 
 	if s.ondemand() {
-		if err := s.setupNbdSock(); err != nil {
-			return fmt.Errorf("error setting up nbd listener: %w", err)
-		}
-		go s.nbdServer()
 		for slabId := range numSlabs {
 			// FIXME: region bytes config
 			if err := s.setupCloneSlab(slabId, slabBytes, 4096); err != nil {
@@ -273,13 +267,8 @@ func (s *Server) Start() error {
 // state, it dies and lets systemd keep the nbd socket open.
 func (s *Server) Stop(closeSock bool) {
 	log.Print("stopping daemon...")
-	close(s.shutdownChan) // stops the socket server
+	close(s.shutdownChan)
 
-	// signal to notify server to stop
-	if l, ok := s.nbdsock.Load().(net.Listener); ok {
-		l.Close()
-	}
-	s.shutdownWait.Wait() // waits for nbd handlers to stop
 	s.teardownSlabs()
 	s.db.Close()
 
