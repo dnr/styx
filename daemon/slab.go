@@ -26,9 +26,10 @@ type (
 		tp uint16
 
 		// clone and file slabs:
-		readFd  int
-		writeFd int
-		flushCh chan erofs.SlabLoc
+		readFd    int
+		writeFd   int
+		flushCh   chan erofs.SlabLoc
+		flushStop chan struct{}
 
 		// clone slabs only:
 		size        int64
@@ -73,10 +74,11 @@ func (s *Server) setupFileSlab(slabId uint16) error {
 	}
 
 	st := &slabState{
-		tp:      typeFileSlab,
-		writeFd: fd,
-		readFd:  fd,
-		flushCh: make(chan erofs.SlabLoc, slabFlushChBufferSize),
+		tp:        typeFileSlab,
+		writeFd:   fd,
+		readFd:    fd,
+		flushCh:   make(chan erofs.SlabLoc, slabFlushChBufferSize),
+		flushStop: make(chan struct{}),
 	}
 
 	s.stateLock.Lock()
@@ -89,7 +91,10 @@ func (s *Server) setupFileSlab(slabId uint16) error {
 }
 
 func (s *Server) teardownFileSlabLocked(st *slabState) error {
-	// FIXME: stop flusher goroutine
+	if st.flushStop != nil {
+		close(st.flushStop)
+		st.flushStop = nil
+	}
 	return unix.Close(st.writeFd)
 }
 
@@ -209,7 +214,10 @@ func (s *Server) setupCloneSlab(slabId uint16, slabBytes, regionBytes int64) (re
 }
 
 func (s *Server) teardownCloneSlab(slabId uint16, st *slabState) error {
-	// FIXME: stop flusher goroutine
+	if st.flushStop != nil {
+		close(st.flushStop)
+		st.flushStop = nil
+	}
 
 	// write fd
 	if st.writeFd >= 0 {
