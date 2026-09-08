@@ -322,6 +322,7 @@ func (s *Server) vaporizeFile(
 		}
 
 		size := cshift.FileChunkSize(size, i == len(locs)-1)
+		// FIXME: use full buf here to avoid copying in getKnownChunk
 		b := buf[:size]
 		err := s.getKnownChunk(loc, b)
 		if err != nil {

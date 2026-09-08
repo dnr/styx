@@ -148,9 +148,9 @@ func (s *Server) setupCloneSlab(slabId uint16, slabBytes, regionBytes int64) (re
 		return fmt.Errorf("losetup data %q: %w", dataPath, err)
 	}
 
-	st.readFd, err = unix.Open(dataLo.Path(), unix.O_RDWR, 0)
+	st.readFd, err = unix.Open(dataPath, unix.O_RDONLY, 0)
 	if err != nil {
-		return fmt.Errorf("open data %q: %w", dataLo.Path(), err)
+		return fmt.Errorf("open data %q: %w", dataPath, err)
 	}
 
 	// setup nbd

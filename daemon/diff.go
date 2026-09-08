@@ -834,6 +834,7 @@ func (s *Server) getKnownChunk(loc erofs.SlabLoc, buf []byte) error {
 	defer s.readKnownMap.Modify(loc, func(i int, _ bool) (int, bool) { return i - 1, i > 1 })
 
 	// need to read full + aligned blocks (from clone dev, can do less from backing file)
+	// TODO: break read into two parts?
 	rounded := int(s.blockShift.Roundup(int64(len(buf))))
 	bp := int64(uintptr(unsafe.Pointer(&buf[0])))
 	if rounded != len(buf) || s.blockShift.Leftover(bp) != 0 {

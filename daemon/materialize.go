@@ -285,6 +285,7 @@ tryAgain:
 				buf = s.chunkPool.Get(int(cshift.Size()))
 				defer s.chunkPool.Put(buf)
 			}
+			// FIXME: use full buf here to avoid copying in getKnownChunk
 			b := buf[:size]
 			if err = s.getKnownChunk(loc, b); err != nil {
 				return err
