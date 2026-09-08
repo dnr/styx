@@ -343,8 +343,6 @@ func (s *Server) readChunks(
 		}
 
 		// request first missing one. the differ will do some readahead.
-		// FIXME: what's the best way to do this?
-		// maybe we should do a plain read? or just open the file?
 		err := s.requestChunk(ctx, locs[firstMissing], digests[firstMissing], sphps)
 		if err != nil {
 			return nil, err
@@ -609,34 +607,79 @@ func (s *Server) gotNewChunk(loc erofs.SlabLoc, digest cdig.CDig, b []byte) erro
 	}
 
 	// record async
-	s.presentMap.Put(loc, struct{}{})
-	go s.cleanPresentMap(loc)
+	s.markPresent(loc)
 
 	return nil
 }
 
-func (s *Server) cleanPresentMap(loc erofs.SlabLoc) {
-	// FIXME: we shouldn't do this until we know that the clone device has flushed data and
-	// metadata to disk, otherwise it may be lost. for now use a hacky sleep.
-	time.Sleep(2 * time.Second)
+func (s *Server) flusher(slabId uint16, st *slabState) {
+	for {
+		// collect some requests
+		locs := make([]erofs.SlabLoc, 0, 128)
+		locs = append(locs, <-st.flushCh)
 
-	err := s.db.Batch(func(tx *bbolt.Tx) error {
-		sb := tx.Bucket(slabBucket).Bucket(slabKey(loc.SlabId))
-		if sb == nil {
-			return errors.New("missing slab bucket")
+		// build rest of batch
+		tmr := time.NewTimer(slabFlushWait)
+	loop:
+		for len(locs) < slabFlushMax {
+			select {
+			case <-tmr.C:
+				break loop
+			case loc := <-st.flushCh:
+				locs = append(locs, loc)
+			}
 		}
-		return sb.Put(addrKey(presentMask|loc.Addr), []byte{})
-	})
-	if err != nil {
-		log.Println("present map record error:", err)
-		return
+		tmr.Stop()
+
+		// fdatasync it. this syncs all the way down to the slab backing file and to durable
+		// storage, so we can update the db after.
+		err := unix.Fdatasync(st.writeFd)
+		if err != nil {
+			log.Printf("fdatasync error on slab %d: %v", slabId, err)
+			time.Sleep(10 * time.Second)
+			continue
+		}
+
+		// now we can mark these locs as really done
+		err = s.db.Update(func(tx *bbolt.Tx) error {
+			sb := tx.Bucket(slabBucket).Bucket(slabKey(slabId))
+			if sb == nil {
+				return errors.New("missing slab bucket")
+			}
+			for _, loc := range locs {
+				if err := sb.Put(addrKey(presentMask|loc.Addr), []byte{}); err != nil {
+					return err
+				}
+			}
+			return nil
+		})
+		if err != nil {
+			log.Println("present map record error:", err)
+			time.Sleep(10 * time.Second)
+			continue
+		}
+
+		go func() {
+			// we can't clean up presentMap immediately, we need to wait until all read
+			// transactions that were started before Update have closed. one solution is to
+			// keep a generation number and set of open generations. that's a lot of
+			// bookkeeping, though. for now just wait a while. TODO: make this correct
+			time.Sleep(time.Minute)
+			for _, loc := range locs {
+				s.presentMap.Delete(loc)
+			}
+		}()
 	}
-	// we can't clean up presentMap immediately, we need to wait until all read
-	// transactions that were started before db.Batch have closed. one solution is to
-	// keep a generation number and set of open generations. that's a lot of
-	// bookkeeping, though. for now just wait a while. TODO: make this correct
-	time.Sleep(time.Minute)
-	s.presentMap.Delete(loc)
+}
+
+func (s *Server) markPresent(loc erofs.SlabLoc) {
+	s.presentMap.Put(loc, struct{}{})
+
+	s.stateLock.Lock()
+	st := s.slabState[loc.SlabId]
+	s.stateLock.Unlock()
+
+	st.flushCh <- loc
 }
 
 func (s *Server) getChunkDiff(
