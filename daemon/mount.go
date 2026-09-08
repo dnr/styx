@@ -24,7 +24,7 @@ import (
 func (s *Server) tryMount(ctx context.Context, req *MountReq) error {
 	_, sphStr, _ := ParseSph(req.StorePath)
 
-	var imgOff, imgLen uint32
+	var imgBlkOff, imgBlocks uint32
 
 	err := s.db.View(func(tx *bbolt.Tx) error {
 		var img pb.DbImage
@@ -33,8 +33,8 @@ func (s *Server) tryMount(ctx context.Context, req *MountReq) error {
 		} else if err := proto.Unmarshal(buf, &img); err != nil {
 			return err
 		}
-		imgOff = common.TruncU32(img.ImageBlockStart)
-		imgLen = common.TruncU32(img.ImageBlockLength)
+		imgBlkOff = common.TruncU32(img.ImageBlockStart)
+		imgBlocks = common.TruncU32(img.ImageBlockLength)
 		return nil
 	})
 	if err != nil {
@@ -42,10 +42,10 @@ func (s *Server) tryMount(ctx context.Context, req *MountReq) error {
 	}
 
 	var imagePrefix []byte
-	if imgOff > 0 && imgLen > 0 {
+	if imgBlkOff > 0 && imgBlocks > 0 {
 		// we have it already, read first block out of the image slab
-		imagePrefix := make([]byte, 4096)
-		_, err = s.imageSlabF.ReadAt(imagePrefix, int64(imgOff)<<s.blockShift)
+		imagePrefix = make([]byte, 4096)
+		_, err = s.imageSlabF.ReadAt(imagePrefix, int64(imgBlkOff)<<s.blockShift)
 		if err != nil {
 			return err
 		}
@@ -59,13 +59,13 @@ func (s *Server) tryMount(ctx context.Context, req *MountReq) error {
 		if s.blockShift.Leftover(imgBytes) > 0 {
 			return errors.New("image is not multiple of block size")
 		}
-		imgLen = uint32(s.blockShift.Blocks(imgBytes))
+		imgBlocks = uint32(s.blockShift.Blocks(imgBytes))
 		// allocate and write to image slab
-		imgOff, err = s.allocateImageSpace(imgLen)
+		imgBlkOff, err = s.allocateImageSpace(imgBlocks)
 		if err != nil {
 			return err
 		}
-		_, err = s.imageSlabF.WriteAt(image, int64(imgOff)<<s.blockShift)
+		_, err = s.imageSlabF.WriteAt(image, int64(imgBlkOff)<<s.blockShift)
 		if err != nil {
 			return err
 		}
@@ -76,8 +76,8 @@ func (s *Server) tryMount(ctx context.Context, req *MountReq) error {
 			return err
 		}
 		err = s.imageTx(sphStr, func(img *pb.DbImage) error {
-			img.ImageBlockStart = int64(imgOff)
-			img.ImageBlockLength = int64(imgLen)
+			img.ImageBlockStart = int64(imgBlkOff)
+			img.ImageBlockLength = int64(imgBlocks)
 			return nil
 		})
 		if err != nil {
@@ -114,9 +114,9 @@ func (s *Server) tryMount(ctx context.Context, req *MountReq) error {
 		defer s.markForUdev(dmPath)()
 		tab := &devmapper.LinearTable{
 			Start:         0,
-			Length:        uint64(imgLen) << s.blockShift,
+			Length:        uint64(imgBlocks) << s.blockShift,
 			BackendDevice: s.imageSlabLo.Path(),
-			BackendOffset: uint64(imgOff) << s.blockShift,
+			BackendOffset: uint64(imgBlkOff) << s.blockShift,
 		}
 		if err = devmapper.Load(dmName, devmapper.ReadOnlyFlag, tab); err != nil {
 			return fmt.Errorf("dm load %q: %w", dmName, err)
