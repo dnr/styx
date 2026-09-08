@@ -46,6 +46,8 @@ const (
 	ImageRROffset = 2
 )
 
+var errAlreadyPresent = errors.New("already present")
+
 type (
 	digestIterator struct {
 		ents []*pb.Entry
@@ -136,6 +138,11 @@ func (s *Server) requestChunk(ctx context.Context, loc erofs.SlabLoc, digest cdi
 		sphps = nil
 	}
 
+	if _, ok := s.presentMap.Get(loc); ok {
+		// we might race and get a chunk that we've completed, in that case we're done
+		return nil
+	}
+
 	var op reqOp
 
 	s.diffLock.Lock()
@@ -146,8 +153,16 @@ func (s *Server) requestChunk(ctx context.Context, loc erofs.SlabLoc, digest cdi
 	} else {
 		set := newOpSet(s)
 		err := s.db.View(func(tx *bbolt.Tx) error {
+			if s.locPresent(tx, loc) {
+				// we might race and get a chunk that we've completed, in that case we're done
+				return errAlreadyPresent
+			}
 			return set.buildDiff(tx, digest, sphps, true)
 		})
+		if errors.Is(err, errAlreadyPresent) {
+			s.diffLock.Unlock()
+			return nil
+		}
 
 		// start any ops in the set
 		for _, startOp := range set.ops {
