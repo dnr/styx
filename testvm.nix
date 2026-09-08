@@ -30,6 +30,8 @@ hostPkgs.testers.runNixOSTest (
           sed -e '
             s|/nix/store/[^ /]*/bin/mkfs[.]ext4|${mkfs}|
             s|,mount_tag=nix-store|&,multidevs=remap|
+            s|-m 1024|-m 4096|
+            /memory-backend/ s|1024M|4096M|
           ' < ${origScript} > $out
           chmod a+x $out
         '';
