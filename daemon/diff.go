@@ -823,7 +823,8 @@ func (s *Server) getManifestLocal(tx *bbolt.Tx, sphStr string) (*pb.Manifest, []
 }
 
 func (s *Server) getKnownChunk(loc erofs.SlabLoc, buf []byte) error {
-	readFd := s.getReadFd(loc.SlabId)
+	// FIXME: should we always use write fd? we can use backing file if flushed
+	readFd := s.getWriteFd(loc.SlabId)
 	if readFd < 0 {
 		return errors.New("slab not loaded or missing read fd")
 	}
@@ -832,6 +833,22 @@ func (s *Server) getKnownChunk(loc erofs.SlabLoc, buf []byte) error {
 	s.readKnownMap.Modify(loc, func(i int, _ bool) (int, bool) { return i + 1, true })
 	defer s.readKnownMap.Modify(loc, func(i int, _ bool) (int, bool) { return i - 1, i > 1 })
 
+	// need to read full + aligned blocks (from clone dev, can do less from backing file)
+	rounded := int(s.blockShift.Roundup(int64(len(buf))))
+	bp := int64(uintptr(unsafe.Pointer(&buf[0])))
+	if rounded != len(buf) || s.blockShift.Leftover(bp) != 0 {
+		// need to copy
+		poolBuf := s.chunkPool.Get(rounded)
+		defer s.chunkPool.Put(poolBuf)
+
+		_, err := unix.Pread(int(readFd), poolBuf, int64(loc.Addr)<<s.blockShift)
+		if err == nil {
+			copy(buf, poolBuf)
+		}
+		return err
+	}
+
+	// can use whole buffer
 	_, err := unix.Pread(int(readFd), buf, int64(loc.Addr)<<s.blockShift)
 	return err
 }
