@@ -10,12 +10,12 @@ in
   fstype ? "ext4",
 }:
 hostPkgs.testers.runNixOSTest (
-  { config, ... }:
+  { config, lib, ... }:
   {
     name = "styxvmtest";
     defaults._module.args = { inherit fstype; };
     nodes.machine = ./vm-testsuite.nix;
-    extraDriverArgs =
+    driverConfiguration.vms.machine.start_script =
       let
         m = config.nodes.machine;
         origScript = "${m.system.build.vm}/bin/run-${m.networking.hostName}-vm";
@@ -34,7 +34,7 @@ hostPkgs.testers.runNixOSTest (
           chmod a+x $out
         '';
       in
-      [ "--start-scripts ${newScript}" ];
+      lib.mkForce newScript;
     testScript = ''
       machine.wait_for_unit("default.target")
       machine.succeed("runstyxtest ${testflags}")

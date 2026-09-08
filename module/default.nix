@@ -17,6 +17,7 @@ with lib;
       enablePatchedNix = mkEnableOption "Patched Nix for Styx";
       enableNixSettings = mkEnableOption "nix.conf settings for Styx";
       enableStyxNixCache = mkEnableOption "binary cache for Styx and related packages";
+      udevRules = mkEnableOption "add udev rules";
       publicCommands = mkOption {
         default = true;
         description = "Allow non-root users to run certain styx commands";
@@ -129,7 +130,9 @@ with lib;
           TimeoutStopSec = "15s";
         };
       };
+    })
 
+    (mkIf (cfg.enable || cfg.udevRules) {
       # stop udev probing the nbd/dm devices that we create
       services.udev.packages = [
         (pkgs.writeTextFile {

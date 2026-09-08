@@ -10,7 +10,7 @@ let
   runstyxtest = pkgs.writeShellScriptBin "runstyxtest" ''
     cd ${styxtest}/bin
     if [[ $UID != 0 ]]; then sudo=sudo; fi
-    $sudo modprobe cachefiles
+    $sudo modprobe nbd
     exec $sudo ./styxtest -test.v "$@"
   '';
 in
@@ -20,8 +20,8 @@ in
     ./module
   ];
 
-  # test suite needs only kernel options
-  services.styx.enableKernelOptions = true;
+  # get just these to disable udev probing
+  services.styx.udevRules = true;
 
   # set up configurable fs type
   assertions = [
@@ -36,7 +36,6 @@ in
   system.requiredKernelConfig = with config.lib.kernelConfig; [ (isEnabled "BTRFS_FS") ];
 
   environment.systemPackages = with pkgs; [
-    psmisc # for fuser
     runstyxtest
   ];
 }

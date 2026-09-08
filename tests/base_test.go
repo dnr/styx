@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"math/rand"
 	"net/http"
 	"os"
 	"os/exec"
@@ -29,8 +28,6 @@ import (
 const (
 	nixosKeys = "cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY="
 
-	devnode = "/dev/cachefiles"
-
 	blockShift = 12
 )
 
@@ -41,7 +38,6 @@ type (
 
 	testBase struct {
 		t              *testing.T
-		tag            string
 		basetmpdir     string
 		chunkdir       string
 		cachedir       string
@@ -71,14 +67,6 @@ func newTestBase(t *testing.T) *testBase {
 		t.Skip("tests must be run as root")
 	}
 
-	// check nothing else has devnode
-	var exitErr *exec.ExitError
-	require.ErrorAs(t, exec.Command("fuser", "-s", devnode).Run(), &exitErr,
-		"tests require exclusive access to "+devnode)
-
-	tag := fmt.Sprintf("styxtest%x", rand.Uint64())
-	t.Log("cache tag/domain", tag)
-
 	basetmpdir := t.TempDir()
 	// basetmpdir = "/tmp"
 	chunkdir := filepath.Join(basetmpdir, "chunks")
@@ -91,7 +79,6 @@ func newTestBase(t *testing.T) *testBase {
 
 	tb := &testBase{
 		t:            t,
-		tag:          tag,
 		basetmpdir:   basetmpdir,
 		chunkdir:     chunkdir,
 		cachedir:     cachedir,
@@ -178,10 +165,7 @@ func (tb *testBase) startDaemon() {
 	}
 
 	d := daemon.NewServer(daemon.Config{
-		DevPath:         devnode,
 		CachePath:       tb.cachedir,
-		CacheTag:        tb.tag,
-		CacheDomain:     tb.tag,
 		ErofsBlockShift: blockShift,
 		// SmallFileCutoff: 224,
 		Workers:   10,
