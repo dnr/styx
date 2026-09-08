@@ -258,7 +258,7 @@ func main() {
 				sctx, cancel := signal.NotifyContext(ctx, syscall.SIGTERM)
 				defer cancel()
 				<-sctx.Done()
-				s.Stop(false)
+				s.Stop()
 				return nil
 			},
 		),

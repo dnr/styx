@@ -12,8 +12,6 @@ import (
 	"github.com/google/uuid"
 	nbdclient "github.com/pojntfx/go-nbd/pkg/client"
 	"golang.org/x/sys/unix"
-
-	"github.com/freddierice/go-losetup/v2"
 )
 
 const slabBytes = 1 << 40
@@ -35,11 +33,6 @@ type (
 		// clone slabs only:
 		size        int64
 		regionBytes int32
-		cloneLoaded bool
-		metaPath    string
-		metaLo      losetup.Device
-		dataPath    string
-		dataLo      losetup.Device
 		nbdDev      *os.File
 	}
 )
@@ -126,34 +119,33 @@ func (s *Server) setupCloneSlab(slabId uint16, slabBytes, regionBytes int64) (re
 	}()
 
 	// setup loopback for metadata
-	st.metaPath = s.slabPath("meta", slabId)
-
-	err := ensureRegularFileSize(st.metaPath, metaBytes)
+	metaPath := s.slabPath("meta", slabId)
+	err := ensureRegularFileSize(metaPath, metaBytes)
 	if err != nil {
-		return fmt.Errorf("create/truncate meta %q: %w", st.metaPath, err)
+		return fmt.Errorf("create/truncate meta %q: %w", metaPath, err)
 	}
-	st.metaLo, err = s.locache.findOrAttach(st.metaPath)
+	metaLo, err := s.locache.findOrAttach(metaPath)
 	if err != nil {
-		return fmt.Errorf("losetup meta %q: %w", st.metaPath, err)
+		return fmt.Errorf("losetup meta %q: %w", metaPath, err)
 	}
 
 	// setup loopback for data file
-	st.dataPath = s.slabPath("data", slabId)
+	dataPath := s.slabPath("data", slabId)
 
 	// clone slab reads go to backing file
-	err = ensureRegularFileSize(st.dataPath, slabBytes)
+	err = ensureRegularFileSize(dataPath, slabBytes)
 	if err != nil {
-		return fmt.Errorf("create/truncate data %q: %w", st.dataPath, err)
+		return fmt.Errorf("create/truncate data %q: %w", dataPath, err)
 	}
 
-	st.dataLo, err = s.locache.findOrAttach(st.dataPath)
+	dataLo, err := s.locache.findOrAttach(dataPath)
 	if err != nil {
-		return fmt.Errorf("losetup data %q: %w", st.dataPath, err)
+		return fmt.Errorf("losetup data %q: %w", dataPath, err)
 	}
 
-	st.readFd, err = unix.Open(st.dataLo.Path(), unix.O_RDWR, 0)
+	st.readFd, err = unix.Open(dataLo.Path(), unix.O_RDWR, 0)
 	if err != nil {
-		return fmt.Errorf("open data %q: %w", st.dataLo.Path(), err)
+		return fmt.Errorf("open data %q: %w", dataLo.Path(), err)
 	}
 
 	// setup nbd
@@ -167,15 +159,26 @@ func (s *Server) setupCloneSlab(slabId uint16, slabBytes, regionBytes int64) (re
 	tab := &devmapper.CloneTable{
 		Start:       0,
 		Length:      uint64(slabBytes),
-		MetaDev:     st.metaLo.Path(),
-		DestDev:     st.dataLo.Path(),
+		MetaDev:     metaLo.Path(),
+		DestDev:     dataLo.Path(),
 		SourceDev:   st.nbdDev.Name(),
 		RegionSize:  uint64(regionBytes),
 		NoHydration: true,
 	}
-	devNo, err := devmapper.Create(cloneName, uuid.NewString())
-	if err != nil {
-		return fmt.Errorf("dm create %q: %w", cloneName, err)
+	var devNo uint64
+	di, err := devmapper.InfoByName(cloneName)
+	if err == nil {
+		// try to reuse previous
+		devNo, err = di.DevNo, devmapper.Suspend(cloneName)
+		if err != nil {
+			return fmt.Errorf("dm suspend %q: %w", cloneName, err)
+		}
+	} else {
+		// create it
+		devNo, err = devmapper.Create(cloneName, uuid.NewString())
+		if err != nil {
+			return fmt.Errorf("dm create %q: %w", cloneName, err)
+		}
 	}
 	defer s.markForUdev(devmapper.Path(devNo))()
 	err = devmapper.Load(cloneName, 0, tab)
@@ -186,7 +189,6 @@ func (s *Server) setupCloneSlab(slabId uint16, slabBytes, regionBytes int64) (re
 	if err != nil {
 		return fmt.Errorf("dm resume %q: %w", cloneName, err)
 	}
-	st.cloneLoaded = true
 
 	// write fd: clone slab writes go through clone device to mark hydration
 	clonePath := devmapper.Path(devNo)
@@ -209,23 +211,16 @@ func (s *Server) setupCloneSlab(slabId uint16, slabBytes, regionBytes int64) (re
 func (s *Server) teardownCloneSlab(slabId uint16, st *slabState) error {
 	// FIXME: stop flusher goroutine
 
-	clonePath := s.slabPath("clone", slabId)
-
 	// write fd
 	if st.writeFd >= 0 {
 		unix.Close(st.writeFd)
 		st.writeFd = -1
 	}
 
-	// dm-clone
-	if st.cloneLoaded {
-		cloneName := filepath.Base(clonePath)
-		err := devmapper.Remove(cloneName)
-		if err != nil {
-			return err
-		}
-		st.cloneLoaded = false
-	}
+	// dm-clone+loopbacks:
+	// We can't remove these completely because there are probably references (we're not
+	// unmounting everything). We could leave the clones suspended but then even cached reads
+	// wouldn't work. So just leave it running and the next process will fix it up.
 
 	// nbd
 	if st.nbdDev != nil {
@@ -244,24 +239,6 @@ func (s *Server) teardownCloneSlab(slabId uint16, st *slabState) error {
 	if st.readFd >= 0 {
 		unix.Close(st.readFd)
 		st.readFd = -1
-	}
-
-	// data loopback
-	if st.dataLo != invalidLo {
-		err := st.dataLo.Detach()
-		if err != nil {
-			return err
-		}
-		st.dataLo = invalidLo
-	}
-
-	// meta loopback
-	if st.metaLo != invalidLo {
-		err := st.metaLo.Detach()
-		if err != nil {
-			return err
-		}
-		st.metaLo = invalidLo
 	}
 
 	return nil

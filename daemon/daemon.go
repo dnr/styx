@@ -265,7 +265,7 @@ func (s *Server) Start() error {
 
 // this is only for tests! the real daemon doesn't clean up, since we can't restore the cache
 // state, it dies and lets systemd keep the nbd socket open.
-func (s *Server) Stop(closeSock bool) {
+func (s *Server) Stop() {
 	log.Print("stopping daemon...")
 	close(s.shutdownChan)
 

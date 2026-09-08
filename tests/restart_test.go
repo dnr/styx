@@ -15,8 +15,8 @@ func TestRestart(t *testing.T) {
 	// mount something with first daemon run
 	mp1 := tb.mount("qa22bifihaxyvn6q2a6w9m0nklqrk9wh-opusfile-0.12")
 
-	// stop it. cachefiles fd will be saved in test fdstore
-	tb.daemon.Stop(false)
+	// stop it
+	tb.daemon.Stop()
 	tb.daemon = nil
 
 	// start again
@@ -25,7 +25,7 @@ func TestRestart(t *testing.T) {
 	// check that we can read
 	require.Equal(t, "1rswindywkyq2jmfpxd6n772jii3z5xz6ypfbb63c17k5il39hfm", tb.nixHash(mp1))
 
-	// this will fail if we didn't set up the slab read fd
+	// check that we can mount a new one and diff against previous
 	checkDiffAfterRestart(t, tb)
 }
 
@@ -41,14 +41,15 @@ func TestReboot(t *testing.T) {
 	// read 2 but not 1
 	require.Equal(t, "13jlq14n974nn919530hnx4l46d0p2zyhx4lrd9b1k122dn7w9z5", tb.nixHash(mp2))
 
-	// stop and close devnode
-	tb.daemon.Stop(true)
+	// stop it
+	tb.daemon.Stop()
 	tb.daemon = nil
 
 	// unmount filesystems directly to simulate clean state after reboot
-	// note that Stop unmounts the slab image
 	require.NoError(t, unix.Unmount(mp1, 0))
 	require.NoError(t, unix.Unmount(mp2, 0))
+
+	// FIXME: also remove dm-clone, dm-linears, loopbacks
 
 	// start again
 	tb.startDaemon()
@@ -67,7 +68,7 @@ func TestReboot(t *testing.T) {
 	require.Zero(t, d2.Stats.SingleReqs+d2.Stats.DiffReqs)
 	require.NotZero(t, d2.Stats.BatchReqs)
 
-	// this will fail if we didn't set up the slab read fd
+	// check that we can mount a new one and diff against previous
 	checkDiffAfterRestart(t, tb)
 }
 
