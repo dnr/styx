@@ -8,7 +8,7 @@ func AppendBlocksList(blocks []uint16, size int64, blockShift, chunkShift shift.
 	for j := 0; j < int(nChunks)-1; j++ {
 		blocks = append(blocks, allButLast)
 	}
-	lastChunkLen := chunkShift.Leftover(size)
+	lastChunkLen := chunkShift.FileChunkSize(size, true)
 	blocks = append(blocks, TruncU16(blockShift.Blocks(lastChunkLen)))
 	return blocks
 }
