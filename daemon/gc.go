@@ -10,6 +10,7 @@ import (
 	"math"
 	"net/http"
 	"slices"
+	"unsafe"
 
 	"github.com/dnr/styx/common"
 	"github.com/dnr/styx/common/cdig"
@@ -282,33 +283,60 @@ func (s *Server) handleGcReq(ctx context.Context, r *GcReq) (*GcResp, error) {
 	if len(punchLocs) > 0 {
 		// actually punch holes
 		s.stateLock.Lock()
-		punchFds := make(map[uint16]int)
+		type punchFd struct {
+			fd int
+			tp uint16
+		}
+		punchFds := make(map[uint16]punchFd)
 		for id, st := range s.slabState {
 			if st.writeFd > 0 {
 				if dfd, err := unix.Dup(st.writeFd); err == nil {
-					punchFds[id] = dfd
+					punchFds[id] = punchFd{fd: dfd, tp: st.tp}
 				}
 			}
 		}
 		s.stateLock.Unlock()
 
 		defer func() {
-			for _, fd := range punchFds {
-				unix.Close(fd)
+			for _, pfd := range punchFds {
+				unix.Close(pfd.fd)
 			}
 		}()
 
 		for i, le := range punchLocs {
-			if cfd, ok := punchFds[le.SlabId]; ok {
-				err := unix.Fallocate(
-					cfd,
-					unix.FALLOC_FL_PUNCH_HOLE|unix.FALLOC_FL_KEEP_SIZE,
-					int64(le.Addr)<<s.blockShift,
-					int64(le.end-le.Addr)<<s.blockShift,
-				)
+			if pfd, ok := punchFds[le.SlabId]; ok {
+				offset := int64(le.Addr) << s.blockShift
+				length := int64(le.end-le.Addr) << s.blockShift
+				var op string
+				var err error
+				switch pfd.tp {
+				case typeFileSlab:
+					op = "fallocate punch"
+					err = unix.Fallocate(
+						pfd.fd,
+						unix.FALLOC_FL_PUNCH_HOLE|unix.FALLOC_FL_KEEP_SIZE,
+						offset,
+						length,
+					)
+				case typeCloneSlab:
+					op = "blkdiscard"
+					rng := [2]uint64{uint64(offset), uint64(length)}
+					_, _, errno := unix.Syscall(
+						unix.SYS_IOCTL,
+						uintptr(pfd.fd),
+						uintptr(unix.BLKDISCARD),
+						uintptr(unsafe.Pointer(&rng[0])),
+					)
+					if errno != 0 {
+						err = errno
+					}
+				default:
+					op = "free"
+					err = fmt.Errorf("unknown slab type %d", pfd.tp)
+				}
 				if err != nil {
-					log.Printf("fallocate punch error (slab %d as fd %d, %d-%d): %s",
-						le.SlabId, cfd, le.Addr, le.end, err,
+					log.Printf("%s error (slab %d as fd %d, %d-%d): %s",
+						op, le.SlabId, pfd.fd, le.Addr, le.end, err,
 					)
 				}
 				punchLocs[i].ok = err == nil
