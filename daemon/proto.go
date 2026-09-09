@@ -26,7 +26,7 @@ var (
 type (
 	InitReq struct {
 		PubKeys []string
-		Params  pb.DaemonParams
+		Params  *pb.DaemonParams
 	}
 	// returns Status
 

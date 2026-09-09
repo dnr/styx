@@ -96,7 +96,7 @@ func (s *Server) tryMount(ctx context.Context, req *MountReq) error {
 		}
 		dmPath, err := findDmByName(dmName)
 		if err != nil {
-			return fmt.Errorf("%q not found in image %s[%d]", sphStr, i)
+			return fmt.Errorf("%q not found in image %s[%d]", dmName, sphStr, i)
 		}
 		devs[i] = "device=" + dmPath
 	}
