@@ -80,7 +80,9 @@ func withDaemonConfig(c *cobra.Command) *daemon.Config {
 }
 
 func withInitReq(c *cobra.Command) cobrautil.RunE {
-	var req daemon.InitReq
+	req := &daemon.InitReq{
+		Params: &pb.DaemonParams{},
+	}
 
 	paramsUrl := c.Flags().String("params", "", "url to read global parameters from")
 	c.MarkFlagRequired("params")
@@ -93,10 +95,10 @@ func withInitReq(c *cobra.Command) cobrautil.RunE {
 			}
 			if paramsBytes, err := common.LoadFromFileOrHttpUrl(*paramsUrl); err != nil {
 				return err
-			} else if err = common.VerifyInlineMessage(keys, common.DaemonParamsContext, paramsBytes, &req.Params); err != nil {
+			} else if err = common.VerifyInlineMessage(keys, common.DaemonParamsContext, paramsBytes, req.Params); err != nil {
 				return err
 			}
-			cobrautil.Store(c, &req)
+			cobrautil.Store(c, req)
 			return nil
 		},
 	)

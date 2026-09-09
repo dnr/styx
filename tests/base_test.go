@@ -181,7 +181,7 @@ func (tb *testBase) startDaemon() {
 func (tb *testBase) initDaemon() {
 	pk, err := os.ReadFile("../keys/testsuite.public")
 	require.NoError(tb.t, err)
-	params := pb.DaemonParams{
+	params := &pb.DaemonParams{
 		Params: &pb.GlobalParams{
 			DigestAlgo: cdig.Algo,
 			DigestBits: cdig.Bits,

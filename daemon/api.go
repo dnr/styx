@@ -188,7 +188,7 @@ func (s *Server) handleInitReq(ctx context.Context, r *InitReq) (*Status, error)
 		return nil, mwErr(http.StatusBadRequest, "missing chunk diff url")
 	} else if keys, err := common.LoadPubKeys(r.PubKeys); err != nil {
 		return nil, mwErrE(http.StatusBadRequest, err)
-	} else if err = s.postInit(&r.Params, keys); err != nil {
+	} else if err = s.postInit(r.Params, keys); err != nil {
 		return nil, err
 	}
 	return nil, s.db.Update(func(tx *bbolt.Tx) error {
@@ -198,7 +198,7 @@ func (s *Server) handleInitReq(ctx context.Context, r *InitReq) (*Status, error)
 			return errors.New("conflict on meta params update")
 		}
 		dp := pb.DbParams{
-			Params: &r.Params,
+			Params: r.Params,
 			Pubkey: r.PubKeys,
 		}
 		if b, err := proto.Marshal(&dp); err != nil {
