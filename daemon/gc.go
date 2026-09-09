@@ -10,6 +10,7 @@ import (
 	"math"
 	"net/http"
 	"slices"
+	"unsafe"
 
 	"github.com/dnr/styx/common"
 	"github.com/dnr/styx/common/cdig"
@@ -300,18 +301,22 @@ func (s *Server) handleGcReq(ctx context.Context, r *GcReq) (*GcResp, error) {
 
 		for i, le := range punchLocs {
 			if cfd, ok := punchFds[le.SlabId]; ok {
-				err := unix.Fallocate(
-					cfd,
-					unix.FALLOC_FL_PUNCH_HOLE|unix.FALLOC_FL_KEEP_SIZE,
-					int64(le.Addr)<<s.blockShift,
-					int64(le.end-le.Addr)<<s.blockShift,
+				rng := [2]uint64{
+					uint64(le.Addr) << s.blockShift,
+					uint64(le.end-le.Addr) << s.blockShift,
+				}
+				_, _, err := unix.Syscall(
+					unix.SYS_IOCTL,
+					uintptr(cfd),
+					uintptr(unix.BLKDISCARD),
+					uintptr(unsafe.Pointer(&rng[0])),
 				)
-				if err != nil {
-					log.Printf("fallocate punch error (slab %d as fd %d, %d-%d): %s",
-						le.SlabId, cfd, le.Addr, le.end, err,
+				if err != 0 { // note: syscall.Errno, not error
+					log.Printf("blkdiscard error (slab %d as fd %d, %d-%d): %s",
+						le.SlabId, cfd, le.Addr, le.end, err.Error(),
 					)
 				}
-				punchLocs[i].ok = err == nil
+				punchLocs[i].ok = err == 0
 			}
 		}
 
