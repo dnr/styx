@@ -6,12 +6,13 @@ replace github.com/DataDog/zstd => github.com/dnr/datadog-zstd-go v0.0.0-2025091
 
 replace github.com/anatol/devmapper.go => ./forked/github.com/anatol/devmapper.go
 
-replace github.com/pojntfx/go-nbd => ./forked/github.com/pojntfx/go-nbd
+replace github.com/Merovius/nbd => ./forked/github.com/merovius/nbd
 
 replace github.com/freddierice/go-losetup/v2 => ./forked/github.com/freddierice/go-losetup
 
 require (
 	github.com/DataDog/zstd v1.5.7
+	github.com/Merovius/nbd v0.0.0-20240812113926-fd65a54c9949
 	github.com/anatol/devmapper.go v0.0.0
 	github.com/avast/retry-go/v4 v4.6.0
 	github.com/aws/aws-lambda-go v1.46.0
@@ -28,7 +29,6 @@ require (
 	github.com/multiformats/go-multihash v0.2.1
 	github.com/nix-community/go-nix v0.0.0-20231219074122-93cb24a86856
 	github.com/phayes/freeport v0.0.0-20220201140144-74d24b5ae9f5
-	github.com/pojntfx/go-nbd v0.3.2
 	github.com/spf13/cobra v1.8.1
 	github.com/stretchr/testify v1.11.1
 	github.com/wneessen/go-mail v0.4.2
@@ -76,15 +76,20 @@ require (
 	github.com/gogo/protobuf v1.3.2 // indirect
 	github.com/golang/groupcache v0.0.0-20241129210726-2c02b8208cf8 // indirect
 	github.com/golang/mock v1.6.0 // indirect
+	github.com/google/go-cmp v0.7.0 // indirect
 	github.com/google/go-querystring v1.1.0 // indirect
 	github.com/grpc-ecosystem/go-grpc-middleware v1.4.0 // indirect
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.22.0 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/jbenet/go-context v0.0.0-20150711004518-d14ea06fba99 // indirect
 	github.com/jmespath/go-jmespath v0.4.0 // indirect
+	github.com/josharian/native v1.1.0 // indirect
 	github.com/kevinburke/ssh_config v1.4.0 // indirect
 	github.com/klauspost/compress v1.17.9 // indirect
 	github.com/klauspost/cpuid/v2 v2.3.0 // indirect
+	github.com/mdlayher/genetlink v1.3.2 // indirect
+	github.com/mdlayher/netlink v1.7.2 // indirect
+	github.com/mdlayher/socket v0.4.1 // indirect
 	github.com/minio/sha256-simd v1.0.0 // indirect
 	github.com/mr-tron/base58 v1.2.0 // indirect
 	github.com/multiformats/go-varint v0.0.6 // indirect
