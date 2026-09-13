@@ -135,7 +135,7 @@ func (s *Server) handleGcReq(ctx context.Context, r *GcReq) (*GcResp, error) {
 			continue
 		}
 		g.RemainHaveChunks++
-		sphps := sphpsFromLoc(v)
+		sphps := loadLocSphps(v)
 		if g.keepAllSphps(sphps) {
 			continue
 		}

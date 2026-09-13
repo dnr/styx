@@ -1,8 +1,6 @@
 package daemon
 
 import (
-	"bytes"
-	"context"
 	"errors"
 	"fmt"
 	"log"
@@ -19,8 +17,6 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"github.com/dnr/styx/common"
-	"github.com/dnr/styx/common/cdig"
-	"github.com/dnr/styx/common/errgroup"
 	"github.com/dnr/styx/common/shift"
 	"github.com/dnr/styx/common/systemd"
 	"github.com/dnr/styx/erofs"
@@ -274,98 +270,4 @@ func (s *Server) Stop() {
 	s.db.Close()
 
 	log.Print("daemon shutdown done")
-}
-
-// bridge nbd server to differ:
-func (s *Server) handleReadSlab(slabId uint16, ln, off uint64) (retErr error) {
-	s.stats.slabReads.Add(1)
-	defer func() {
-		if retErr != nil {
-			s.stats.slabReadErrs.Add(1)
-		}
-	}()
-
-	// note that one read may not start at a chunk boundary, and may cross boundaries too.
-	// so we may resolve it into multiple chunk reads.
-
-	type chunkReq struct {
-		addr   uint32
-		digest cdig.CDig
-		sphps  []SphPrefix
-	}
-	reqs := make([]chunkReq, 1)
-	req := &reqs[0]
-
-	err := s.db.View(func(tx *bbolt.Tx) error {
-		sb := tx.Bucket(slabBucket).Bucket(slabKey(slabId))
-		if sb == nil {
-			return errors.New("missing slab bucket")
-		}
-		cur := sb.Cursor()
-		for {
-			target := addrKey(common.TruncU32(off >> s.blockShift))
-			k, v := cur.Seek(target)
-			if k == nil {
-				k, v = cur.Last()
-			} else if !bytes.Equal(target, k) {
-				// if we landed in the middle of a chunk, move back to the start
-				k, v = cur.Prev()
-			}
-			if k == nil {
-				return errors.New("ran off start of bucket")
-			} else if len(v) < cdig.Bytes {
-				return errors.New("bad value in loc entry")
-			}
-			// take addr from key to get start of chunk
-			req.addr = addrFromKey(k)
-			req.digest = cdig.FromBytes(v)
-
-			// look up digest to get store paths
-			if loc := tx.Bucket(chunkBucket).Get(v); loc == nil {
-				return errors.New("missing digest->loc reference")
-			} else {
-				req.sphps = sphpsFromLoc(loc)
-				if len(req.sphps) == 0 {
-					log.Println("missing sph references for", slabId, req.addr, req.digest.String())
-				}
-			}
-
-			// find next chunk and see if we need to read more.
-			// note that may be a gap between this chunk and the next.
-			nextAddr := uint32(0)
-			if nextK, _ := cur.Next(); nextK == nil {
-				nextAddr = common.TruncU32(sb.Sequence())
-			} else if nextAddr = addrFromKey(nextK); nextAddr&presentMask != 0 {
-				// this is the last actual chunk record
-				nextAddr = common.TruncU32(sb.Sequence())
-			}
-			nextOff := uint64(nextAddr) << s.blockShift
-			if off+ln <= nextOff {
-				return nil
-			}
-			ln -= nextOff - off
-			off = nextOff
-
-			// read continues into the next chunk
-			reqs = append(reqs, chunkReq{})
-			req = &reqs[len(reqs)-1]
-		}
-	})
-	if err != nil {
-		return err
-	}
-
-	ctx := context.Background()
-
-	if len(reqs) == 1 {
-		return s.requestChunk(ctx, erofs.SlabLoc{slabId, req.addr}, req.digest, req.sphps)
-	}
-
-	eg := errgroup.WithContext(ctx)
-	for _, req := range reqs {
-		eg.Go(func() error {
-			return s.requestChunk(eg, erofs.SlabLoc{slabId, req.addr}, req.digest, req.sphps)
-		})
-	}
-	return eg.Wait()
 }

@@ -277,7 +277,7 @@ func (s *Server) buildAndStartPrefetch(ctx context.Context, reqs []cdig.CDig) ([
 			continue
 		}
 		// build new requests
-		sphps := sphpsFromLoc(loc)
+		sphps := loadLocSphps(loc)
 		if len(sphps) == 0 {
 			return nil, errors.New("missing sph references")
 		}
@@ -915,7 +915,7 @@ func (s *Server) appendRemanifestReqs(reqs []MountReq, op reqOp) []MountReq {
 			if loc == nil {
 				return nil
 			}
-			for _, sphp := range sphpsFromLoc(loc) {
+			for _, sphp := range loadLocSphps(loc) {
 				sph, name := s.catalogFindName(tx, sphp)
 				if name != "" {
 					// any one should work, so take first
