@@ -136,7 +136,7 @@ type (
 	DebugSlabInfo struct {
 		Index         uint16
 		Stats         DebugSizeStats
-		ChunkSizeDist map[uint32]int
+		ChunkSizeDist map[int]int
 	}
 	DebugChunkInfo struct {
 		Slab       uint16
