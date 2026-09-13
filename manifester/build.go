@@ -533,11 +533,10 @@ func (b *ManifestBuilder) chunkData(egCtx *errgroup.Group, args *BuildArgs, data
 
 		size := min(remaining, cshift.Size())
 		remaining -= size
-		_data := b.chunkPool.Get(int(size))
-		data := _data[:size]
+		data := b.chunkPool.Get(int(size))
 
 		if _, err := io.ReadFull(r, data); err != nil {
-			b.chunkPool.Put(_data)
+			b.chunkPool.Put(data)
 			b.chunksem.Release(1)
 			return nil, err
 		}
@@ -553,7 +552,7 @@ func (b *ManifestBuilder) chunkData(egCtx *errgroup.Group, args *BuildArgs, data
 
 		egCtx.Go(func() error {
 			defer b.chunksem.Release(1)
-			defer b.chunkPool.Put(_data)
+			defer b.chunkPool.Put(data)
 			h := sha256.New()
 			h.Write(data)
 			var out [sha256.Size]byte

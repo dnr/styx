@@ -20,32 +20,31 @@ func NewChunkPool() *ChunkPool {
 func (cp *ChunkPool) Get(size int) []byte {
 	switch {
 	case size <= 1<<12:
-		return cp.p12.Get().([]byte)
+		return cp.p12.Get().([]byte)[:size]
 	case size <= 1<<14:
-		return cp.p14.Get().([]byte)
+		return cp.p14.Get().([]byte)[:size]
 	case size <= 1<<16:
-		return cp.p16.Get().([]byte)
+		return cp.p16.Get().([]byte)[:size]
 	case size <= 1<<18:
-		return cp.p18.Get().([]byte)
+		return cp.p18.Get().([]byte)[:size]
 	case size <= 1<<20:
-		return cp.p20.Get().([]byte)
+		return cp.p20.Get().([]byte)[:size]
 	default:
 		return make([]byte, size)
 	}
 }
 
 func (cp *ChunkPool) Put(b []byte) {
-	size := cap(b)
-	switch {
-	case size <= 1<<12:
+	switch cap(b) {
+	case 1 << 12:
 		cp.p12.Put(b)
-	case size <= 1<<14:
+	case 1 << 14:
 		cp.p14.Put(b)
-	case size <= 1<<16:
+	case 1 << 16:
 		cp.p16.Put(b)
-	case size <= 1<<18:
+	case 1 << 18:
 		cp.p18.Put(b)
-	case size <= 1<<20:
+	case 1 << 20:
 		cp.p20.Put(b)
 	}
 }
