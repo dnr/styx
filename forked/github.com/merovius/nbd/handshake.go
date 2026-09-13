@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"sync"
 )
 
 // Export specifies the data needed for the NBD network protocol.
@@ -333,7 +334,7 @@ func do(rw io.ReadWriter, f func(e *encoder)) (err error) {
 			panic(sentinel)
 		}
 	}
-	f(&encoder{rw, nil, check})
+	f(&encoder{rw: rw, check: check})
 	return err
 }
 
@@ -346,6 +347,7 @@ type encoder struct {
 	rw    io.ReadWriter
 	buf   []byte
 	check func(error)
+	lock  sync.Mutex
 }
 
 func (e *encoder) write(b []byte) {

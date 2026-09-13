@@ -74,7 +74,9 @@ func withDaemonConfig(c *cobra.Command) *daemon.Config {
 		"socket for non-root users to run limited commands, set to empty string to disable")
 	c.Flags().IntVar(&cfg.ErofsBlockShift, "block_shift", 12, "block size bits for local fs images")
 	// c.Flags().IntVar(&cfg.SmallFileCutoff, "small_file_cutoff", 224, "cutoff for embedding small files in images")
-	c.Flags().IntVar(&cfg.Workers, "workers", 16, "worker goroutines for on-demand server")
+	c.Flags().IntVar(&cfg.RequestConcurrency, "req_concurrency", 64, "worker goroutines for on-demand server")
+	c.Flags().IntVar(&cfg.NbdConnsPerSlab, "nbd_conns_per_slab", 8, "nbd sockets per slab")
+	c.Flags().IntVar(&cfg.NbdServerConcurrency, "nbd_server_concurrency", 8, "nbd goroutines per socket")
 
 	return &cfg
 }

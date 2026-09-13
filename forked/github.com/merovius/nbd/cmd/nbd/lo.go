@@ -93,7 +93,7 @@ func (cmd *loCmd) Execute(ctx context.Context, fs *flag.FlagSet, _ ...interface{
 	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	idx, wait, err := nbd.Loopback(ctx, d, uint64(fi.Size()))
+	idx, wait, err := nbd.Loopback(ctx, d, uint64(fi.Size()), nbd.LoopbackOpts{})
 	if err != nil {
 		log.Println(err)
 		return subcommands.ExitFailure

@@ -542,6 +542,9 @@ type simpleReply struct {
 }
 
 func (r *simpleReply) encode(e *encoder) {
+	e.lock.Lock()
+	defer e.lock.Unlock()
+
 	e.writeUint32(simpleReplyMagic)
 	e.writeUint32(r.errno)
 	e.writeUint64(r.handle)
