@@ -24,7 +24,16 @@ type (
 func (s *Server) nbdConnect(slabId uint16) (*os.File, func(), func() error, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	d := &nbdSlabBackend{s: s, slabId: slabId}
-	idx, wait, err := nbd.Loopback(ctx, d, d.Size())
+	opts := nbd.LoopbackOpts{
+		ReadOnly:   true,
+		MultiConns: s.cfg.NbdConnsPerSlab,
+		ServerOpts: nbd.ServerOpts{
+			Concurrency: s.cfg.NbdServerConcurrency,
+			AllocBuf:    s.chunkPool.Get,
+			ReleaseBuf:  s.chunkPool.Put,
+		},
+	}
+	idx, wait, err := nbd.Loopback(ctx, d, d.Size(), opts)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("nbd connect slab %d: %w", slabId, err)
 	}
