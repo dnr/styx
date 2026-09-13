@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -113,9 +114,11 @@ func (b *nbdSlabBackend) ReadAt(p []byte, off int64) (int, error) {
 		return len(p), nil
 	}
 
+	ctx := context.Background()
 	err := b.s.handleReadSlab(
+		ctx,
 		b.slabId,
-		uint64(len(p)),
+		p,
 		uint64(off),
 	)
 	if err != nil {

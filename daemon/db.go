@@ -73,6 +73,16 @@ func loadLocAndBlocks(b []byte) (erofs.SlabLoc, uint16) {
 	return loc, blocks
 }
 
+// value in chunk bucket -> sph prefixes
+func loadLocSphps(b []byte) []SphPrefix {
+	b = b[8:]
+	out := make([]SphPrefix, len(b)/sphPrefixBytes)
+	for i := range out {
+		out[i] = SphPrefixFromBytes(b[i*sphPrefixBytes : (i+1)*sphPrefixBytes])
+	}
+	return out
+}
+
 func appendSph(loc []byte, sph Sph) []byte {
 	sphPrefix := sph[:sphPrefixBytes]
 	sphs := loc[8:]
