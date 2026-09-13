@@ -24,15 +24,6 @@ func verifyParams(p *pb.GlobalParams) error {
 	return nil
 }
 
-func sphpsFromLoc(b []byte) []SphPrefix {
-	b = b[6:]
-	out := make([]SphPrefix, len(b)/sphPrefixBytes)
-	for i := range out {
-		out[i] = SphPrefixFromBytes(b[i*sphPrefixBytes : (i+1)*sphPrefixBytes])
-	}
-	return out
-}
-
 func writeToTempFile(b []byte) (string, error) {
 	f, err := os.CreateTemp("", "styx-diff")
 	if err != nil {
