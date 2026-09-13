@@ -21,6 +21,8 @@ import (
 	"net"
 	"sync"
 	"time"
+
+	"golang.org/x/sync/semaphore"
 )
 
 // Error combines the normal error interface with an Errno method, that returns
@@ -40,6 +42,12 @@ type Device interface {
 	// Sync should block until all previous writes where written to persistent
 	// storage and return any errors that occured.
 	Sync() error
+}
+
+type ServerOpts struct {
+	Concurrency int
+	AllocBuf    func(int) []byte
+	ReleaseBuf  func([]byte)
 }
 
 // ListenAndServe starts listening on the given network/address and serves the
@@ -90,17 +98,20 @@ func Serve(ctx context.Context, c net.Conn, exp ...Export) error {
 	if err != nil {
 		return err
 	}
-	return serve(ctx, c, parms)
+	return serve(ctx, c, parms, ServerOpts{})
 }
 
 // serve serves nbd requests for a connection in transmission mode using p. It
 // returns after ctx is cancelled or an error occurs.
-func serve(ctx context.Context, c net.Conn, p connParameters) error {
+func serve(ctx context.Context, c net.Conn, p connParameters, opts ServerOpts) error {
 	rw := wrapConn(ctx, c)
 	defer rw.Close()
+
+	sem := semaphore.NewWeighted(int64(max(opts.Concurrency, 1)))
+
 	return do(rw, func(e *encoder) {
-		var req request
 		for {
+			var req request
 			if err := req.decode(e); err != nil {
 				respondErr(e, req.handle, err)
 				continue
@@ -111,13 +122,25 @@ func serve(ctx context.Context, c net.Conn, p connParameters) error {
 					respondErr(e, req.handle, EINVAL)
 					continue
 				}
-				buf := make([]byte, req.length)
-				_, err := p.Export.Device.ReadAt(buf, int64(req.offset))
-				if err != nil {
-					respondErr(e, req.handle, err)
-					continue
+				if err := sem.Acquire(ctx, 1); err != nil {
+					e.check(err)
 				}
-				(&simpleReply{0, req.handle, buf, 0}).encode(e)
+				go func() {
+					defer sem.Release(1)
+					var buf []byte
+					if opts.AllocBuf != nil {
+						buf = opts.AllocBuf(int(req.length))
+						defer opts.ReleaseBuf(buf)
+					} else {
+						buf = make([]byte, req.length)
+					}
+					_, err := p.Export.Device.ReadAt(buf, int64(req.offset))
+					if err != nil {
+						respondErr(e, req.handle, err)
+						return
+					}
+					(&simpleReply{0, req.handle, buf, 0}).encode(e)
+				}()
 			case cmdWrite:
 				if req.length == 0 {
 					respondErr(e, req.handle, EINVAL)

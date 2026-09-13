@@ -109,8 +109,9 @@ type (
 		ErofsBlockShift int
 		// SmallFileCutoff int
 
-		// TODO: rename to concurrent diffs
-		Workers int
+		RequestConcurrency   int
+		NbdConnsPerSlab      int
+		NbdServerConcurrency int
 
 		IsTesting bool
 		FdStore   systemd.FdStore
@@ -135,7 +136,7 @@ func NewServer(cfg Config) *Server {
 		readKnownMap:    *common.NewSimpleSyncMap[erofs.SlabLoc, int](),
 		diffMap:         make(map[erofs.SlabLoc]reqOp),
 		recentReads:     make(map[string]*recentRead),
-		diffSem:         semaphore.NewWeighted(int64(cfg.Workers)),
+		diffSem:         semaphore.NewWeighted(int64(cfg.RequestConcurrency)),
 		remanifestCache: *common.NewSimpleSyncMap[string, *remanifestCacheEntry](),
 		shutdownChan:    make(chan struct{}),
 	}

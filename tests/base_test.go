@@ -168,9 +168,9 @@ func (tb *testBase) startDaemon() {
 		CachePath:       tb.cachedir,
 		ErofsBlockShift: blockShift,
 		// SmallFileCutoff: 224,
-		Workers:   10,
-		IsTesting: true,
-		FdStore:   tb,
+		RequestConcurrency: 16,
+		IsTesting:          true,
+		FdStore:            tb,
 	})
 	err := d.Start()
 	require.NoError(tb.t, err)
