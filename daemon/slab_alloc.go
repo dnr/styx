@@ -58,9 +58,9 @@ func (s *Server) AllocateBatch(ctx context.Context, blocks []uint16, digests []c
 				}
 				addr := common.TruncU32(seq)
 				seq += uint64(blocks[i])
-				if err := cb.Put(digest, locValue(slabId, addr, sph)); err != nil {
+				if err := cb.Put(digest, locValue(slabId, addr, blocks[i], sph)); err != nil {
 					return err
-				} else if err = sb.Put(addrKey(addr), digest); err != nil {
+				} else if err = sb.Put(addrKey(addr), slabValue(blocks[i], digests[i])); err != nil {
 					return err
 				}
 				out[i] = erofs.SlabLoc{slabId, addr}

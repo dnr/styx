@@ -8,7 +8,6 @@ import (
 	"go.etcd.io/bbolt"
 	"google.golang.org/protobuf/proto"
 
-	"github.com/dnr/styx/common"
 	"github.com/dnr/styx/common/cdig"
 	"github.com/dnr/styx/pb"
 )
@@ -110,33 +109,25 @@ func (s *Server) handleDebugReq(ctx context.Context, r *DebugReq) (*DebugResp, e
 			slabroot := tx.Bucket(slabBucket)
 			cur := slabroot.Cursor()
 			for k, _ := cur.First(); k != nil; k, _ = cur.Next() {
-				blockSizes := make(map[uint32]uint32)
+				blockSizes := make(map[uint32]uint16)
 				sb := slabroot.Bucket(k)
 				si := DebugSlabInfo{
 					Index:         binary.BigEndian.Uint16(k),
-					ChunkSizeDist: make(map[uint32]int),
+					ChunkSizeDist: make(map[int]int),
 				}
 				scur := sb.Cursor()
-				for sk, _ := scur.First(); sk != nil; {
-					nextSk, _ := scur.Next()
+				for sk, sv := scur.First(); sk != nil; sk, sv = scur.Next() {
 					addr := addrFromKey(sk)
 					if addr&presentMask == 0 {
-						var nextAddr uint32
-						if nextSk != nil && nextSk[0]&0x80 == 0 {
-							nextAddr = addrFromKey(nextSk)
-						} else {
-							nextAddr = common.TruncU32(sb.Sequence())
-						}
-						blockSize := uint32(nextAddr - addr)
-						blockSizes[addr] = blockSize
+						blocks, _ := loadSlab(sv)
+						blockSizes[addr] = blocks
 						si.Stats.TotalChunks++
-						si.Stats.TotalBlocks += int(blockSize)
-						si.ChunkSizeDist[blockSize]++
+						si.Stats.TotalBlocks += int(blocks)
+						si.ChunkSizeDist[int(blocks)]++
 					} else {
 						si.Stats.PresentChunks++
 						si.Stats.PresentBlocks += int(blockSizes[addr&^presentMask])
 					}
-					sk = nextSk
 				}
 				res.Slabs = append(res.Slabs, &si)
 			}

@@ -10,43 +10,72 @@ import (
 	"time"
 
 	"github.com/dnr/styx/common"
+	"github.com/dnr/styx/common/cdig"
 	"github.com/dnr/styx/erofs"
 	"github.com/dnr/styx/pb"
 	"go.etcd.io/bbolt"
 	"google.golang.org/protobuf/proto"
 )
 
-func slabKey(id uint16) []byte {
+// slab id -> key in slabBucket
+func slabKey(slabId uint16) []byte {
 	b := make([]byte, 2)
-	binary.BigEndian.PutUint16(b, id)
+	binary.BigEndian.PutUint16(b, slabId)
 	return b
 }
 
+// addr -> key in buckets in slabBucket
 func addrKey(addr uint32) []byte {
 	b := make([]byte, 4)
 	binary.BigEndian.PutUint32(b, addr)
 	return b
 }
 
+// key in buckets in slabBucket -> addr
 func addrFromKey(b []byte) uint32 {
 	return binary.BigEndian.Uint32(b)
 }
 
-func locValue(id uint16, addr uint32, sph Sph) []byte {
-	loc := make([]byte, 6+sphPrefixBytes)
-	binary.LittleEndian.PutUint16(loc, id)
+// length in blocks, digest -> value in buckets in slabBucket
+func slabValue(blocks uint16, dig cdig.CDig) []byte {
+	b := make([]byte, 2+cdig.Bytes)
+	binary.LittleEndian.PutUint16(b[0:2], blocks)
+	copy(b[2:], dig[:])
+	return b
+}
+
+// value in buckets in slabBucket -> length in blocks, digest
+func loadSlab(b []byte) (uint16, cdig.CDig) {
+	blocks := binary.LittleEndian.Uint16(b)
+	dig := cdig.FromBytes(b[2:])
+	return blocks, dig
+}
+
+// slab id, addr, blocks, first sph -> value in chunk bucket
+func locValue(slabId uint16, addr uint32, blocks uint16, sph Sph) []byte {
+	loc := make([]byte, 8+sphPrefixBytes)
+	binary.LittleEndian.PutUint16(loc, slabId)
 	binary.LittleEndian.PutUint32(loc[2:], addr)
-	copy(loc[6:], sph[:sphPrefixBytes])
+	binary.LittleEndian.PutUint16(loc[6:], blocks)
+	copy(loc[8:], sph[:sphPrefixBytes])
 	return loc
 }
 
+// value in chunk bucket -> slab id, addr
 func loadLoc(b []byte) erofs.SlabLoc {
 	return erofs.SlabLoc{binary.LittleEndian.Uint16(b), binary.LittleEndian.Uint32(b[2:])}
 }
 
+// value in chunk bucket -> slab id, addr
+func loadLocAndBlocks(b []byte) (erofs.SlabLoc, uint16) {
+	loc := erofs.SlabLoc{binary.LittleEndian.Uint16(b), binary.LittleEndian.Uint32(b[2:])}
+	blocks := binary.LittleEndian.Uint16(b[6:])
+	return loc, blocks
+}
+
 func appendSph(loc []byte, sph Sph) []byte {
 	sphPrefix := sph[:sphPrefixBytes]
-	sphs := loc[6:]
+	sphs := loc[8:]
 	for len(sphs) >= sphPrefixBytes {
 		if bytes.Equal(sphs[:sphPrefixBytes], sphPrefix) {
 			return nil

@@ -36,8 +36,9 @@ const (
 const (
 	schemaV0 uint32 = iota
 	schemaV1        // add catalog, shrunk sph in loc bytes
+	schemaV2        // add length toslab and chunk values
 
-	schemaLatest = schemaV1
+	schemaLatest = schemaV2
 )
 
 const (

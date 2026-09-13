@@ -17,7 +17,7 @@ enum MountState {
 }
 
 // key: "slab" / <u16 BE slabid> / <u32 BE block address>
-// value: <hash bits of digest>
+// value: <u16 LE chunk length in blocks> <hash bits of digest>
 // bucket sequence holds next chunk
 
 // key: "slab" / <u16 BE slabid> / <u32 BE 0x80000000 | block address> (high bit set)
@@ -25,7 +25,7 @@ enum MountState {
 // present if data has been fetched
 
 // key: "chunk" / <hash_bits of digest>
-// value: <u16 LE slab id> <u32 LE block address> ( <sph prefix bits> )*
+// value: <u16 LE slab id> <u32 LE block address> <u16 LE chunk length in blocks> ( <sph prefix bits> )*
 
 // key: "image" / <store path hash (nix base32)>
 // value:
