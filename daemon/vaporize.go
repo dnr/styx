@@ -431,9 +431,9 @@ func (s *Server) commitPreallocated(ctx context.Context, blocks []uint16, digest
 				if !isAlloc {
 					// there's still no link from the digest to this space. create it, and mark
 					// it present also.
-					if err := cb.Put(digest, locValue(loc.SlabId, loc.Addr, sph)); err != nil {
+					if err := cb.Put(digest, locValue(loc.SlabId, loc.Addr, blocks[i], sph)); err != nil {
 						return err
-					} else if err = sb.Put(addrKey(loc.Addr), digest); err != nil {
+					} else if err = sb.Put(addrKey(loc.Addr), slabValue(blocks[i], digests[i])); err != nil {
 						return err
 					} else if err = sb.Put(addrKey(loc.Addr|presentMask), []byte{}); err != nil {
 						return err
