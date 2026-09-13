@@ -42,6 +42,10 @@ type Options struct {
 	SupportsMultiConn  bool
 
 	ConcurrentReads int
+
+	// use external buffer pool
+	AllocBuf   func(int) []byte
+	ReleaseBuf func([]byte)
 }
 
 func Handle(conn net.Conn, exports []*Export, options *Options) error {
@@ -372,9 +376,14 @@ n:
 			go func() {
 				defer sem.Release(1)
 
-				// TODO: use pool
-				b := make([]byte, length)
-				n, err := export.Backend.ReadAt(b[:length], int64(requestHeader.Offset))
+				var b []byte
+				if options.AllocBuf != nil {
+					b = options.AllocBuf(int(length))[:length]
+					defer options.ReleaseBuf(b)
+				} else {
+					b = make([]byte, length)
+				}
+				n, err := export.Backend.ReadAt(b, int64(requestHeader.Offset))
 
 				writeLock.Lock()
 				defer writeLock.Unlock()

@@ -56,6 +56,9 @@ func (s *Server) nbdServer(slabId uint16, conn net.Conn) {
 			ReadOnly:           true,
 			MinimumBlockSize:   4096,
 			PreferredBlockSize: 4096,
+			ConcurrentReads:    s.cfg.Workers,
+			AllocBuf:           s.chunkPool.Get,
+			ReleaseBuf:         s.chunkPool.Put,
 		})
 	if err != nil && !errors.Is(err, io.EOF) {
 		log.Println("nbd server err:", err)
