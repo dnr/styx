@@ -19,7 +19,7 @@ rec {
   baseArgs = {
     pname = "styx";
     inherit version;
-    vendorHash = "sha256-UMqe/8b8ldxJ9zZ1aei/KQXMJskC+MGcYD4UsFALP58=";
+    vendorHash = "sha256-yhTyrs7mVYCJqgKmgyM0ru8Knkc9s6Y6YocT8LHJIYQ=";
     src = pkgs.lib.sourceByRegex ./. [
       "^go\\.(mod|sum)$"
       "^(ci|cmd|common|daemon|erofs|forked|manifester|pb|keys|tests)($|/.*)"

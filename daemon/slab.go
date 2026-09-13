@@ -10,7 +10,8 @@ import (
 	"github.com/anatol/devmapper.go"
 	"github.com/dnr/styx/erofs"
 	"github.com/google/uuid"
-	nbdclient "github.com/pojntfx/go-nbd/pkg/client"
+
+	// nbdclient "github.com/pojntfx/go-nbd/pkg/client"
 	"golang.org/x/sys/unix"
 )
 
@@ -35,6 +36,8 @@ type (
 		size        int64
 		regionBytes int32
 		nbdDev      *os.File
+		nbdCancel   func()
+		nbdWait     func() error
 	}
 )
 
@@ -154,7 +157,7 @@ func (s *Server) setupCloneSlab(slabId uint16, slabBytes, regionBytes int64) (re
 	}
 
 	// setup nbd
-	st.nbdDev, err = s.nbdConnect(slabId)
+	st.nbdDev, st.nbdCancel, st.nbdWait, err = s.nbdConnect(slabId)
 	if err != nil {
 		return err
 	}
@@ -232,15 +235,18 @@ func (s *Server) teardownCloneSlab(slabId uint16, st *slabState) error {
 
 	// nbd
 	if st.nbdDev != nil {
-		err := nbdclient.Disconnect(st.nbdDev)
-		if err != nil {
-			return err
-		}
-		err = st.nbdDev.Close()
-		if err != nil {
+		if err := st.nbdDev.Close(); err != nil {
 			return err
 		}
 		st.nbdDev = nil
+	}
+
+	if st.nbdCancel != nil {
+		st.nbdCancel()
+		st.nbdCancel = nil
+		if err := st.nbdWait(); err != nil {
+			log.Println("error closing nbd loopback on slab %d: %v", slabId, err)
+		}
 	}
 
 	// read fd
