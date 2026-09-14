@@ -139,7 +139,7 @@ func (s *Server) handleGcReq(ctx context.Context, r *GcReq) (*GcResp, error) {
 		if g.keepAllSphps(sphps) {
 			continue
 		}
-		newv := make([]byte, 6, len(v))
+		newv := make([]byte, 8, len(v))
 		copy(newv, v)
 		for _, sphp := range sphps {
 			if _, ok := g.keepSphps[sphp]; ok {

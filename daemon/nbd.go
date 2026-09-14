@@ -35,6 +35,7 @@ func (s *Server) nbdConnect(slabId uint16) (*os.File, func(), func() error, erro
 	}
 	idx, wait, err := nbd.Loopback(ctx, d, d.Size(), opts)
 	if err != nil {
+		cancel()
 		return nil, nil, nil, fmt.Errorf("nbd connect slab %d: %w", slabId, err)
 	}
 
@@ -46,6 +47,7 @@ func (s *Server) nbdConnect(slabId uint16) (*os.File, func(), func() error, erro
 
 	dev, err := os.OpenFile(path, os.O_RDONLY, 0o600)
 	if err != nil {
+		cancel()
 		return nil, nil, nil, fmt.Errorf("open nbd %q: %w", path, err)
 	}
 
