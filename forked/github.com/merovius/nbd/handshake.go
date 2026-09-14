@@ -383,6 +383,25 @@ func (e *encoder) write(b []byte) {
 	e.check(err)
 }
 
+func (e *encoder) writeBuffers(bufs net.Buffers) {
+	if e.buf != nil {
+		for _, b := range bufs {
+			e.buf = append(e.buf, b...)
+		}
+		return
+	}
+	if w, ok := e.rw.(interface {
+		writeBuffers(net.Buffers) (int64, error)
+	}); ok {
+		_, err := w.writeBuffers(bufs)
+		e.check(err)
+		return
+	}
+	for _, b := range bufs {
+		e.write(b)
+	}
+}
+
 func (e *encoder) writeString(s string) {
 	if e.buf != nil {
 		e.buf = append(e.buf, s...)

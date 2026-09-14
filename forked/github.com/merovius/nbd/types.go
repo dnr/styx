@@ -15,8 +15,10 @@
 package nbd
 
 import (
+	"encoding/binary"
 	"errors"
 	"fmt"
+	"net"
 	"strconv"
 )
 
@@ -31,6 +33,7 @@ const (
 	flagNoZeroes         = 1 << 1
 	flagDefaults         = flagFixedNewstyle | flagNoZeroes
 	maxOptionLength      = 4 << 10
+	requestHeaderLength  = 28
 )
 
 type optionRequest interface {
@@ -509,14 +512,17 @@ func (r *request) encode(e *encoder) {
 }
 
 func (r *request) decode(e *encoder) Error {
-	if e.uint32() != reqMagic {
+	var header [requestHeaderLength]byte
+	e.read(header[:])
+
+	if binary.BigEndian.Uint32(header[0:4]) != reqMagic {
 		e.check(errors.New("invalid magic for request"))
 	}
-	r.flags = e.uint16()
-	r.typ = e.uint16()
-	r.handle = e.uint64()
-	r.offset = e.uint64()
-	r.length = e.uint32()
+	r.flags = binary.BigEndian.Uint16(header[4:6])
+	r.typ = binary.BigEndian.Uint16(header[6:8])
+	r.handle = binary.BigEndian.Uint64(header[8:16])
+	r.offset = binary.BigEndian.Uint64(header[16:24])
+	r.length = binary.BigEndian.Uint32(header[24:28])
 	if r.offset&(1<<63) != 0 {
 		return EOVERFLOW
 	}
@@ -545,10 +551,11 @@ func (r *simpleReply) encode(e *encoder) {
 	e.lock.Lock()
 	defer e.lock.Unlock()
 
-	e.writeUint32(simpleReplyMagic)
-	e.writeUint32(r.errno)
-	e.writeUint64(r.handle)
-	e.write(r.data)
+	var header [16]byte
+	binary.BigEndian.PutUint32(header[0:4], simpleReplyMagic)
+	binary.BigEndian.PutUint32(header[4:8], r.errno)
+	binary.BigEndian.PutUint64(header[8:16], r.handle)
+	e.writeBuffers(net.Buffers{header[:], r.data})
 }
 
 func (r *simpleReply) decode(e *encoder) Error {

@@ -15,6 +15,7 @@
 package nbd
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"io"
@@ -106,10 +107,12 @@ func Serve(ctx context.Context, c net.Conn, exp ...Export) error {
 func serve(ctx context.Context, c net.Conn, p connParameters, opts ServerOpts) error {
 	rw := wrapConn(ctx, c)
 	defer rw.Close()
+	// use a buffered reader to avoid excess syscalls
+	bufferedRW := &bufferedReadWriter{r: bufio.NewReader(rw), w: rw}
 
 	sem := semaphore.NewWeighted(int64(max(opts.Concurrency, 1)))
 
-	return do(rw, func(e *encoder, async func(func())) {
+	return do(bufferedRW, func(e *encoder, async func(func())) {
 		for {
 			var req request
 			if err := req.decode(e); err != nil {
@@ -196,8 +199,26 @@ type ctxRW struct {
 	done   <-chan struct{}
 }
 
+// implements io.Reader and io.Writer but also exposes writeBuffers
+type bufferedReadWriter struct {
+	r *bufio.Reader
+	w *ctxRW
+}
+
+func (rw *bufferedReadWriter) Read(p []byte) (int, error) {
+	return rw.r.Read(p)
+}
+
+func (rw *bufferedReadWriter) Write(p []byte) (int, error) {
+	return rw.w.Write(p)
+}
+
+func (rw *bufferedReadWriter) writeBuffers(bufs net.Buffers) (int64, error) {
+	return rw.w.writeBuffers(bufs)
+}
+
 // wrapConn wraps a connection in a ctxRW.
-func wrapConn(ctx context.Context, c net.Conn) io.ReadWriteCloser {
+func wrapConn(ctx context.Context, c net.Conn) *ctxRW {
 	// Note: cancel is called by Close().
 	ctx, cancel := context.WithCancelCause(ctx)
 	done := make(chan struct{})
@@ -223,6 +244,15 @@ func (rw *ctxRW) Read(p []byte) (n int, err error) {
 // aborted due to context cancellation.
 func (rw *ctxRW) Write(p []byte) (n int, err error) {
 	n, err = rw.c.Write(p)
+	if e := context.Cause(rw.ctx); e != nil {
+		err = e
+	}
+	return n, err
+}
+
+// writeBuffers writes all buffers using bufs.WriteTo (to use writev if available)
+func (rw *ctxRW) writeBuffers(bufs net.Buffers) (n int64, err error) {
+	n, err = bufs.WriteTo(rw.c)
 	if e := context.Cause(rw.ctx); e != nil {
 		err = e
 	}
