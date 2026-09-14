@@ -245,7 +245,7 @@ func (s *Server) teardownCloneSlab(slabId uint16, st *slabState) error {
 		st.nbdCancel()
 		st.nbdCancel = nil
 		if err := st.nbdWait(); err != nil {
-			log.Println("error closing nbd loopback on slab %d: %v", slabId, err)
+			log.Printf("error closing nbd loopback on slab %d: %v", slabId, err)
 		}
 	}
 
