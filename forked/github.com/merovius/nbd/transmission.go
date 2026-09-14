@@ -109,7 +109,7 @@ func serve(ctx context.Context, c net.Conn, p connParameters, opts ServerOpts) e
 
 	sem := semaphore.NewWeighted(int64(max(opts.Concurrency, 1)))
 
-	return do(rw, func(e *encoder) {
+	return do(rw, func(e *encoder, async func(func())) {
 		for {
 			var req request
 			if err := req.decode(e); err != nil {
@@ -125,7 +125,7 @@ func serve(ctx context.Context, c net.Conn, p connParameters, opts ServerOpts) e
 				if err := sem.Acquire(ctx, 1); err != nil {
 					e.check(err)
 				}
-				go func() {
+				async(func() {
 					defer sem.Release(1)
 					var buf []byte
 					if opts.AllocBuf != nil {
@@ -140,7 +140,7 @@ func serve(ctx context.Context, c net.Conn, p connParameters, opts ServerOpts) e
 						return
 					}
 					(&simpleReply{0, req.handle, buf, 0}).encode(e)
-				}()
+				})
 			case cmdWrite:
 				if req.length == 0 {
 					respondErr(e, req.handle, EINVAL)

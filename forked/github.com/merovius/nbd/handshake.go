@@ -22,6 +22,7 @@ import (
 	"io"
 	"net"
 	"sync"
+	"sync/atomic"
 )
 
 // Export specifies the data needed for the NBD network protocol.
@@ -53,7 +54,7 @@ func serverHandshake(rw io.ReadWriter, exp []Export) (connParameters, error) {
 	parms := connParameters{
 		BlockSizes: defaultBlockSizes,
 	}
-	return parms, do(rw, func(e *encoder) {
+	return parms, do(rw, func(e *encoder, _ func(func())) {
 		e.writeUint64(nbdMagic)
 		e.writeUint64(optMagic)
 		e.writeUint16(flagDefaults)
@@ -141,7 +142,7 @@ type Client struct {
 func ClientHandshake(ctx context.Context, c net.Conn) (*Client, error) {
 	rw := wrapConn(ctx, c)
 	cl := &Client{rw, false}
-	return cl, do(rw, func(e *encoder) {
+	return cl, do(rw, func(e *encoder, _ func(func())) {
 		if e.uint64() != nbdMagic {
 			e.check(errors.New("invalid magic from server"))
 		}
@@ -211,7 +212,7 @@ func (c *Client) recv(e *encoder, code uint32) optionReply {
 
 // Abort aborts the handshake. c should not be used after Abort returns.
 func (c *Client) Abort() error {
-	return do(c.rw, func(e *encoder) {
+	return do(c.rw, func(e *encoder, _ func(func())) {
 		c.send(e, &optAbort{})
 		rep := c.recv(e, cOptAbort)
 		c.close()
@@ -226,7 +227,7 @@ func (c *Client) Abort() error {
 // List returns the names of exports the server is providing.
 func (c *Client) List() ([]string, error) {
 	var list []string
-	err := do(c.rw, func(e *encoder) {
+	err := do(c.rw, func(e *encoder, _ func(func())) {
 		c.send(e, &optList{})
 		for {
 			rep := c.recv(e, cOptList)
@@ -247,7 +248,7 @@ func (c *Client) List() ([]string, error) {
 // true) request and returns the export data returned by the server.
 func (c *Client) info(exportName string, done bool) (Export, error) {
 	var ex Export
-	err := do(c.rw, func(e *encoder) {
+	err := do(c.rw, func(e *encoder, _ func(func())) {
 		reqs := []uint16{cInfoExport, cInfoName, cInfoDescription, cInfoBlockSize}
 		c.send(e, &optInfo{done, exportName, reqs})
 		code := uint32(cOptInfo)
@@ -321,21 +322,44 @@ func findExport(name string, exp []Export) (Export, bool) {
 // do wraps rw for easy en-/decoding of binary data. It creates an *encoder and
 // calls f with that. The process uses panic/recover for error handling, so e
 // should never be passed to a different goroutine.
-func do(rw io.ReadWriter, f func(e *encoder)) (err error) {
+func do(rw io.ReadWriter, f func(*encoder, func(func()))) (retErr error) {
 	sentinel := new(uint8)
+	var err atomic.Pointer[error]
+	var wg sync.WaitGroup
+
 	defer func() {
-		if v := recover(); v != nil && v != sentinel {
+		v := recover()
+		wg.Wait()
+		if errp := err.Load(); errp != nil {
+			retErr = *errp
+		}
+		if v != nil && v != sentinel {
 			panic(v)
 		}
 	}()
+
 	check := func(e error) {
 		if e != nil {
-			err = e
+			err.CompareAndSwap(nil, &e)
 			panic(sentinel)
 		}
 	}
-	f(&encoder{rw: rw, check: check})
-	return err
+
+	e := &encoder{rw: rw, check: check}
+
+	async := func(g func()) {
+		wg.Go(func() {
+			defer func() {
+				if v := recover(); v != nil && v != sentinel {
+					panic(v)
+				}
+			}()
+			g()
+		})
+	}
+
+	f(e, async)
+	return nil
 }
 
 // encoder provides helper methods for easy de-/encoding of binary data.
