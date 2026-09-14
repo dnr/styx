@@ -11,7 +11,6 @@ import (
 	// nbdserver "github.com/pojntfx/go-nbd/pkg/server"
 
 	"github.com/Merovius/nbd"
-	"golang.org/x/sys/unix"
 )
 
 type (
@@ -56,14 +55,6 @@ func (s *Server) nbdConnect(slabId uint16) (*os.File, func(), func() error, erro
 }
 
 func (b *nbdSlabBackend) ReadAt(p []byte, off int64) (int, error) {
-	// handle reserved blocks directly.
-	// the kernel will probably probe the first block for a partition table.
-	if off+int64(len(p)) <= (reservedBlocks<<b.s.blockShift) ||
-		off >= slabBytes-(reservedBlocks<<b.s.blockShift) {
-		clear(p)
-		return len(p), nil
-	}
-
 	ctx := context.Background()
 	err := b.s.handleReadSlab(
 		ctx,
@@ -74,12 +65,7 @@ func (b *nbdSlabBackend) ReadAt(p []byte, off int64) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	// we have now written to backing file through clone dev, but dm-clone requires that we
-	// still perform the read ourselves. read through the clone device for now.
-	// FIXME: pass this directly in memory?
-	fd := b.s.getWriteFd(b.slabId)
-	n, err := unix.Pread(fd, p, off)
-	return n, err
+	return len(p), nil
 }
 
 func (b *nbdSlabBackend) WriteAt(p []byte, off int64) (int, error) {

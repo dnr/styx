@@ -12,3 +12,6 @@
 /work
 /result
 /result-*
+/test.out
+/test.out.*
+/.testoutput
