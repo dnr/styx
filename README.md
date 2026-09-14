@@ -1,5 +1,4 @@
 
-
 # Styx
 
 ## Introduction
@@ -9,7 +8,8 @@ It downloads data on-demand,
 stores common chunks of data only once to reduce local disk usage,
 and uses differential compression to reduce bandwidth usage.
 
-It's currently quite experimental, though the basic features are working.
+It's currently experimental,
+though I've been using it on my personal machines for a while with no major issues.
 If you want to try it, skip down to the bottom.
 
 ### Motivation
@@ -583,6 +583,19 @@ styx init --params=https://styx-1.s3.amazonaws.com/params/test-1 --styx_pubkey=s
 - Boot a system with almost everything in the store in Styx (kernel + initrd
   copied to /boot, Styx started in stage1)
 
+
+# AI & LLM Usage
+
+tl;dr: mostly hand-written, sparing usage of LLMs for writing code.
+
+The first version of Styx, using EROFS fscache, was written in 2024, long before
+LLMs could code well enough to help for a project like this. Most of the core
+hasn't changed much, except replacing fscache with dm-clone in 2026.
+
+I try to be sparing with LLM coding: There's very little in the core software.
+I've used them for small boring pieces around the edges, unit tests, scripting,
+etc. I've also used LLMs for design conversations, tracking down tricky bugs,
+and code reviews.
 
 
 [nxdch]: https://github.com/dnr/nix-sandwich/
