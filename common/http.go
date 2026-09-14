@@ -11,6 +11,16 @@ import (
 	"github.com/avast/retry-go/v4"
 )
 
+var commonHttpClient *http.Client
+
+func init() {
+	t := http.DefaultTransport.(*http.Transport).Clone()
+	t.MaxIdleConns = 128
+	t.MaxIdleConnsPerHost = 64
+	t.MaxConnsPerHost = 128
+	commonHttpClient = &http.Client{Transport: t}
+}
+
 func RetryHttpRequest(ctx context.Context, method, url, cType string, body []byte) (*http.Response, error) {
 	return retry.DoWithData(
 		func() (*http.Response, error) {
@@ -25,7 +35,7 @@ func RetryHttpRequest(ctx context.Context, method, url, cType string, body []byt
 			if cType != "" {
 				req.Header.Set("Content-Type", cType)
 			}
-			res, err := http.DefaultClient.Do(req)
+			res, err := commonHttpClient.Do(req)
 			if err == nil && res.StatusCode != http.StatusOK {
 				err = HttpErrorFromRes(res)
 				res.Body.Close()
