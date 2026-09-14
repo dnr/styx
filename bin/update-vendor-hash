@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+
+repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+default_nix="$repo_root/default.nix"
+fake_hash="sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+
+new_hash=$(
+  nix-build --no-out-link \
+    -E "(import $default_nix {}).styx-local.overrideAttrs (_: { vendorHash = \"$fake_hash\"; })" |&
+  sed -n 's/^[[:space:]]*got:[[:space:]]*\(sha256-[A-Za-z0-9+/=]*\)[[:space:]]*$/\1/p' | tail -n 1)
+
+[[ "$new_hash" ]] &&
+  sed -i -e '/### update-vendor-hash {/,/### }/ s,"sha256-.*","'"$new_hash"'",' $default_nix
