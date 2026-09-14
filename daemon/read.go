@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 
@@ -12,10 +13,15 @@ import (
 	"github.com/dnr/styx/common/errgroup"
 	"github.com/dnr/styx/erofs"
 	"go.etcd.io/bbolt"
+	"golang.org/x/sys/unix"
 )
 
 // bridge nbd server to differ
 func (s *Server) handleReadSlab(ctx context.Context, slabId uint16, p []byte, off uint64) (retErr error) {
+	if len(p) == 0 {
+		return nil
+	}
+
 	s.stats.slabReads.Add(1)
 	defer func() {
 		if retErr != nil {
@@ -30,7 +36,7 @@ func (s *Server) handleReadSlab(ctx context.Context, slabId uint16, p []byte, of
 	rr := slabReadReq{
 		slabId: slabId,
 		rdAddr: common.TruncU32(off >> s.blockShift),
-		rdEnd:  common.TruncU32((off + uint64(len(p))) >> s.blockShift),
+		rdEnd:  common.TruncU32((off+uint64(len(p))-1)>>s.blockShift + 1),
 		p:      p,
 		reqs:   make([]chunkReadReq, 0, 4),
 	}
@@ -38,11 +44,16 @@ func (s *Server) handleReadSlab(ctx context.Context, slabId uint16, p []byte, of
 	if err != nil {
 		return err
 	}
-	return rr.run(ctx, s)
+	err = rr.run(ctx, s)
+	if err != nil {
+		return err
+	}
+	return rr.fill(s)
 }
 
 type chunkReadReq struct {
 	addr   uint32
+	end    uint32
 	digest cdig.CDig
 	sphps  []SphPrefix
 }
@@ -94,6 +105,9 @@ func (rr *slabReadReq) seek() {
 	} else if !bytes.Equal(target, k) {
 		// if we landed in between chunks, move back to the start of previous
 		k, v = rr.cur.Prev()
+		if k == nil {
+			k, v = rr.cur.First() // there was no previous chunk
+		}
 	}
 	rr.setAddrs(k, v)
 	if rr.err == nil && rr.rdAddr >= rr.chunkEnd {
@@ -126,11 +140,18 @@ func (rr *slabReadReq) setAddrs(k, v []byte) {
 func (rr *slabReadReq) addReq() error {
 	// look up digest to get store paths
 	loc := rr.cb.Get(rr.dig[:])
-	if loc == nil {
+	if loc == nil || len(loc) < 8 {
 		return errors.New("missing digest->loc reference")
+	} else if slabLoc, blocks := loadLocAndBlocks(loc); slabLoc.SlabId != rr.slabId {
+		return fmt.Errorf("chunk loc slabid mismatch %d != %d", slabLoc.SlabId, rr.slabId)
+	} else if slabLoc.Addr != rr.chunkAddr {
+		return fmt.Errorf("chunk loc addr mismatch %d != %d", slabLoc.Addr, rr.chunkAddr)
+	} else if uint32(blocks) != rr.chunkEnd-rr.chunkAddr {
+		return fmt.Errorf("chunk loc len mismatch %d != %d", blocks, rr.chunkEnd-rr.chunkAddr)
 	}
 	req := chunkReadReq{
 		addr:   rr.chunkAddr,
+		end:    rr.chunkEnd,
 		digest: rr.dig,
 		sphps:  loadLocSphps(loc),
 	}
@@ -155,4 +176,42 @@ func (rr *slabReadReq) run(ctx context.Context, s *Server) error {
 		})
 	}
 	return eg.Wait()
+}
+
+func (rr *slabReadReq) fill(s *Server) error {
+	// we have now written to backing file through clone dev, but dm-clone requires that we
+	// still perform the read ourselves. read through the clone device for now.
+	// FIXME: pass this directly in memory?
+	fd := s.getWriteFd(rr.slabId)
+
+	inp := func(addr uint32) int64 {
+		if rr.rdAddr > addr {
+			panic("fill overflow error")
+		}
+		return int64(addr-rr.rdAddr) << s.blockShift
+	}
+
+	addr := rr.rdAddr
+	for _, req := range rr.reqs {
+		if req.addr < addr {
+			return fmt.Errorf("bug: overlapping chunks? %d < %d", req.addr, addr)
+		}
+
+		if req.addr > addr {
+			// gap
+			toClear := rr.p[inp(addr):inp(req.addr)]
+			clear(toClear)
+			addr = req.addr
+		}
+
+		// read back from clone dev
+		toRead := rr.p[inp(req.addr):min(int64(len(rr.p)), inp(req.end))]
+		readOff := int64(req.addr) << s.blockShift
+		_, err := unix.Pread(fd, toRead, readOff)
+		if err != nil {
+			return err
+		}
+		addr = req.end
+	}
+	return nil
 }
