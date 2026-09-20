@@ -63,6 +63,7 @@ func (b *nbdSlabBackend) ReadAt(p []byte, off int64) (int, error) {
 		uint64(off),
 	)
 	if err != nil {
+		log.Printf("read error: slab %d, off %d, ln %d, err %v", b.slabId, off, len(p), err)
 		return 0, err
 	}
 	return len(p), nil

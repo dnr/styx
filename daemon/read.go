@@ -91,7 +91,7 @@ func (rr *slabReadReq) build(tx *bbolt.Tx) error {
 	rr.sb = tx.Bucket(slabBucket).Bucket(slabKey(rr.slabId))
 	rr.cb = tx.Bucket(chunkBucket)
 	if rr.sb == nil || rr.cb == nil {
-		return errors.New("missing buckets")
+		return nil // missing buckets, no data yet
 	}
 	rr.cur = rr.sb.Cursor()
 
