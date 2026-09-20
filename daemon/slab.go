@@ -295,11 +295,13 @@ func (s *Server) markForUdev(dev string) func() {
 	_ = os.MkdirAll(filepath.Dir(marker), 0o700)
 	if marker, err := os.Create(marker); err == nil {
 		marker.Close()
+	} else {
+		log.Printf("error creating udev marker %q: %v", marker, err)
 	}
 	return func() {
 		go func() {
 			time.Sleep(10 * time.Second)
-			os.Remove(marker)
+			_ = os.Remove(marker)
 		}()
 	}
 }
