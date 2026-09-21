@@ -9,7 +9,6 @@ import (
 
 	"github.com/anatol/devmapper.go"
 	"github.com/dnr/styx/erofs"
-	"github.com/google/uuid"
 
 	// nbdclient "github.com/pojntfx/go-nbd/pkg/client"
 	"golang.org/x/sys/unix"
@@ -163,43 +162,24 @@ func (s *Server) setupCloneSlab(slabId uint16, slabBytes, regionBytes int64) (re
 	}
 
 	// setup dm-clone
-	cloneName := s.slabDmName(slabId)
-	tab := &devmapper.CloneTable{
-		Start:       0,
-		Length:      uint64(slabBytes),
-		MetaDev:     metaLo.Path(),
-		DestDev:     dataLo.Path(),
-		SourceDev:   st.nbdDev.Name(),
-		RegionSize:  uint64(regionBytes),
-		NoHydration: true,
-	}
-	var devNo uint64
-	di, err := devmapper.InfoByName(cloneName)
-	if err == nil {
-		// try to reuse previous
-		devNo, err = di.DevNo, devmapper.Suspend(cloneName)
-		if err != nil {
-			return fmt.Errorf("dm suspend %q: %w", cloneName, err)
-		}
-	} else {
-		// create it
-		devNo, err = devmapper.Create(cloneName, uuid.NewString())
-		if err != nil {
-			return fmt.Errorf("dm create %q: %w", cloneName, err)
-		}
-	}
-	defer s.markForUdev(devmapper.Path(devNo))()
-	err = devmapper.Load(cloneName, 0, tab)
+	clonePath, err := s.setupDm(
+		s.slabDmName(slabId),
+		0,
+		&devmapper.CloneTable{
+			Start:       0,
+			Length:      uint64(slabBytes),
+			MetaDev:     metaLo.Path(),
+			DestDev:     dataLo.Path(),
+			SourceDev:   st.nbdDev.Name(),
+			RegionSize:  uint64(regionBytes),
+			NoHydration: true,
+		},
+	)
 	if err != nil {
-		return fmt.Errorf("dm load %q: %w", cloneName, err)
-	}
-	err = devmapper.Resume(cloneName)
-	if err != nil {
-		return fmt.Errorf("dm resume %q: %w", cloneName, err)
+		return err
 	}
 
 	// write fd: clone slab writes go through clone device to mark hydration
-	clonePath := devmapper.Path(devNo)
 	// use O_DIRECT because we don't need an extra layer of block device caching here,
 	// we want writes/reads to go to the underlying loopback directly.
 	st.writeFd, err = unix.Open(clonePath, unix.O_RDWR|unix.O_DIRECT, 0o600)
@@ -293,8 +273,8 @@ func (s *Server) teardownSlabs() {
 func (s *Server) markForUdev(dev string) func() {
 	marker := filepath.Join(udevMarkerDir, filepath.Base(dev))
 	_ = os.MkdirAll(filepath.Dir(marker), 0o700)
-	if marker, err := os.Create(marker); err == nil {
-		marker.Close()
+	if f, err := os.Create(marker); err == nil {
+		f.Close()
 	} else {
 		log.Printf("error creating udev marker %q: %v", marker, err)
 	}

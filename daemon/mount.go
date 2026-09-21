@@ -13,7 +13,6 @@ import (
 	"github.com/dnr/styx/common"
 	"github.com/dnr/styx/erofs"
 	"github.com/dnr/styx/pb"
-	"github.com/google/uuid"
 	"go.etcd.io/bbolt"
 	"golang.org/x/sys/unix"
 	"google.golang.org/protobuf/proto"
@@ -103,26 +102,18 @@ func (s *Server) tryMount(ctx context.Context, req *MountReq) error {
 	opts := strings.Join(devs, ",")
 
 	// set up/reuse dm linear for image
-	dmName := "styx-image-" + sphStr
-	var dmPath string
-	if dmPath, err = findDmByName(dmName); err != nil {
-		devNo, err := devmapper.Create(dmName, uuid.NewString())
-		if err != nil {
-			return fmt.Errorf("dm create %q: %w", dmName, err)
-		}
-		dmPath = devmapper.Path(devNo)
-		defer s.markForUdev(dmPath)()
-		tab := &devmapper.LinearTable{
+	dmPath, err := s.setupDm(
+		"styx-image-"+sphStr,
+		devmapper.ReadOnlyFlag,
+		&devmapper.LinearTable{
 			Start:         0,
 			Length:        uint64(imgBlocks) << s.blockShift,
 			BackendDevice: s.imageSlabLo.Path(),
 			BackendOffset: uint64(imgBlkOff) << s.blockShift,
-		}
-		if err = devmapper.Load(dmName, devmapper.ReadOnlyFlag, tab); err != nil {
-			return fmt.Errorf("dm load %q: %w", dmName, err)
-		} else if err = devmapper.Resume(dmName); err != nil {
-			return fmt.Errorf("dm resume %q: %w", dmName, err)
-		}
+		},
+	)
+	if err != nil {
+		return err
 	}
 
 	// do real mount
