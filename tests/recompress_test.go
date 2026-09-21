@@ -8,8 +8,6 @@ import (
 )
 
 func TestRecompress(t *testing.T) {
-	t.Skip("broken for now??")
-
 	tb := newTestBase(t)
 	tb.startAll()
 
@@ -34,8 +32,6 @@ func TestRecompress(t *testing.T) {
 }
 
 func TestMultiRecompress(t *testing.T) {
-	t.Skip("broken for now??")
-
 	tb := newTestBase(t)
 	tb.startAll()
 
