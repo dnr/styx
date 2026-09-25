@@ -47,15 +47,16 @@ func (s *Server) startFakeCacheServer() (err error) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/nix-cache-info", s.getFakeCacheInfo)
 	mux.HandleFunc("/", s.getFakeNarinfo)
-	s.shutdownWait.Add(1)
-	go func() {
-		defer s.shutdownWait.Done()
-		srv := &http.Server{Handler: mux}
+	s.shutdownWait.Go(func() {
+		srv := &http.Server{
+			Handler:     mux,
+			BaseContext: func(net.Listener) context.Context { return s.shutdownCtx },
+		}
 		go srv.Serve(l)
-		<-s.shutdownChan
+		<-s.shutdownCtx.Done()
 		log.Printf("stopping fake cache server")
 		srv.Close()
-	}()
+	})
 	return nil
 }
 

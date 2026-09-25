@@ -202,7 +202,7 @@ func (s *Server) restoreMounts() {
 			// log.Print("restoring: ", img.StorePath, " already mounted on ", img.MountPoint)
 			continue
 		}
-		err := s.tryMount(context.Background(), &MountReq{
+		err := s.tryMount(s.shutdownCtx, &MountReq{
 			StorePath:  img.StorePath,
 			MountPoint: img.MountPoint,
 			// the image has been written so we don't need upstream/narsize

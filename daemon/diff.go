@@ -47,6 +47,23 @@ const (
 )
 
 var errAlreadyPresent = errors.New("already present")
+var errServerStopped = errors.New("daemon stopped")
+
+func newOpResult() opResult { return opResult{done: make(chan struct{})} }
+
+func (op *opResult) wait(ctx context.Context) (error, error) {
+	select {
+	case <-op.done:
+		return op.err, nil
+	case <-ctx.Done():
+		return nil, context.Cause(ctx)
+	}
+}
+
+func (op *opResult) finish(err error) {
+	op.err = err
+	close(op.done)
+}
 
 type (
 	digestIterator struct {
@@ -56,12 +73,17 @@ type (
 	}
 
 	reqOp interface {
-		wait() error
+		wait(context.Context) (error, error)
+	}
+
+	// opResult is a "future" that can be waited on
+	opResult struct {
+		err  error // written before done is closed
+		done chan struct{}
 	}
 
 	singleOp struct {
-		err  error         // result. only written by start, read by wait
-		done chan struct{} // closed by start after writing err
+		opResult
 
 		loc    erofs.SlabLoc
 		digest cdig.CDig
@@ -77,8 +99,7 @@ type (
 	}
 
 	diffOp struct {
-		err  error         // result. only written by start, read by wait
-		done chan struct{} // closed by start after writing err
+		opResult
 
 		// when building: add non-recompress to [0], add recompress as new pairs.
 		// when running: support any combination.
@@ -121,9 +142,9 @@ type (
 	}
 
 	remanifestCacheEntry struct {
+		opResult
+
 		when time.Time
-		err  error         // only read after done is closed
-		done chan struct{} // closed after writing err
 	}
 
 	triedRemanifest struct{}
@@ -146,6 +167,12 @@ func (s *Server) requestChunk(ctx context.Context, loc erofs.SlabLoc, digest cdi
 	var op reqOp
 
 	s.diffLock.Lock()
+
+	if err := context.Cause(s.shutdownCtx); err != nil {
+		s.diffLock.Unlock()
+		return err // block starting new ops during shutdown
+	}
+
 	if op = s.diffMap[loc]; op != nil {
 		// being request already, wait on this one
 	} else if len(sphps) == 0 {
@@ -166,7 +193,7 @@ func (s *Server) requestChunk(ctx context.Context, loc erofs.SlabLoc, digest cdi
 
 		// start any ops in the set
 		for _, startOp := range set.ops {
-			go s.startDiffOp(ctx, startOp)
+			s.shutdownWait.Go(func() { s.startDiffOp(ctx, startOp) })
 		}
 		if extra := len(set.ops) - 1; extra > 0 {
 			s.stats.extraReqs.Add(int64(extra))
@@ -182,7 +209,7 @@ func (s *Server) requestChunk(ctx context.Context, loc erofs.SlabLoc, digest cdi
 	}
 	if op == nil {
 		sop := s.buildSingleOp(loc, digest)
-		go s.startSingleOp(ctx, sop)
+		s.shutdownWait.Go(func() { s.startSingleOp(ctx, sop) })
 		op = sop
 	}
 	s.diffLock.Unlock()
@@ -190,7 +217,11 @@ func (s *Server) requestChunk(ctx context.Context, loc erofs.SlabLoc, digest cdi
 	// TODO: consider racing the diff against a single chunk read (with small delay)
 	// return when either is done
 
-	err := op.wait()
+	err, ctxErr := op.wait(ctx)
+
+	if ctxErr != nil {
+		return ctxErr
+	}
 
 	if common.IsNotFound(err) && ctx.Value(triedRemanifest{}) == nil {
 		// some required chunk was not found, maybe we can recover by remanifesting
@@ -225,9 +256,9 @@ func (s *Server) requestPrefetch(ctx context.Context, reqs []cdig.CDig) error {
 
 	var remanifestReqs []MountReq
 	for _, op := range ops {
-		if opErr := op.wait(); opErr != nil {
-			err = cmp.Or(err, opErr)
-			log.Printf("prefetch request failed (%v)", opErr)
+		if opErr, ctxErr := op.wait(ctx); opErr != nil || ctxErr != nil {
+			err = cmp.Or(err, opErr, ctxErr)
+			log.Printf("prefetch request failed (%v/%v)", opErr, ctxErr)
 			if common.IsNotFound(opErr) && ctx.Value(triedRemanifest{}) == nil {
 				// some required chunk was not found, maybe we can recover by remanifesting
 				remanifestReqs = s.appendRemanifestReqs(remanifestReqs, op)
@@ -249,6 +280,10 @@ func (s *Server) requestPrefetch(ctx context.Context, reqs []cdig.CDig) error {
 func (s *Server) buildAndStartPrefetch(ctx context.Context, reqs []cdig.CDig) ([]reqOp, error) {
 	s.diffLock.Lock()
 	defer s.diffLock.Unlock()
+
+	if err := context.Cause(s.shutdownCtx); err != nil {
+		return nil, err // block starting new ops during shutdown
+	}
 
 	tx, err := s.db.Begin(false)
 	if err != nil {
@@ -293,7 +328,7 @@ func (s *Server) buildAndStartPrefetch(ctx context.Context, reqs []cdig.CDig) ([
 			allOps = append(allOps, op)
 		}
 		for _, startOp := range set.ops {
-			go s.startDiffOp(ctx, startOp)
+			s.shutdownWait.Go(func() { s.startDiffOp(ctx, startOp) })
 		}
 		if extra := len(set.ops) - 1; extra > 0 {
 			s.stats.extraReqs.Add(int64(extra))
@@ -390,9 +425,9 @@ func (s *Server) buildSingleOp(
 	targetDigest cdig.CDig,
 ) *singleOp {
 	op := &singleOp{
-		done:   make(chan struct{}),
-		loc:    loc,
-		digest: targetDigest,
+		opResult: newOpResult(),
+		loc:      loc,
+		digest:   targetDigest,
 	}
 	s.diffMap[loc] = op
 	return op
@@ -400,11 +435,12 @@ func (s *Server) buildSingleOp(
 
 // runs in separate goroutine
 func (s *Server) startSingleOp(ctx context.Context, op *singleOp) {
+	var err error
 	defer func() {
 		if r := recover(); r != nil {
-			op.err = fmt.Errorf("panic in single op: %v", r)
+			err = fmt.Errorf("panic in single op: %v", r)
 		}
-		if op.err != nil {
+		if err != nil {
 			s.stats.singleErrs.Add(1)
 		}
 
@@ -415,24 +451,24 @@ func (s *Server) startSingleOp(ctx context.Context, op *singleOp) {
 		}
 		s.diffLock.Unlock()
 
-		// wake up waiters
-		close(op.done)
+		op.finish(err)
 	}()
 
 	s.stats.singleReqs.Add(1)
-	if op.err = s.diffSem.Acquire(ctx, 1); op.err == nil {
+	if err = s.diffSem.Acquire(ctx, 1); err == nil {
 		defer s.diffSem.Release(1)
-		op.err = s.readSingle(ctx, op.loc, op.digest)
+		err = s.readSingle(ctx, op.loc, op.digest)
 	}
 }
 
 // runs in separate goroutine
 func (s *Server) startDiffOp(ctx context.Context, op *diffOp) {
+	var err error
 	defer func() {
 		if r := recover(); r != nil {
-			op.err = fmt.Errorf("panic in diff op: %v", r)
+			err = fmt.Errorf("panic in diff op: %v", r)
 		}
-		if op.err != nil {
+		if err != nil {
 			if !op.anyHasBase() {
 				s.stats.batchErrs.Add(1)
 			} else {
@@ -457,8 +493,7 @@ func (s *Server) startDiffOp(ctx context.Context, op *diffOp) {
 		}
 		s.diffLock.Unlock()
 
-		// wake up waiters
-		close(op.done)
+		op.finish(err)
 	}()
 
 	if !op.anyHasBase() {
@@ -466,9 +501,9 @@ func (s *Server) startDiffOp(ctx context.Context, op *diffOp) {
 	} else {
 		s.stats.diffReqs.Add(1)
 	}
-	if op.err = s.diffSem.Acquire(ctx, 1); op.err == nil {
+	if err = s.diffSem.Acquire(ctx, 1); err == nil {
 		defer s.diffSem.Release(1)
-		op.err = s.doDiffOp(ctx, op)
+		err = s.doDiffOp(ctx, op)
 	}
 }
 
@@ -613,13 +648,13 @@ func (s *Server) gotNewChunk(loc erofs.SlabLoc, digest cdig.CDig, b []byte) erro
 }
 
 func (s *Server) flusher(slabId uint16, st *slabState) {
-	for {
+	for s.shutdownCtx.Err() == nil {
 		// collect some requests
 		locs := make([]erofs.SlabLoc, 0, 128)
 		select {
 		case first := <-st.flushCh:
 			locs = append(locs, first)
-		case <-st.flushStop:
+		case <-s.shutdownCtx.Done():
 			return
 		}
 
@@ -632,7 +667,7 @@ func (s *Server) flusher(slabId uint16, st *slabState) {
 				break loop
 			case loc := <-st.flushCh:
 				locs = append(locs, loc)
-			case <-st.flushStop:
+			case <-s.shutdownCtx.Done():
 				return
 			}
 		}
@@ -643,7 +678,11 @@ func (s *Server) flusher(slabId uint16, st *slabState) {
 		err := unix.Fdatasync(st.writeFd)
 		if err != nil {
 			log.Printf("fdatasync error on slab %d: %v", slabId, err)
-			time.Sleep(10 * time.Second)
+			select {
+			case <-time.After(10 * time.Second):
+			case <-s.shutdownCtx.Done():
+				return
+			}
 			continue
 		}
 
@@ -662,7 +701,11 @@ func (s *Server) flusher(slabId uint16, st *slabState) {
 		})
 		if err != nil {
 			log.Println("present map record error:", err)
-			time.Sleep(10 * time.Second)
+			select {
+			case <-time.After(10 * time.Second):
+			case <-s.shutdownCtx.Done():
+				return
+			}
 			continue
 		}
 
@@ -679,6 +722,10 @@ func (s *Server) flusher(slabId uint16, st *slabState) {
 	}
 }
 
+func (s *Server) startFlusher(slabId uint16, st *slabState) {
+	s.shutdownWait.Go(func() { s.flusher(slabId, st) })
+}
+
 func (s *Server) markPresent(loc erofs.SlabLoc) {
 	s.presentMap.Put(loc, struct{}{})
 
@@ -686,7 +733,13 @@ func (s *Server) markPresent(loc erofs.SlabLoc) {
 	st := s.slabState[loc.SlabId]
 	s.stateLock.Unlock()
 
-	st.flushCh <- loc
+	if st == nil {
+		return
+	}
+	select {
+	case st.flushCh <- loc:
+	case <-s.shutdownCtx.Done():
+	}
 }
 
 func (s *Server) getChunkDiff(
@@ -893,7 +946,13 @@ func (s *Server) findRecentRead(reqHash Sph, path string) *recentRead {
 }
 
 func (s *Server) pruneRecentCaches() {
-	for range time.NewTicker(min(recentReadExpiry, remanifestCacheExpiry) / 2).C {
+	ticker := time.NewTicker(min(recentReadExpiry, remanifestCacheExpiry) / 2)
+	for {
+		select {
+		case <-ticker.C:
+		case <-s.shutdownCtx.Done():
+			return
+		}
 		s.diffLock.Lock()
 		now := time.Now()
 		maps.DeleteFunc(s.recentReads, func(key string, rr *recentRead) bool {
@@ -965,21 +1024,20 @@ func (s *Server) doRemanifestReqs(ctx context.Context, reqs []MountReq) error {
 	for _, req := range reqs {
 		eg.Go(func() error {
 			rr, ok := s.remanifestCache.GetOrPut(req.StorePath, &remanifestCacheEntry{
-				when: time.Now(),
-				done: make(chan struct{}),
+				opResult: newOpResult(),
+				when:     time.Now(),
 			})
 			if ok {
-				<-rr.done
-				if rr.err == nil {
+				err, ctxErr := rr.wait(eg)
+				if err == nil && ctxErr == nil {
 					success.Add(1)
 				}
-				return nil
+				return nil // don't cancel others
 			}
 
 			_, err := s.getManifestFromManifester(ctx, req.Upstream, req.StorePath, req.NarSize)
 
-			rr.err = err
-			close(rr.done)
+			rr.finish(err)
 			s.remanifestCache.WithValue(req.StorePath, func(rr *remanifestCacheEntry) { rr.when = time.Now() })
 
 			if err == nil {
@@ -993,14 +1051,7 @@ func (s *Server) doRemanifestReqs(ctx context.Context, reqs []MountReq) error {
 	if eg.Wait(); success.Load() == 0 {
 		return errors.New("no remanifest succeeded")
 	}
-	return nil
-}
-
-// single op
-
-func (op *singleOp) wait() error {
-	<-op.done
-	return op.err
+	return nil // at least one success, worth trying again
 }
 
 // subop
@@ -1034,13 +1085,6 @@ func (sop *subOp) appendString(w io.Writer) {
 		fmt.Fprintf(w, " | %s", sop.recompress[0])
 	}
 	fmt.Fprint(w, "]")
-}
-
-// diff op
-
-func (op *diffOp) wait() error {
-	<-op.done
-	return op.err
 }
 
 func (op *diffOp) anyHasBase() bool {
@@ -1145,7 +1189,7 @@ func (set *opSet) markUsing(dig cdig.CDig) {
 
 func (set *opSet) newOp() {
 	op := &diffOp{
-		done:     make(chan struct{}),
+		opResult: newOpResult(),
 		sops:     make([]subOp, 1),
 		usingSph: make(map[Sph]struct{}),
 		rrs:      set.rrs,

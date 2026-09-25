@@ -83,15 +83,16 @@ func (s *Server) runSocketServer(socketPath string, mux http.Handler) error {
 		return fmt.Errorf("failed to listen on unix socket %s: %w", socketPath, err)
 	}
 	_ = os.Chmod(socketPath, 0o777)
-	s.shutdownWait.Add(1)
-	go func() {
-		defer s.shutdownWait.Done()
-		srv := &http.Server{Handler: mux}
+	s.shutdownWait.Go(func() {
+		srv := &http.Server{
+			Handler:     mux,
+			BaseContext: func(net.Listener) context.Context { return s.shutdownCtx },
+		}
 		go srv.Serve(l)
-		<-s.shutdownChan
+		<-s.shutdownCtx.Done()
 		log.Printf("stopping http server")
 		srv.Close()
-	}()
+	})
 	return nil
 }
 

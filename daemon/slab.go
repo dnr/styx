@@ -1,8 +1,11 @@
 package daemon
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"log"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -11,8 +14,6 @@ import (
 	"github.com/anatol/devmapper.go"
 	"github.com/dnr/styx/erofs"
 	"go.etcd.io/bbolt"
-
-	// nbdclient "github.com/pojntfx/go-nbd/pkg/client"
 	"golang.org/x/sys/unix"
 )
 
@@ -37,10 +38,9 @@ type (
 		closing bool // protected by stateLock; excludes incomplete teardown from FD snapshots
 
 		// clone and file slabs:
-		readFd    int
-		writeFd   int
-		flushCh   chan erofs.SlabLoc
-		flushStop chan struct{}
+		readFd  int
+		writeFd int
+		flushCh chan erofs.SlabLoc
 
 		// clone slabs only:
 		size        int64
@@ -128,6 +128,10 @@ func (s *Server) setupSlab(slabId uint16) error {
 	s.serializeSlabOps.Lock()
 	defer s.serializeSlabOps.Unlock()
 
+	if err := context.Cause(s.shutdownCtx); err != nil {
+		return err
+	}
+
 	// recheck under serializeSlabOps
 	if s.getReadFd(slabId) >= 0 {
 		return nil
@@ -168,19 +172,14 @@ func (s *Server) setupFileSlab(slabId uint16) error {
 	// images are flushed immediately after writing, they don't need an async flusher
 	if slabId < imageSlabOffset {
 		st.flushCh = make(chan erofs.SlabLoc, slabFlushChBufferSize)
-		st.flushStop = make(chan struct{})
-		go s.flusher(slabId, st)
+		s.startFlusher(slabId, st)
 	}
 	s.publishSlabFdsLocked()
 	log.Println("set up file slab", slabId)
 	return nil
 }
 
-func (s *Server) teardownFileSlabLocked(st *slabState) error {
-	if st.flushStop != nil {
-		close(st.flushStop)
-		st.flushStop = nil
-	}
+func (s *Server) teardownFileSlab(st *slabState) error {
 	return unix.Close(st.writeFd)
 }
 
@@ -243,7 +242,7 @@ func (s *Server) setupCloneSlab(slabId uint16, slabBytes, regionBytes int64) (re
 	}
 
 	// setup dm-clone
-	clonePath, err := s.setupDm(
+	clonePath, err := s.setupDmLocked(
 		s.slabDmName(slabId),
 		0,
 		&devmapper.CloneTable{
@@ -272,7 +271,7 @@ func (s *Server) setupCloneSlab(slabId uint16, slabBytes, regionBytes int64) (re
 	defer s.stateLock.Unlock()
 
 	s.slabState[slabId] = st
-	go s.flusher(slabId, st)
+	s.startFlusher(slabId, st)
 	s.publishSlabFdsLocked()
 	close(ready)
 
@@ -280,18 +279,7 @@ func (s *Server) setupCloneSlab(slabId uint16, slabBytes, regionBytes int64) (re
 	return nil
 }
 
-func (s *Server) teardownCloneSlab(slabId uint16, st *slabState) error {
-	if st.flushStop != nil {
-		close(st.flushStop)
-		st.flushStop = nil
-	}
-
-	// write fd
-	if st.writeFd >= 0 {
-		unix.Close(st.writeFd)
-		st.writeFd = -1
-	}
-
+func (s *Server) teardownCloneSlab(slabId uint16, st *slabState) (retErr error) {
 	// dm-clone+loopbacks:
 	// We can't remove these completely because there are probably references (we're not
 	// unmounting everything). We could leave the clones suspended but then even cached reads
@@ -300,7 +288,7 @@ func (s *Server) teardownCloneSlab(slabId uint16, st *slabState) error {
 	// nbd
 	if st.nbdDev != nil {
 		if err := st.nbdDev.Close(); err != nil {
-			return err
+			retErr = errors.Join(retErr, err)
 		}
 		st.nbdDev = nil
 	}
@@ -308,9 +296,16 @@ func (s *Server) teardownCloneSlab(slabId uint16, st *slabState) error {
 	if st.nbdCancel != nil {
 		st.nbdCancel()
 		st.nbdCancel = nil
-		if err := st.nbdWait(); err != nil {
+		if err := st.nbdWait(); err != nil && !errors.Is(err, errServerStopped) {
 			log.Printf("error closing nbd loopback on slab %d: %v", slabId, err)
+			retErr = errors.Join(retErr, err)
 		}
+	}
+
+	// write fd
+	if st.writeFd >= 0 {
+		unix.Close(st.writeFd)
+		st.writeFd = -1
 	}
 
 	// read fd
@@ -319,42 +314,46 @@ func (s *Server) teardownCloneSlab(slabId uint16, st *slabState) error {
 		st.readFd = -1
 	}
 
-	return nil
+	return
 }
 
-func (s *Server) teardownSlabLocked(slabId uint16) error {
-	var err error
-	st, ok := s.slabState[slabId]
-	if !ok {
-		return nil
-	}
-
+func (s *Server) teardownSlab(slabId uint16, st *slabState) error {
 	// stop publishing fd before teardown
+	s.stateLock.Lock()
 	st.closing = true
 	s.publishSlabFdsLocked()
+	s.stateLock.Unlock()
 
 	switch st.tp {
 	case typeFileSlab:
-		err = s.teardownFileSlabLocked(st)
+		return s.teardownFileSlab(st)
 	case typeCloneSlab:
-		err = s.teardownCloneSlab(slabId, st)
+		return s.teardownCloneSlab(slabId, st)
+	default:
+		return errors.New("invalid type")
 	}
-	if err != nil {
-		return err
-	}
-	delete(s.slabState, slabId)
-	return nil
 }
 
 func (s *Server) teardownSlabs() {
-	s.stateLock.Lock()
-	defer s.stateLock.Unlock()
+	// serialize with slab setup but release stateLock: reads can call markPresent,
+	// which needs stateLock
+	s.serializeSlabOps.Lock()
+	defer s.serializeSlabOps.Unlock()
 
-	for slabId := range s.slabState {
-		err := s.teardownSlabLocked(slabId)
-		if err != nil {
+	s.stateLock.Lock()
+	states := maps.Clone(s.slabState)
+	s.stateLock.Unlock()
+
+	for slabId, st := range states {
+		if err := s.teardownSlab(slabId, st); err != nil {
 			log.Printf("error tearing down slab %d: %v", slabId, err)
 		}
+
+		s.stateLock.Lock()
+		if s.slabState[slabId] == st {
+			delete(s.slabState, slabId)
+		}
+		s.stateLock.Unlock()
 	}
 }
 
@@ -369,7 +368,10 @@ func (s *Server) markForUdev(dev string) func() {
 	}
 	return func() {
 		go func() {
-			time.Sleep(10 * time.Second)
+			select {
+			case <-time.After(10 * time.Second):
+			case <-s.shutdownCtx.Done():
+			}
 			_ = os.Remove(marker)
 		}()
 	}

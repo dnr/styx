@@ -17,13 +17,14 @@ type (
 	nbdSlabBackend struct {
 		s      *Server
 		slabId uint16
+		ctx    context.Context
 		ready  <-chan struct{}
 	}
 )
 
 func (s *Server) nbdConnect(slabId uint16, ready <-chan struct{}) (*os.File, func(), func() error, error) {
-	ctx, cancel := context.WithCancel(context.Background())
-	d := &nbdSlabBackend{s: s, slabId: slabId, ready: ready}
+	ctx, cancel := context.WithCancel(s.shutdownCtx)
+	d := &nbdSlabBackend{s: s, slabId: slabId, ctx: ctx, ready: ready}
 	opts := nbd.LoopbackOpts{
 		ReadOnly:   true,
 		MultiConns: s.cfg.NbdConnsPerSlab,
@@ -66,11 +67,14 @@ func (b *nbdSlabBackend) ReadAt(p []byte, off int64) (int, error) {
 		return len(p), nil
 	}
 
-	<-b.ready
+	select {
+	case <-b.ready:
+	case <-b.ctx.Done():
+		return 0, context.Cause(b.ctx)
+	}
 
-	ctx := context.Background()
 	err := b.s.handleReadSlab(
-		ctx,
+		b.ctx,
 		b.slabId,
 		p,
 		uint64(off),

@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log"
@@ -80,7 +81,10 @@ type (
 
 		remanifestCache common.SimpleSyncMap[string, *remanifestCacheEntry]
 
-		shutdownChan chan struct{}
+		shutdownCtx    context.Context
+		shutdownCancel context.CancelCauseFunc
+		// most goroutines are started in this waitgroup so we can
+		// wait for them all on shutdown
 		shutdownWait sync.WaitGroup
 	}
 
@@ -123,6 +127,7 @@ var errAlreadyMountedElsewhere = errors.New("already mounted on another mountpoi
 // init stuff
 
 func NewServer(cfg Config) *Server {
+	shutdownCtx, shutdownCancel := context.WithCancelCause(context.Background())
 	return &Server{
 		cfg:             &cfg,
 		blockShift:      shift.Shift(cfg.ErofsBlockShift),
@@ -136,7 +141,8 @@ func NewServer(cfg Config) *Server {
 		recentReads:     make(map[string]*recentRead),
 		diffSem:         semaphore.NewWeighted(int64(cfg.RequestConcurrency)),
 		remanifestCache: *common.NewSimpleSyncMap[string, *remanifestCacheEntry](),
-		shutdownChan:    make(chan struct{}),
+		shutdownCtx:     shutdownCtx,
+		shutdownCancel:  shutdownCancel,
 	}
 }
 
@@ -226,7 +232,7 @@ func (s *Server) Start() error {
 		return err
 	}
 
-	go s.pruneRecentCaches()
+	s.shutdownWait.Go(s.pruneRecentCaches)
 
 	s.restoreMounts()
 
@@ -239,7 +245,14 @@ func (s *Server) Start() error {
 // state, it dies and lets systemd keep the nbd socket open.
 func (s *Server) Stop() {
 	log.Print("stopping daemon...")
-	close(s.shutdownChan)
+	s.shutdownCancel(errServerStopped)
+	// grab this to ensure no new diffs will start
+	s.diffLock.Lock()
+	s.diffLock.Unlock()
+	// also grab this to ensure any slab setup is done before we wait
+	s.serializeSlabOps.Lock()
+	s.serializeSlabOps.Unlock()
+	s.shutdownWait.Wait()
 
 	s.teardownSlabs()
 	s.db.Close()
