@@ -10,9 +10,9 @@ import (
 
 	"github.com/dnr/styx/common"
 	"github.com/dnr/styx/common/cdig"
-	"github.com/dnr/styx/common/errgroup"
 	"github.com/dnr/styx/common/shift"
 	"github.com/dnr/styx/erofs"
+	"github.com/dnr/styx/forked/golang.org/x/sync/errgroup"
 	"go.etcd.io/bbolt"
 	"golang.org/x/sys/unix"
 )
