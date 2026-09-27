@@ -57,6 +57,7 @@ type (
 
 		stateLock sync.Mutex
 		slabState map[uint16]*slabState
+		slabFds   atomic.Pointer[slabFdTable]
 
 		serializeSlabOps sync.Mutex
 
