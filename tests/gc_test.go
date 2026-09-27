@@ -1,10 +1,8 @@
 package tests
 
 import (
-	"fmt"
 	"math/rand"
 	"os"
-	"path/filepath"
 	"testing"
 
 	"github.com/dnr/styx/daemon"
@@ -36,14 +34,21 @@ func TestGc(t *testing.T) {
 	tb.umount("qa22bifihaxyvn6q2a6w9m0nklqrk9wh")
 	tb.umount("xd96wmj058ky40aywv72z63vdw9yzzzb")
 
-	images := tb.debug(daemon.DebugReq{IncludeAllImages: true}).Images
+	debug := tb.debug(daemon.DebugReq{IncludeAllImages: true, IncludeSlabs: true})
+	images := debug.Images
+	slabBackingStores := make(map[uint32]string, len(debug.Slabs))
+	for _, slab := range debug.Slabs {
+		slabBackingStores[uint32(slab.Index)] = slab.BackingStore
+	}
 	imageFiles := make(map[uint32]*os.File)
 	imageData := make(map[string][]byte)
 	var imagePunchBytes int64
 	for sp, di := range images {
 		img := di.Image
 		if imageFiles[img.ImageSlabId] == nil {
-			f, err := os.Open(filepath.Join(tb.cachedir, "slabs", fmt.Sprintf("slab%ddata", img.ImageSlabId)))
+			backingStore := slabBackingStores[img.ImageSlabId]
+			require.NotEmpty(t, backingStore, "missing backing store for image slab %d", img.ImageSlabId)
+			f, err := os.Open(backingStore)
 			require.NoError(t, err)
 			t.Cleanup(func() { f.Close() })
 			imageFiles[img.ImageSlabId] = f
@@ -91,11 +96,7 @@ func TestGc(t *testing.T) {
 		if img.MountState == pb.MountState_Unmounted {
 			require.Equal(t, make([]byte, len(buf)), buf)
 			// verify it's really a hole
-			next, err := unix.Seek(int(imageFile.Fd()), offset, unix.SEEK_DATA)
-			if err != unix.ENXIO {
-				require.NoError(t, err)
-				require.GreaterOrEqual(t, next, offset+int64(len(buf)))
-			}
+			requireFileHole(t, imageFile, offset, int64(len(buf)))
 		} else {
 			require.Equal(t, imageData[sp], buf, "GC changed retained image %s", sp)
 		}
