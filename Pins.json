@@ -1,6 +1,6 @@
 {
   "$doc": "This file contains Nix pins using the 'spin' styx-based pinning tool. See https://github.com/dnr/styx/tree/main/cmd/spin",
-  "$schema": "TODO",
+  "$schema": "https://raw.githubusercontent.com/dnr/styx/main/cmd/spin/Pins.schema.json",
   "$storeDir": "/nix/store",
   "$version": "spin-1",
   "pins": [
