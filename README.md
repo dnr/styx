@@ -532,7 +532,7 @@ chunk store, manifester, and differ may make a lot of sense.
 ## How to use it
 
 Styx currently requires a patched Nix binary. Patches are currently available
-for Nix 2.18, 2.24, and 2.28. (More coming soon!)
+for Nix 2.18, 2.24, 2.28, and 2.34. (Ask if you need another version.)
 
 You can use the Styx binary cache to get these patched binaries without
 rebuilding.
