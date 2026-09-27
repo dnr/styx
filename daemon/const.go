@@ -6,7 +6,6 @@ const (
 	compactFile = "COMPACT"
 
 	slabSubdir = "slabs"
-	imageSlab  = "images"
 
 	isManifestPrefix = "M/"
 
@@ -29,6 +28,4 @@ var (
 
 	metaSchema = []byte("schema")
 	metaParams = []byte("params")
-
-	metaImageOffset = []byte("imageOffset") // value uint32 blocks
 )

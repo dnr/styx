@@ -90,6 +90,7 @@ func (s *Server) handleGcReq(ctx context.Context, r *GcReq) (*GcResp, error) {
 
 	// find images to delete
 	var delImages, delCatalogF, delCatalogR [][]byte
+	var delImageLocs []locWithEnd
 	for k, v := ibcur.First(); k != nil; k, v = ibcur.Next() {
 		if _, ok := g.keepImage[string(k)]; ok {
 			continue
@@ -101,7 +102,17 @@ func (s *Server) handleGcReq(ctx context.Context, r *GcReq) (*GcResp, error) {
 		var spName string
 		if proto.Unmarshal(v, &img) != nil {
 			continue
-		} else if sph, spName, err = ParseSph(img.StorePath); err != nil || spName == "" {
+		}
+		if img.ImageBlockStart > 0 && img.ImageBlockLength > 0 {
+			delImageLocs = append(delImageLocs, locWithEnd{
+				SlabLoc: erofs.SlabLoc{
+					SlabId: common.TruncU16(img.ImageSlabId),
+					Addr:   common.TruncU32(img.ImageBlockStart),
+				},
+				end: common.TruncU32(img.ImageBlockStart + img.ImageBlockLength),
+			})
+		}
+		if sph, spName, err = ParseSph(img.StorePath); err != nil || spName == "" {
 			continue
 		}
 		fkey := bytes.Join([][]byte{[]byte(spName), []byte{0}, sph[:]}, nil)
@@ -195,6 +206,13 @@ func (s *Server) handleGcReq(ctx context.Context, r *GcReq) (*GcResp, error) {
 	if err != nil {
 		return nil, err
 	}
+	// add punches for erofs images
+	for _, l := range delImageLocs {
+		if err := gcb.Put(punchKey(l.SlabId, l.Addr, l.end), nil); err != nil {
+			return nil, err
+		}
+	}
+	// add punches for other slabs
 	var lastEnd uint32
 	for _, l := range delLocs {
 		lsb := lastBucket

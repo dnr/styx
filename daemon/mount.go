@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"path/filepath"
@@ -23,7 +24,8 @@ import (
 func (s *Server) tryMount(ctx context.Context, req *MountReq) error {
 	_, sphStr, _ := ParseSph(req.StorePath)
 
-	var imgBlkOff, imgBlocks uint32
+	var imgLoc erofs.SlabLoc
+	var imgBlocks uint32
 
 	err := s.db.View(func(tx *bbolt.Tx) error {
 		var img pb.DbImage
@@ -32,7 +34,10 @@ func (s *Server) tryMount(ctx context.Context, req *MountReq) error {
 		} else if err := proto.Unmarshal(buf, &img); err != nil {
 			return err
 		}
-		imgBlkOff = common.TruncU32(img.ImageBlockStart)
+		imgLoc = erofs.SlabLoc{
+			SlabId: common.TruncU16(img.ImageSlabId),
+			Addr:   common.TruncU32(img.ImageBlockStart),
+		}
 		imgBlocks = common.TruncU32(img.ImageBlockLength)
 		return nil
 	})
@@ -41,12 +46,18 @@ func (s *Server) tryMount(ctx context.Context, req *MountReq) error {
 	}
 
 	var imagePrefix []byte
-	if imgBlkOff > 0 && imgBlocks > 0 {
+	if imgLoc.Addr > 0 && imgBlocks > 0 {
 		// we have it already, read first block out of the image slab
+		if err := s.setupSlab(imgLoc.SlabId); err != nil {
+			return err
+		}
 		imagePrefix = make([]byte, 4096)
-		_, err = s.imageSlabF.ReadAt(imagePrefix, int64(imgBlkOff)<<s.blockShift)
+		n, err := unix.Pread(s.getReadFd(imgLoc.SlabId), imagePrefix, int64(imgLoc.Addr)<<s.blockShift)
 		if err != nil {
 			return err
+		}
+		if n != len(imagePrefix) {
+			return io.ErrUnexpectedEOF
 		}
 	} else {
 		// if no image yet, get the manifest and build it
@@ -60,22 +71,22 @@ func (s *Server) tryMount(ctx context.Context, req *MountReq) error {
 		}
 		imgBlocks = uint32(s.blockShift.Blocks(imgBytes))
 		// allocate and write to image slab
-		imgBlkOff, err = s.allocateImageSpace(imgBlocks)
+		imgLoc, err = s.allocateImageSpace(imgBlocks)
 		if err != nil {
 			return err
-		}
-		_, err = s.imageSlabF.WriteAt(image, int64(imgBlkOff)<<s.blockShift)
-		if err != nil {
+		} else if n, err := unix.Pwrite(s.getWriteFd(imgLoc.SlabId), image, int64(imgLoc.Addr)<<s.blockShift); err != nil {
 			return err
+		} else if n != len(image) {
+			return io.ErrShortWrite
 		}
 		// need to sync before this shows up in the dm-linear device (also good to do before we
 		// record the image has been written in the db).
-		err = unix.Fdatasync(int(s.imageSlabF.Fd()))
-		if err != nil {
+		if err = unix.Fdatasync(s.getWriteFd(imgLoc.SlabId)); err != nil {
 			return err
 		}
 		err = s.imageTx(sphStr, func(img *pb.DbImage) error {
-			img.ImageBlockStart = int64(imgBlkOff)
+			img.ImageSlabId = uint32(imgLoc.SlabId)
+			img.ImageBlockStart = int64(imgLoc.Addr)
 			img.ImageBlockLength = int64(imgBlocks)
 			return nil
 		})
@@ -102,14 +113,18 @@ func (s *Server) tryMount(ctx context.Context, req *MountReq) error {
 	opts := strings.Join(devs, ",")
 
 	// set up/reuse dm linear for image
+	lo, err := s.locache.findOrAttach(s.slabPath("data", imgLoc.SlabId))
+	if err != nil {
+		return err
+	}
 	dmPath, err := s.setupDm(
 		"styx-image-"+sphStr,
 		devmapper.ReadOnlyFlag,
 		&devmapper.LinearTable{
 			Start:         0,
 			Length:        uint64(imgBlocks) << s.blockShift,
-			BackendDevice: s.imageSlabLo.Path(),
-			BackendOffset: uint64(imgBlkOff) << s.blockShift,
+			BackendDevice: lo.Path(),
+			BackendOffset: uint64(imgLoc.Addr) << s.blockShift,
 		},
 	)
 	if err != nil {

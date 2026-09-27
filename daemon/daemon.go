@@ -9,7 +9,6 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/freddierice/go-losetup/v2"
 	"github.com/nix-community/go-nix/pkg/narinfo/signature"
 	"go.etcd.io/bbolt"
 	"golang.org/x/sync/semaphore"
@@ -42,6 +41,7 @@ const (
 	presentMask        = 1 << 31
 	reservedBlocks     = 16 // reserved at beginning and end of slab
 	manifestSlabOffset = 10000
+	imageSlabOffset    = 11000
 )
 
 type (
@@ -59,9 +59,6 @@ type (
 		slabState map[uint16]*slabState
 
 		serializeSlabOps sync.Mutex
-
-		imageSlabLo losetup.Device
-		imageSlabF  *os.File
 
 		// loopback device cache
 		locache *locache
@@ -216,32 +213,8 @@ func (s *Server) Start() error {
 
 	s.locache.init()
 
-	// TODO: get number of slabs from db and set them all up
-	numSlabs := uint16(1)
-
-	if s.ondemand() {
-		for slabId := range numSlabs {
-			// FIXME: region bytes config
-			if err := s.setupCloneSlab(slabId, slabBytes, 4096); err != nil {
-				return fmt.Errorf("error setting up clone slab %d: %w", slabId, err)
-			}
-		}
-	} else {
-		for slabId := range numSlabs {
-			if err := s.setupFileSlab(slabId); err != nil {
-				return fmt.Errorf("error setting up file slab %d: %w", slabId, err)
-			}
-		}
-	}
-
-	// manifest slab is always file
-	if err := s.setupFileSlab(manifestSlabOffset); err != nil {
-		return fmt.Errorf("error setting up manifest slab: %w", err)
-	}
-
-	// image slab
-	if err := s.setupImageSlab(); err != nil {
-		return fmt.Errorf("error setting up image slab: %w", err)
+	if err := s.setupKnownSlabs(); err != nil {
+		return err
 	}
 
 	if err := s.startSocketServer(); err != nil {
