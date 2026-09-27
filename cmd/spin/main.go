@@ -19,7 +19,7 @@ import (
 const (
 	spinVersion  = "spin-1"
 	doc          = "This file contains Nix pins using the 'spin' styx-based pinning tool. See https://github.com/dnr/styx/tree/main/cmd/spin"
-	schemaUrl    = "TODO"
+	schemaUrl    = "https://raw.githubusercontent.com/dnr/styx/main/cmd/spin/Pins.schema.json"
 	pinsJsonName = "Pins.json"
 	pinsNixName  = "Pins.nix"
 )
