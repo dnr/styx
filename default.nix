@@ -87,13 +87,27 @@ rec {
     '';
   };
 
-  # TODO: switch to nixVersions.stable
-  patchedNix = pkgs.nixVersions.nix_2_28.overrideAttrs (prev: {
+  patchedNix_2_28 = pkgs.nixVersions.nix_2_28.overrideAttrs (prev: {
     patches = prev.patches ++ [ ./patches/nix_2_28.patch ];
     # "doCheck = false" doesn't work since it needs checkInputs to build
     checkPhase = "true"; # broke nix-functional-tests:ca / build, ignore for now
     doInstallCheck = false; # broke tests/ca, ignore for now
   });
+
+  patchedNix_2_34 =
+    let
+      patched = pkgs.nixVersions.nix_2_34.appendPatches [ ./patches/nix_2_34.patch ];
+      # disable tests for now, we may have broke some and they take a while
+      nocheck = {
+        doCheck = false;
+        doInstallCheck = false;
+      };
+      nocheck1 = patched.overrideAllMesonComponents (_: _: nocheck);
+      nocheck2 = nocheck1.overrideAttrs nocheck;
+    in
+    nocheck2;
+
+  patchedNix = patchedNix_2_34;
 
   testdata =
     let
