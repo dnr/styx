@@ -634,15 +634,9 @@ I've also used LLMs for Linux reference, design conversations, tracking down tri
 
 # License
 
-GPL-2.0-only
+MPL-2.0
 
-Styx incorporates bits of code from Linux so it could be considered a derived
-work. Most of the code incorporated is either dual-licenced with Apache 2.0 or
-with the Linux syscall exception, so theoretically Styx would not have to use
-GPL-2.0, but that's the simplest option for now. If you're interested in using
-this code under different terms, let me know.
-
-## Exceptions:
+**Exceptions:**
 
 All the code under `forked` inherits its original licenses.
 
