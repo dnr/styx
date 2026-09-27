@@ -24,7 +24,7 @@ import (
 
 	"github.com/dnr/styx/common"
 	"github.com/dnr/styx/common/cdig"
-	"github.com/dnr/styx/common/errgroup"
+	"github.com/dnr/styx/forked/golang.org/x/sync/errgroup"
 	"github.com/dnr/styx/manifester"
 	"github.com/dnr/styx/pb"
 )
