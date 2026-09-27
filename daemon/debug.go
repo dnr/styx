@@ -115,6 +115,7 @@ func (s *Server) handleDebugReq(ctx context.Context, r *DebugReq) (*DebugResp, e
 					Index:         binary.BigEndian.Uint16(k),
 					ChunkSizeDist: make(map[int]int),
 				}
+				si.BackingStore = s.slabPath("data", si.Index)
 				scur := sb.Cursor()
 				for sk, sv := scur.First(); sk != nil; sk, sv = scur.Next() {
 					addr := addrFromKey(sk)

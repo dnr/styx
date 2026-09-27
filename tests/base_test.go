@@ -324,6 +324,16 @@ func (tb *testBase) dropCaches() {
 	unix.Close(fd)
 }
 
+func requireFileHole(t *testing.T, file *os.File, offset, length int64) {
+	t.Helper()
+	next, err := unix.Seek(int(file.Fd()), offset, unix.SEEK_DATA)
+	if err == unix.ENXIO {
+		return // no data after offset
+	}
+	require.NoError(t, err)
+	require.GreaterOrEqual(t, next, offset+length)
+}
+
 // implement systemd.FdStore
 func (tb *testBase) Ready() {}
 func (tb *testBase) GetFd(name string) (int, error) {

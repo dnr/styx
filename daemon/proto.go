@@ -135,6 +135,7 @@ type (
 	}
 	DebugSlabInfo struct {
 		Index         uint16
+		BackingStore  string
 		Stats         DebugSizeStats
 		ChunkSizeDist map[int]int
 	}
