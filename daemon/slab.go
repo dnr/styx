@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"slices"
 	"time"
 
 	"github.com/anatol/devmapper.go"
@@ -23,8 +24,17 @@ const slabFlushWait = 1 * time.Second
 const slabFlushMax = 1000
 
 type (
+	slabFds struct {
+		id, tp      uint16
+		read, write int32
+	}
+	// tables are read concurrently through an atomic.Pointer, they must be immutable.
+	// usage must be synchronized before shutdown.
+	slabFdTable []slabFds
+
 	slabState struct {
-		tp uint16
+		tp      uint16
+		closing bool // protected by stateLock; excludes incomplete teardown from FD snapshots
 
 		// clone and file slabs:
 		readFd    int
@@ -42,23 +52,36 @@ type (
 )
 
 func (s *Server) getReadFd(slabId uint16) int {
-	// TODO: remove locking overhead
-	s.stateLock.Lock()
-	defer s.stateLock.Unlock()
-	if st, ok := s.slabState[slabId]; ok {
-		return st.readFd
-	}
-	return -1
+	return int(s.slabFds.Load().find(slabId).read)
 }
 
 func (s *Server) getWriteFd(slabId uint16) int {
-	// TODO: remove locking overhead
-	s.stateLock.Lock()
-	defer s.stateLock.Unlock()
-	if st, ok := s.slabState[slabId]; ok {
-		return st.writeFd
+	return int(s.slabFds.Load().find(slabId).write)
+}
+
+func (t *slabFdTable) find(slabId uint16) slabFds {
+	if t != nil {
+		for _, fds := range *t {
+			if fds.id == slabId {
+				return fds
+			}
+		}
 	}
-	return -1
+	return slabFds{id: slabId, read: -1, write: -1}
+}
+
+// call with stateLock
+func (s *Server) publishSlabFdsLocked() {
+	table := make(slabFdTable, 0, len(s.slabState))
+	for id, st := range s.slabState {
+		fds := slabFds{id: id, tp: st.tp, read: int32(st.readFd), write: int32(st.writeFd)}
+		if st.closing {
+			fds.read, fds.write = -1, -1
+		}
+		table = append(table, fds)
+	}
+	slices.SortFunc(table, func(a, b slabFds) int { return int(a.id) - int(b.id) })
+	s.slabFds.Store(&table)
 }
 
 func (s *Server) slabPath(tp string, slabId uint16) string {
@@ -148,6 +171,7 @@ func (s *Server) setupFileSlab(slabId uint16) error {
 		st.flushStop = make(chan struct{})
 		go s.flusher(slabId, st)
 	}
+	s.publishSlabFdsLocked()
 	log.Println("set up file slab", slabId)
 	return nil
 }
@@ -248,6 +272,7 @@ func (s *Server) setupCloneSlab(slabId uint16, slabBytes, regionBytes int64) (re
 
 	s.slabState[slabId] = st
 	go s.flusher(slabId, st)
+	s.publishSlabFdsLocked()
 	log.Println("set up on-demand slab", slabId)
 	return nil
 }
@@ -300,6 +325,11 @@ func (s *Server) teardownSlabLocked(slabId uint16) error {
 	if !ok {
 		return nil
 	}
+
+	// stop publishing fd before teardown
+	st.closing = true
+	s.publishSlabFdsLocked()
+
 	switch st.tp {
 	case typeFileSlab:
 		err = s.teardownFileSlabLocked(st)

@@ -150,12 +150,7 @@ func (s *Server) materialize(dest string, m *pb.Manifest) error {
 	}
 
 	var cloneFailed atomic.Bool
-	s.stateLock.Lock()
-	readFds := make(map[uint16]int)
-	for slabId, st := range s.slabState {
-		readFds[slabId] = int(st.readFd)
-	}
-	s.stateLock.Unlock()
+	fds := s.slabFds.Load()
 
 	// create all directories first
 	for _, ent := range ents {
@@ -188,7 +183,7 @@ func (s *Server) materialize(dest string, m *pb.Manifest) error {
 			case pb.EntryType_DIRECTORY:
 				return nil // done above
 			case pb.EntryType_REGULAR:
-				return s.materializeFile(p, ent, locs, readFds, &cloneFailed)
+				return s.materializeFile(p, ent, locs, fds, &cloneFailed)
 			case pb.EntryType_SYMLINK:
 				if i == 0 {
 					return errors.New("bare file can't be symlink")
@@ -216,7 +211,7 @@ func (s *Server) materializeFile(
 	path string,
 	ent *pb.Entry,
 	locs map[cdig.CDig]erofs.SlabLoc,
-	readFds map[uint16]int,
+	fds *slabFdTable,
 	cloneFailed *atomic.Bool,
 ) (retErr error) {
 	var dst *os.File
@@ -246,7 +241,7 @@ tryAgain:
 		loc := locs[dig]
 		size := cshift.FileChunkSize(ent.Size, i == len(digs)-1)
 		if !cloneFailed.Load() {
-			if cfd := readFds[loc.SlabId]; cfd > 0 {
+			if cfd := int(fds.find(loc.SlabId).read); cfd >= 0 {
 				sizeUp := int(s.blockShift.Roundup(size))
 				roundedUp = sizeUp != int(size)
 				roff := int64(loc.Addr) << s.blockShift

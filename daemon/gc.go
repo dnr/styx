@@ -300,29 +300,10 @@ func (s *Server) handleGcReq(ctx context.Context, r *GcReq) (*GcResp, error) {
 
 	if len(punchLocs) > 0 {
 		// actually punch holes
-		s.stateLock.Lock()
-		type punchFd struct {
-			fd int
-			tp uint16
-		}
-		punchFds := make(map[uint16]punchFd)
-		for id, st := range s.slabState {
-			if st.writeFd > 0 {
-				if dfd, err := unix.Dup(st.writeFd); err == nil {
-					punchFds[id] = punchFd{fd: dfd, tp: st.tp}
-				}
-			}
-		}
-		s.stateLock.Unlock()
-
-		defer func() {
-			for _, pfd := range punchFds {
-				unix.Close(pfd.fd)
-			}
-		}()
+		punchFds := s.slabFds.Load()
 
 		for i, le := range punchLocs {
-			if pfd, ok := punchFds[le.SlabId]; ok {
+			if pfd := punchFds.find(le.SlabId); pfd.write >= 0 {
 				offset := int64(le.Addr) << s.blockShift
 				length := int64(le.end-le.Addr) << s.blockShift
 				var op string
@@ -331,7 +312,7 @@ func (s *Server) handleGcReq(ctx context.Context, r *GcReq) (*GcResp, error) {
 				case typeFileSlab:
 					op = "fallocate punch"
 					err = unix.Fallocate(
-						pfd.fd,
+						int(pfd.write),
 						unix.FALLOC_FL_PUNCH_HOLE|unix.FALLOC_FL_KEEP_SIZE,
 						offset,
 						length,
@@ -341,7 +322,7 @@ func (s *Server) handleGcReq(ctx context.Context, r *GcReq) (*GcResp, error) {
 					rng := [2]uint64{uint64(offset), uint64(length)}
 					_, _, errno := unix.Syscall(
 						unix.SYS_IOCTL,
-						uintptr(pfd.fd),
+						uintptr(pfd.write),
 						uintptr(unix.BLKDISCARD),
 						uintptr(unsafe.Pointer(&rng[0])),
 					)
@@ -354,7 +335,7 @@ func (s *Server) handleGcReq(ctx context.Context, r *GcReq) (*GcResp, error) {
 				}
 				if err != nil {
 					log.Printf("%s error (slab %d as fd %d, %d-%d): %s",
-						op, le.SlabId, pfd.fd, le.Addr, le.end, err,
+						op, le.SlabId, pfd.write, le.Addr, le.end, err,
 					)
 				}
 				punchLocs[i].ok = err == nil
