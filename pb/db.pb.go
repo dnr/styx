@@ -100,8 +100,9 @@ type DbImage struct {
 	MountPoint     string     `protobuf:"bytes,6,opt,name=mount_point,json=mountPoint,proto3" json:"mount_point,omitempty"`
 	LastMountError string     `protobuf:"bytes,7,opt,name=last_mount_error,json=lastMountError,proto3" json:"last_mount_error,omitempty"`
 	// erofs image location
-	ImageBlockStart  int64 `protobuf:"varint,12,opt,name=image_block_start,json=imageBlockStart,proto3" json:"image_block_start,omitempty"`
-	ImageBlockLength int64 `protobuf:"varint,13,opt,name=image_block_length,json=imageBlockLength,proto3" json:"image_block_length,omitempty"`
+	ImageBlockStart  int64  `protobuf:"varint,12,opt,name=image_block_start,json=imageBlockStart,proto3" json:"image_block_start,omitempty"`
+	ImageBlockLength int64  `protobuf:"varint,13,opt,name=image_block_length,json=imageBlockLength,proto3" json:"image_block_length,omitempty"`
+	ImageSlabId      uint32 `protobuf:"varint,14,opt,name=image_slab_id,json=imageSlabId,proto3" json:"image_slab_id,omitempty"`
 	// nar size, if known
 	NarSize       int64 `protobuf:"varint,11,opt,name=nar_size,json=narSize,proto3" json:"nar_size,omitempty"`
 	unknownFields protoimpl.UnknownFields
@@ -190,6 +191,13 @@ func (x *DbImage) GetImageBlockStart() int64 {
 func (x *DbImage) GetImageBlockLength() int64 {
 	if x != nil {
 		return x.ImageBlockLength
+	}
+	return 0
+}
+
+func (x *DbImage) GetImageSlabId() uint32 {
+	if x != nil {
+		return x.ImageSlabId
 	}
 	return 0
 }
@@ -320,7 +328,7 @@ var File_db_proto protoreflect.FileDescriptor
 
 const file_db_proto_rawDesc = "" +
 	"\n" +
-	"\bdb.proto\x12\x02pb\x1a\fparams.proto\"\xee\x02\n" +
+	"\bdb.proto\x12\x02pb\x1a\fparams.proto\"\x92\x03\n" +
 	"\aDbImage\x12\x1d\n" +
 	"\n" +
 	"store_path\x18\x02 \x01(\tR\tstorePath\x12\x1a\n" +
@@ -332,7 +340,8 @@ const file_db_proto_rawDesc = "" +
 	"mountPoint\x12(\n" +
 	"\x10last_mount_error\x18\a \x01(\tR\x0elastMountError\x12*\n" +
 	"\x11image_block_start\x18\f \x01(\x03R\x0fimageBlockStart\x12,\n" +
-	"\x12image_block_length\x18\r \x01(\x03R\x10imageBlockLength\x12\x19\n" +
+	"\x12image_block_length\x18\r \x01(\x03R\x10imageBlockLength\x12\"\n" +
+	"\rimage_slab_id\x18\x0e \x01(\rR\vimageSlabId\x12\x19\n" +
 	"\bnar_size\x18\v \x01(\x03R\anarSizeJ\x04\b\x01\x10\x02J\x04\b\b\x10\v\"L\n" +
 	"\bDbParams\x12(\n" +
 	"\x06params\x18\x01 \x01(\v2\x10.pb.DaemonParamsR\x06params\x12\x16\n" +

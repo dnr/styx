@@ -24,6 +24,10 @@ func slabKey(slabId uint16) []byte {
 	return b
 }
 
+func slabFromKey(b []byte) uint16 {
+	return binary.BigEndian.Uint16(b)
+}
+
 // addr -> key in buckets in slabBucket
 func addrKey(addr uint32) []byte {
 	b := make([]byte, 4)

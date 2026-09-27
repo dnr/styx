@@ -1,7 +1,10 @@
 package tests
 
 import (
+	"fmt"
 	"math/rand"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/dnr/styx/daemon"
@@ -23,7 +26,7 @@ func TestGc(t *testing.T) {
 	mp2 := tb.mount("qa22bifihaxyvn6q2a6w9m0nklqrk9wh-opusfile-0.12")
 	tb.nixHash(mp2)
 	mp3 := tb.mount("8vyj9c6g424mz0v3kvzkskhvzhwj6288-bash-interactive-5.2-p15-man")
-	tb.nixHash(mp3)
+	hash3 := tb.nixHash(mp3)
 	mp4 := tb.mount("xd96wmj058ky40aywv72z63vdw9yzzzb-openssl-3.0.12-man")
 	tb.nixHash(mp4)
 	mp5 := tb.mount("3a7xq2qhxw2r7naqmc53akmx7yvz0mkf-less-is-more.patch")
@@ -32,6 +35,27 @@ func TestGc(t *testing.T) {
 	// unmount 2 and 4
 	tb.umount("qa22bifihaxyvn6q2a6w9m0nklqrk9wh")
 	tb.umount("xd96wmj058ky40aywv72z63vdw9yzzzb")
+
+	images := tb.debug(daemon.DebugReq{IncludeAllImages: true}).Images
+	imageFiles := make(map[uint32]*os.File)
+	imageData := make(map[string][]byte)
+	var imagePunchBytes int64
+	for sp, di := range images {
+		img := di.Image
+		if imageFiles[img.ImageSlabId] == nil {
+			f, err := os.Open(filepath.Join(tb.cachedir, "slabs", fmt.Sprintf("slab%ddata", img.ImageSlabId)))
+			require.NoError(t, err)
+			t.Cleanup(func() { f.Close() })
+			imageFiles[img.ImageSlabId] = f
+		}
+		buf := make([]byte, img.ImageBlockLength<<blockShift)
+		_, err := imageFiles[img.ImageSlabId].ReadAt(buf, img.ImageBlockStart<<blockShift)
+		require.NoError(t, err)
+		imageData[sp] = buf
+		if img.MountState == pb.MountState_Unmounted {
+			imagePunchBytes += int64(len(buf))
+		}
+	}
 
 	gc1 := tb.gc(daemon.GcReq{DryRunFast: true, GcByState: gcUnmounted})
 	t.Log("gc1:", gc1)
@@ -44,12 +68,39 @@ func TestGc(t *testing.T) {
 
 	gc2 := tb.gc(daemon.GcReq{DryRunSlow: true, GcByState: gcUnmounted})
 	t.Log("gc2:", gc2)
-	require.Equal(t, 3, gc2.PunchLocs)
-	require.Equal(t, int64(4239360), gc2.PunchBytes)
+	require.Equal(t, 5, gc2.PunchLocs)
+	require.Equal(t, int64(4239360)+imagePunchBytes, gc2.PunchBytes)
+	for sp, di := range images {
+		buf := make([]byte, len(imageData[sp]))
+		_, err := imageFiles[di.Image.ImageSlabId].ReadAt(buf, di.Image.ImageBlockStart<<blockShift)
+		require.NoError(t, err)
+		require.Equal(t, imageData[sp], buf, "dry run changed image %s", sp)
+	}
 
 	gc3 := tb.gc(daemon.GcReq{GcByState: gcUnmounted})
 	t.Log("gc3:", gc3)
-	require.Equal(t, int64(4239360), gc3.PunchBytes)
+	require.Equal(t, gc2.PunchLocs, gc3.PunchLocs)
+	require.Equal(t, gc2.PunchBytes, gc3.PunchBytes)
+	for sp, di := range images {
+		img := di.Image
+		imageFile := imageFiles[img.ImageSlabId]
+		offset := img.ImageBlockStart << blockShift
+		buf := make([]byte, len(imageData[sp]))
+		_, err := imageFile.ReadAt(buf, offset)
+		require.NoError(t, err)
+		if img.MountState == pb.MountState_Unmounted {
+			require.Equal(t, make([]byte, len(buf)), buf)
+			// verify it's really a hole
+			next, err := unix.Seek(int(imageFile.Fd()), offset, unix.SEEK_DATA)
+			if err != unix.ENXIO {
+				require.NoError(t, err)
+				require.GreaterOrEqual(t, next, offset+int64(len(buf)))
+			}
+		} else {
+			require.Equal(t, imageData[sp], buf, "GC changed retained image %s", sp)
+		}
+	}
+	require.Zero(t, tb.gc(daemon.GcReq{GcByState: gcUnmounted}).PunchLocs)
 
 	tb.dropCaches()
 
@@ -60,6 +111,15 @@ func TestGc(t *testing.T) {
 	tb.nixHash(mp5)
 	d2 := tb.debug()
 	require.Zero(t, d2.Stats.Sub(d1.Stats).TotalReqs())
+
+	// a gc'd image can be rebuilt and mounted again
+	mp2 = tb.mount("qa22bifihaxyvn6q2a6w9m0nklqrk9wh-opusfile-0.12")
+	require.Equal(t, "1rswindywkyq2jmfpxd6n772jii3z5xz6ypfbb63c17k5il39hfm", tb.nixHash(mp2))
+
+	// a retained image can be remounted using its saved image
+	tb.umount("8vyj9c6g424mz0v3kvzkskhvzhwj6288")
+	mp3 = tb.mount("8vyj9c6g424mz0v3kvzkskhvzhwj6288-bash-interactive-5.2-p15-man")
+	require.Equal(t, hash3, tb.nixHash(mp3))
 }
 
 // randomized test

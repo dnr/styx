@@ -9,6 +9,7 @@ import (
 
 	"github.com/anatol/devmapper.go"
 	"github.com/dnr/styx/erofs"
+	"go.etcd.io/bbolt"
 
 	// nbdclient "github.com/pojntfx/go-nbd/pkg/client"
 	"golang.org/x/sys/unix"
@@ -68,26 +69,85 @@ func (s *Server) slabDmName(slabId uint16) string {
 	return fmt.Sprintf("styx-slab-%d", slabId)
 }
 
+func (s *Server) setupKnownSlabs() error {
+	locs := []erofs.SlabLoc{
+		{SlabId: 0},
+		{SlabId: manifestSlabOffset},
+		{SlabId: imageSlabOffset},
+	}
+	if err := s.db.View(func(tx *bbolt.Tx) error {
+		return tx.Bucket(slabBucket).ForEach(func(k, _ []byte) error {
+			locs = append(locs, erofs.SlabLoc{SlabId: slabFromKey(k)})
+			return nil
+		})
+	}); err != nil {
+		return err
+	}
+	return s.setupAllocatedSlabs(locs)
+}
+
+func (s *Server) setupAllocatedSlabs(locs []erofs.SlabLoc) error {
+	for i, loc := range locs {
+		if i == 0 || loc.SlabId != locs[i-1].SlabId {
+			if err := s.setupSlab(loc.SlabId); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func (s *Server) setupSlab(slabId uint16) error {
+	if s.getReadFd(slabId) >= 0 {
+		return nil
+	}
+
+	s.serializeSlabOps.Lock()
+	defer s.serializeSlabOps.Unlock()
+
+	// recheck under serializeSlabOps
+	if s.getReadFd(slabId) >= 0 {
+		return nil
+	}
+	if slabId < manifestSlabOffset && s.ondemand() {
+		// FIXME: region bytes config
+		if err := s.setupCloneSlab(slabId, slabBytes, 4096); err != nil {
+			return fmt.Errorf("error setting up clone slab %d: %w", slabId, err)
+		}
+	} else if err := s.setupFileSlab(slabId); err != nil {
+		return fmt.Errorf("error setting up file slab %d: %w", slabId, err)
+	}
+	return nil
+}
+
 func (s *Server) setupFileSlab(slabId uint16) error {
+	s.stateLock.Lock()
+	defer s.stateLock.Unlock()
+	if _, ok := s.slabState[slabId]; ok {
+		return nil
+	}
+
 	dataName := s.slabPath("data", slabId)
+	if slabId >= imageSlabOffset {
+		// image slabs are exposed through loopback so need a fixed size upfront
+		if err := ensureRegularFileSize(dataName, slabBytes); err != nil {
+			return err
+		}
+	}
 	fd, err := unix.Open(dataName, unix.O_RDWR|unix.O_CREAT, 0o600)
 	if err != nil {
 		return err
 	}
 
-	st := &slabState{
-		tp:        typeFileSlab,
-		writeFd:   fd,
-		readFd:    fd,
-		flushCh:   make(chan erofs.SlabLoc, slabFlushChBufferSize),
-		flushStop: make(chan struct{}),
-	}
-
-	s.stateLock.Lock()
-	defer s.stateLock.Unlock()
+	st := &slabState{tp: typeFileSlab, writeFd: fd, readFd: fd}
 
 	s.slabState[slabId] = st
-	go s.flusher(slabId, st)
+	// images are flushed immediately after writing, they don't need an async flusher
+	if slabId < imageSlabOffset {
+		st.flushCh = make(chan erofs.SlabLoc, slabFlushChBufferSize)
+		st.flushStop = make(chan struct{})
+		go s.flusher(slabId, st)
+	}
 	log.Println("set up file slab", slabId)
 	return nil
 }
@@ -101,10 +161,6 @@ func (s *Server) teardownFileSlabLocked(st *slabState) error {
 }
 
 func (s *Server) setupCloneSlab(slabId uint16, slabBytes, regionBytes int64) (retErr error) {
-	// serialize to avoid races with nbd device setup
-	s.serializeSlabOps.Lock()
-	defer s.serializeSlabOps.Unlock()
-
 	st := &slabState{
 		tp:      typeCloneSlab,
 		size:    slabBytes,

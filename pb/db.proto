@@ -18,7 +18,8 @@ enum MountState {
 
 // key: "slab" / <u16 BE slabid> / <u32 BE block address>
 // value: <u16 LE chunk length in blocks> <hash bits of digest>
-// bucket sequence holds next chunk
+// bucket sequence holds next free offset (also used by image slabs, though they
+// don't have any other values)
 
 // key: "slab" / <u16 BE slabid> / <u32 BE 0x80000000 | block address> (high bit set)
 // value: empty
@@ -45,6 +46,7 @@ message DbImage {
   // erofs image location
   int64 image_block_start = 12;
   int64 image_block_length = 13;
+  uint32 image_slab_id = 14;
 
   // nar size, if known
   int64 nar_size = 11;
