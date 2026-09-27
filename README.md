@@ -531,63 +531,181 @@ chunk store, manifester, and differ may make a lot of sense.
 
 ## How to use it
 
-Styx currently requires a patched Nix binary. Patches are currently available
-for Nix 2.18, 2.24, 2.28, and 2.34. (Ask if you need another version.)
+There's a NixOS module to set up the Styx daemon and dependencies.
 
-You can use the Styx binary cache to get these patched binaries without
-rebuilding.
+There's an easy interactive VM to play with it quickly, or you can import the
+module in your NixOS configuration.
+
+Styx currently requires a patched Nix binary. Patches are currently available
+for Nix 2.18, 2.24, 2.28, and 2.34. (Ask if you need another version.) By
+default, 2.34 will be used.
+
+You can use the Styx binary cache to get the patched Nix without rebuilding. Set
+`services.styx.enableStyxNixCache = true;` to enable it and trust its signing
+key. The rest of Styx is in Go and builds pretty quickly.
+
+### With flakes
+
+There's a flake if you use flakes.
+
+
+#### Start an interactive VM
+
+*This VM uses services in my AWS account. I may turn them off or break them at
+any time.*
+
+```sh
+# from a checkout:
+nix run .#vm
+
+# from anywhere:
+nix run github:dnr/styx/release#vm
+
+# use other root filesystems:
+nix run .#vm-btrfs
+nix run .#vm-xfs
+```
+
+The VM logs in as root on the console and initializes Styx automatically.
+The Styx binary cache is enabled.
+It shares a pinned nixpkgs on `/tmp/nixpkgs`, sets `NIX_PATH`, and shares the
+Styx source on `/tmp/styxsrc`. Styx substitutes all packages ≥ 32KiB; try
+`nix-shell -p ...`. Shut down with `poweroff`.
+
+By default this keeps the disk in a file in the current directory (`styx-vm-ext4.qcow2`).
+Remove it start again, or set `NIX_DISK_IMAGE` to choose another location.
+The VMs are set to use 4 GiB of RAM so Nix evaluation doesn't run out of memory.
+
+
+#### Run the test suite in a VM
+
+From a checkout, run the ext4, btrfs, and XFS suites with `nix flake check -L`,
+or select one (replace `x86_64-linux` with `aarch64-linux` on ARM):
+
+```sh
+nix build -L .#checks.x86_64-linux.ext4
+nix build -L .#checks.x86_64-linux.btrfs
+nix build -L .#checks.x86_64-linux.xfs
+```
+
+
+#### Use it in your system configuration
+
+*This stuff is still experimental, be careful.*
+
+Add Styx to your system flake and import its NixOS module:
+
+```nix
+{
+  inputs = {
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-26.05";
+    styx.url = "github:dnr/styx/release";
+    styx.inputs.nixpkgs.follows = "nixpkgs";
+  };
+
+  outputs = { nixpkgs, styx, ... }: {
+    nixosConfigurations.mymachine = nixpkgs.lib.nixosSystem {
+      modules = [
+        styx.nixosModules.default
+
+        ({ pkgs, ... }: {
+          # enables the daemon, patched nix, and nix settings:
+          services.styx.enable = true;
+
+          # package-name regexes for on-demand fetching. exclude anything
+          # needed to boot the system or connect to the network.
+          nix.settings.styx-ondemand = [ "list" "of" "package" "name" "regexps-.*" ];
+
+          # any package can safely use materialize:
+          nix.settings.styx-materialize = [ ".*" ];
+        })
+      ];
+    };
+  };
+}
+```
+
+See [module/default.nix](module/default.nix) for other options options.
+
+After rebuilding and activating, initialize the daemon to point it to the Styx
+services in my AWS account:
+
+```sh
+StyxInitTest1
+
+# that's just a script containing:
+# styx init --params=https://styx-1.s3.amazonaws.com/params/test-1 --styx_pubkey=styx-test-1:bmMrKgN5yF3dGgOI67TZSfLts5IQHwdrOCZ7XHcaN+w=
+```
+
+*This initializes Styx using services in my AWS account. I may turn them off or
+break them at any time.*
+
+
+### Without flakes
+
+Styx local development uses Styx's custom pinning tool called `spin` (that
+substitutes dependencies with Styx). If you're trying to run things from the
+checkout without a local Styx daemon, you'll have to set:
+
+```sh
+export SPIN_FALLBACK=1
+```
+
+to fetch packages from a normal cache.
+
+#### Start an interactive VM
+
+```sh
+export SPIN_FALLBACK=1
+./bin/runvm
+```
 
 #### Run the test suite in a VM
 
 ```sh
 export SPIN_FALLBACK=1
-testvm
-testvm -t btrfs  # run with btrfs root fs
+./bin/testvm
 ```
-
-#### Start a VM with Styx running and available
-
-*This will use services in my AWS account. I may turn it off or break it at any time.*
-
-```sh
-export SPIN_FALLBACK=1
-runvm
-```
-
-The VM will be set up with the pinned nixpkgs shared on `/tmp/nixpkgs` and set on
-`NIX_PATH`. Styx will be configured to substitute all packages ≥ 32KiB. So start
-with `nix-shell -p ...` and see what happens.
 
 #### Use it in your system configuration
 
-*This stuff is still experimental, be careful*
+Use the pinning tool of your choice to get the Styx source, then import the
+NixOS module in the `module` directory into your configuration.
+
+E.g. with plain `fetchTarball`, something like:
 
 ```nix
-   imports = [
-     "${fetchTarball "https://github.com/dnr/styx/archive/release.tar.gz"}/module"
-     # or use your preferred pinning method
-   ];
-   # This enables all features and patches.
-   # Look at module/default.nix for more fine-grained enable options if desired.
-   services.styx.enable = true;
-   # This sets a list of package name regexes to use Styx on-demand.
-   # This shouldn't include anything you need to boot a system and connect to
-   # the network.
-   nix.settings.styx-ondemand = [ "list" "of" "package" "name" "regexp-.*" ];
-   # This sets a list of package name regexes to use Styx materialize.
-   # It's safe to include everything here, if Styx fails, Nix will fall back
-   # to normal substitution.
-   nix.settings.styx-materialize = [ ".*" ];
+imports = [
+  "${builtins.fetchTarball "https://github.com/dnr/styx/archive/release.tar.gz"}/module"
+];
+services.styx.enable = true;
+nix.settings.styx-ondemand = [ "list" "of" "package" "name" "regexp-.*" ];
+nix.settings.styx-materialize = [ ".*" ];
 ```
 
-After the daemon is running, you have to initialize it by running:
+And then after activation, run:
 
 ```sh
 StyxInitTest1
-
-# that's just a script that contains:
-styx init --params=https://styx-1.s3.amazonaws.com/params/test-1 --styx_pubkey=styx-test-1:bmMrKgN5yF3dGgOI67TZSfLts5IQHwdrOCZ7XHcaN+w=
 ```
+
+### nix-gocacheprog
+
+Styx enables [nix-gocacheprog][ngcp] to allow local development to use the Go
+cache (impurely but conveniently):
+
+```sh
+export USE_NIX_GOCACHEPROG=1
+
+nix-build -A styx-local
+./bin/testvm
+./bin/runvm
+```
+
+### Set up server-side components
+
+This isn't well-documented yet, but see the Terraform in the `tf` directory and
+modify it for your needs.
 
 
 ## Roadmap and future work
@@ -630,6 +748,7 @@ I've also used LLMs for Linux reference, design conversations, tracking down tri
 [erofs]: https://erofs.docs.kernel.org/
 [dmclone]: https://docs.kernel.org/admin-guide/device-mapper/dm-clone.html
 [nbd]: https://en.wikipedia.org/wiki/Network_block_device
+[ngcp]: https://github.com/dnr/nix-gocacheprog/
 
 
 # License
@@ -639,4 +758,3 @@ MPL-2.0
 **Exceptions:**
 
 All the code under `forked` inherits its original licenses.
-

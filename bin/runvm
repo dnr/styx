@@ -2,6 +2,7 @@
 # Use:
 #   runvm             # default (ext4 root fs)
 #   runvm -t btrfs    # to get a btrfs root fs
+#   runvm -t xfs      # to get an XFS root fs
 
 fstype=ext4
 while getopts ":t:" opt; do
@@ -13,43 +14,23 @@ done
 
 set -eux
 
-buildPinned() { nix-build --no-out-link -E 'import (import ./Pins.nix).nixpkgs {}' -A "$@"; }
 case $fstype in
-  ext4)  mkfs=$(buildPinned e2fsprogs)/bin/mkfs.ext4 ;;
-  btrfs) mkfs=$(buildPinned btrfs-progs)/bin/mkfs.btrfs ;;
-  *) echo "unknown fstype, use ext4 or btrfs"; exit 1;;
+  ext4|btrfs|xfs) ;;
+  *) echo "unknown fstype, use ext4, btrfs, or xfs"; exit 1;;
 esac
 
-vm=$(VMFSTYPE=$fstype nix-build --no-out-link -E 'import ((import ./Pins.nix).nixpkgs + "/nixos")' -A vm -I nixos-config=./vm-interactive.nix)
+vm=$(nix-build --no-out-link --argstr fstype "$fstype" runvm.nix)
 if size="$(stty size | tr ' ' :)"; then
   # hack to transfer console size
   export QEMU_KERNEL_PARAMS="styx.consolesize=$size"
 fi
-export NIX_DISK_IMAGE=/tmp/testvm-$UID.qcow2
+export NIX_DISK_IMAGE="/tmp/testvm-$UID-$fstype.qcow2"
 keep=''
 for arg; do
   case $arg in
     --keep) keep=1 ;;
   esac
 done
-[[ $keep ]] || rm -f $NIX_DISK_IMAGE
+[[ $keep ]] || rm -f "$NIX_DISK_IMAGE"
 
-# some nix invocations are pretty ram-hungry
-export QEMU_OPTS="-m 4G ${QEMU_OPTS:-}"
-
-# This is kind of gross: if you're actually using styx, then your "/nix/store"
-# is not a single filesystem anymore, there's stuff mounded inside it. The nixos
-# qemu module shares /nix/store by default, but qemu gets really confused with
-# the multiple mount points and prints an error like
-#   qemu-kvm: warning: 9p: Multiple devices detected in same VirtFS export, …
-# There's a flag to handle this, multidevs=remap, but we have to sneak it into
-# the vm startup script.
-# Also, replace the mkfs call (hardcoded to ext4 in qemu-vm.nix) with the
-# desired root fs type.
-tmp=$(mktemp)
-sed -e '
-  2s|^|rm -f '"$tmp"';|
-  s|,mount_tag=nix-store|&,multidevs=remap|
-  s|/nix/store/[^ /]*/bin/mkfs[.]ext4|'"$mkfs"'|
-' < $vm/bin/run-testvm-vm > $tmp
-exec bash -x $tmp
+exec "$vm/bin/run-testvm-vm"
