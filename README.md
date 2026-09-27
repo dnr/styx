@@ -643,27 +643,23 @@ break them at any time.*
 
 ### Without flakes
 
-Styx local development uses Styx's custom pinning tool called `spin` (that
-substitutes dependencies with Styx). If you're trying to run things from the
-checkout without a local Styx daemon, you'll have to set:
+Styx local development uses Styx's custom pinning tool called `spin`. By default,
+its pins use `builtins.fetchTarball`, so a local Styx daemon is not needed to
+fetch them. To use Styx substitution when a daemon is available, set:
 
 ```sh
-export SPIN_FALLBACK=1
+export USE_SPIN=1
 ```
-
-to fetch packages from a normal cache.
 
 #### Start an interactive VM
 
 ```sh
-export SPIN_FALLBACK=1
 ./bin/runvm
 ```
 
 #### Run the test suite in a VM
 
 ```sh
-export SPIN_FALLBACK=1
 ./bin/testvm
 ```
 
