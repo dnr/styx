@@ -1,27 +1,20 @@
-let
-  pins = import ./Pins.nix;
-in
 {
   config,
   lib,
   pkgs,
+  modulesPath,
   ...
 }:
 {
   imports = [
     ./vm-base.nix
     ./module
-    (pins.nixpkgs + "/nixos/modules/virtualisation/qemu-vm.nix")
-  ];
-  assertions = [
-    {
-      assertion = config.virtualisation.diskImage != null;
-      message = "must use disk image";
-    }
+    (modulesPath + "/virtualisation/qemu-vm.nix")
   ];
 
-  # enable all options
+  # enable Styx and the binary cache
   services.styx.enable = true;
+  services.styx.enableStyxNixCache = true;
 
   # let styx handle everything
   nix.settings.styx-ondemand = [ ".*" ];
@@ -31,10 +24,12 @@ in
 
   # just console
   virtualisation.graphics = false;
+  # nix invocations in the vm need a lot of ram
+  virtualisation.memorySize = 4096;
   # provide nixpkgs and this dir for convenience
   virtualisation.sharedDirectories = {
     nixpkgs = {
-      source = toString pins.nixpkgs;
+      source = toString pkgs.path;
       target = "/tmp/nixpkgs";
     };
     styxsrc = {
@@ -42,10 +37,6 @@ in
       target = "/tmp/styxsrc";
     };
   };
-  # set fstype of root fs
-  virtualisation.fileSystems."/".fsType = lib.mkForce (builtins.getEnv "VMFSTYPE");
-  # ensure btrfs enabled
-  system.requiredKernelConfig = with config.lib.kernelConfig; [ (isEnabled "BTRFS_FS") ];
 
   # more convenience
   environment.shellAliases = {
@@ -91,7 +82,6 @@ in
     after = [ "network-online.target" ];
     wants = [ "network-online.target" ];
     wantedBy = [ "multi-user.target" ];
-    path = [ config.services.styx.package ];
     serviceConfig = {
       ExecStart = "/run/current-system/sw/bin/StyxInitTest1";
       Type = "oneshot";

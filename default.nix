@@ -232,6 +232,21 @@ rec {
 
   # helper to initialize styx with "test-1" params
   StyxInitTest1 = pkgs.writeShellScriptBin "StyxInitTest1" ''
-    styx init --params=https://styx-1.s3.amazonaws.com/params/test-1 --styx_pubkey=styx-test-1:bmMrKgN5yF3dGgOI67TZSfLts5IQHwdrOCZ7XHcaN+w=
+    exec ${styx-local}/bin/styx init \
+      --params=https://styx-1.s3.amazonaws.com/params/test-1 \
+      --styx_pubkey=styx-test-1:bmMrKgN5yF3dGgOI67TZSfLts5IQHwdrOCZ7XHcaN+w=
   '';
+
+  # public packages, shared with the flake
+  exportedPackages = {
+    inherit
+      styx-local
+      styx-lambda
+      styx-lambda-image
+      charon
+      charon-image
+      spin
+      StyxInitTest1
+      ;
+  };
 }
