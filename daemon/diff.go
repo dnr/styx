@@ -102,9 +102,9 @@ type (
 		// rrs is indirect so that diffOps can point to it without keeping opSet live
 		// first half are for image, second half are for file
 		rrs         *[MaxSources * 2]*recentRead
-		limitShift  int
 		maxOpSize   int // # chunks
 		maxOps      int
+		maxImageOps int // ops allowed across file boundaries
 		sourcesLeft int
 	}
 
@@ -1036,21 +1036,26 @@ func newOpSet(s *Server) *opSet {
 		rrs:         new([MaxSources * 2]*recentRead),
 		maxOpSize:   InitOpSize,
 		maxOps:      1,
+		maxImageOps: 1,
 		sourcesLeft: MaxSources,
 	}
 	set.newOp()
 	return set
 }
 
-func (set *opSet) shiftMax(limitShift int) {
-	for set.limitShift < limitShift {
-		set.limitShift++
-		if set.maxOpSize < MaxOpSize {
-			set.maxOpSize *= 2
-		} else if set.maxOps < MaxDiffOps {
-			set.maxOps *= 2
+func updateDiffLimits(limitShift int, opSize, ops *int) {
+	maxOpSize, maxOps := InitOpSize, 1
+	for range limitShift {
+		if maxOpSize < MaxOpSize {
+			maxOpSize *= 2
+		} else if maxOps < MaxDiffOps {
+			maxOps *= 2
+		} else {
+			break
 		}
 	}
+	*opSize = max(*opSize, maxOpSize)
+	*ops = max(*ops, maxOps)
 }
 
 func (set *opSet) updateRecentReads(sph Sph, path string) {
@@ -1068,7 +1073,8 @@ func (set *opSet) updateRecentReads(sph Sph, path string) {
 	addRecentRead(imageRR, set.rrs[:MaxSources])
 	fileRR := set.s.findRecentRead(sph, path)
 	addRecentRead(fileRR, set.rrs[MaxSources:])
-	set.shiftMax(max(imageRR.reads-ImageRROffset, fileRR.reads))
+	updateDiffLimits(imageRR.reads-ImageRROffset, &set.maxOpSize, &set.maxImageOps)
+	updateDiffLimits(max(imageRR.reads-ImageRROffset, fileRR.reads), &set.maxOpSize, &set.maxOps)
 }
 
 func (set *opSet) isUsing(dig cdig.CDig) bool {
@@ -1270,11 +1276,10 @@ func (set *opSet) buildExtendDiff(
 			path = newReqEnt.Path
 		}
 
-		if len(set.ops) > 1 && newFile {
-			// we're doing more than one op because we got multiple reads for the same file in
-			// succession. we can stop after the file.
-			// TODO: we added image-RRs, so we should update this condition: if we hit an image
-			// RR (in addition to or instead of a file RR) then don't break here.
+		if newFile && set.maxOps > set.maxImageOps && len(set.ops) >= set.maxImageOps &&
+			(len(set.ops) > set.maxImageOps || int(set.op.reqTotalChunks) >= set.maxOpSize || set.op.reqTotalSize >= MaxOpBytes) {
+			// for file rrs, stop at the end of a file. if we've gotten to image rrs, don't
+			// just stop on new file, but do stop if the current file ends with a full op.
 			break
 		}
 	}
