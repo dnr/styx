@@ -36,8 +36,9 @@ Probably not, I made it for myself and it's pretty bare-bones.
 
 ## How do I use it?
 
-First, set up Styx and set `services.styx.includeSpin = true`.
-(Eventually I'll add a fallback so Styx isn't required.)
+First, set up Styx and set `services.styx.includeSpin = true` to add or update
+pins. Importing existing pins uses `builtins.fetchTarball` by default. Set
+`USE_SPIN=1` to use Styx substitution when it is available.
 
 Then do stuff like this:
 
@@ -104,12 +105,9 @@ work.
 To refresh the daemon, run `spin refresh --all`, then try again (the error
 message should have suggested this).
 
-If that doesn't work, or if you're not using Styx at all, you can
-`export SPIN_FALLBACK=1` and try again.
+If that doesn't work, unset `USE_SPIN` and try again.
 
-That makes it use `builtins.fetchTarball` so it should properly fall back to
-direct downloads. It doesn't do this all the time because
-`builtins.fetchTarball` on older Nix versions doesn't attempt substitution first
-(fixed in 2.32), and Styx only kicks in at substitution time. (This could be
-fixed with a lot more effort on the Nix integration side.)
-
+The default `builtins.fetchTarball` path downloads the tarball directly.
+On older Nix versions it doesn't attempt substitution first (fixed in 2.32),
+and Styx only kicks in at substitution time. (This could be fixed with a lot
+more effort on the Nix integration side.)

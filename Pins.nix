@@ -11,7 +11,7 @@ let
     derivation {
       name = p.storePathName;
       system = builtins.currentSystem;
-      builder = "not buildable: run `spin refresh --all` or set `SPIN_FALLBACK=1` and try again";
+      builder = "not buildable: run `spin refresh --all` or unset `USE_SPIN` and try again";
       outputHash = p.outputHash;
       outputHashMode = "recursive";
     };
@@ -24,8 +24,8 @@ let
         assert builtins.substring 0 6 p.outputHash == "sha256";
         builtins.substring 7 64 p.outputHash;
     };
-  useFallback = builtins.getEnv "SPIN_FALLBACK" != "";
-  toDrv = if useFallback then asFetchTarball else asRawDerivation;
+  useSpin = builtins.getEnv "USE_SPIN" != "";
+  toDrv = if useSpin then asRawDerivation else asFetchTarball;
   pins = builtins.listToAttrs (
     builtins.map (p: {
       name = p.name;
