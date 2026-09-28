@@ -17,12 +17,13 @@ type (
 	nbdSlabBackend struct {
 		s      *Server
 		slabId uint16
+		ready  <-chan struct{}
 	}
 )
 
-func (s *Server) nbdConnect(slabId uint16) (*os.File, func(), func() error, error) {
+func (s *Server) nbdConnect(slabId uint16, ready <-chan struct{}) (*os.File, func(), func() error, error) {
 	ctx, cancel := context.WithCancel(context.Background())
-	d := &nbdSlabBackend{s: s, slabId: slabId}
+	d := &nbdSlabBackend{s: s, slabId: slabId, ready: ready}
 	opts := nbd.LoopbackOpts{
 		ReadOnly:   true,
 		MultiConns: s.cfg.NbdConnsPerSlab,
@@ -55,6 +56,18 @@ func (s *Server) nbdConnect(slabId uint16) (*os.File, func(), func() error, erro
 }
 
 func (b *nbdSlabBackend) ReadAt(p []byte, off int64) (int, error) {
+	// handle reads of actual reserved areas specially so we can satisfy them during setup,
+	// where various locks may be held. these reads come directly from the kernel for probing
+	// partitions.
+	prefixBytes := int64(reservedBlocks) << b.s.blockShift
+	if off >= 0 && off <= prefixBytes && int64(len(p)) <= prefixBytes-off ||
+		off >= int64(b.Size())-prefixBytes {
+		clear(p)
+		return len(p), nil
+	}
+
+	<-b.ready
+
 	ctx := context.Background()
 	err := b.s.handleReadSlab(
 		ctx,

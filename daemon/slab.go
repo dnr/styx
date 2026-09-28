@@ -192,6 +192,7 @@ func (s *Server) setupCloneSlab(slabId uint16, slabBytes, regionBytes int64) (re
 		writeFd: -1,
 		flushCh: make(chan erofs.SlabLoc, slabFlushChBufferSize),
 	}
+	ready := make(chan struct{})
 	defer func() {
 		if retErr == nil {
 			return
@@ -236,7 +237,7 @@ func (s *Server) setupCloneSlab(slabId uint16, slabBytes, regionBytes int64) (re
 	}
 
 	// setup nbd
-	st.nbdDev, st.nbdCancel, st.nbdWait, err = s.nbdConnect(slabId)
+	st.nbdDev, st.nbdCancel, st.nbdWait, err = s.nbdConnect(slabId, ready)
 	if err != nil {
 		return err
 	}
@@ -273,6 +274,8 @@ func (s *Server) setupCloneSlab(slabId uint16, slabBytes, regionBytes int64) (re
 	s.slabState[slabId] = st
 	go s.flusher(slabId, st)
 	s.publishSlabFdsLocked()
+	close(ready)
+
 	log.Println("set up on-demand slab", slabId)
 	return nil
 }
